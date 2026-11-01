@@ -55,6 +55,10 @@ type Client struct {
 
 	lastIOCEtag    string
 	lastIOCVersion int
+
+	// lastUpgradeETag 是自升级清单的 ETag（状态归 uplink/upgrade.go 使用），
+	// 与规则/IOC 同一套协商语义：清单未变时不重复解析与验签。
+	lastUpgradeETag string
 }
 
 // SetRuleSignKey 设置规则包验签密钥。空值表示不校验（仅记录告警日志）。

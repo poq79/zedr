@@ -187,6 +187,39 @@ func classifyInventoryEvent(ev inventory.ChangeEvent, path string, meta enrich.M
 			return model.SeverityLow, 30, []string{"T1547.001"}
 		}
 		return model.SeverityLow, 30, nil
+	case "defender":
+		// 排除项是"给恶意软件开门"：新增排除 = critical；实时保护从 on
+		// 变 off 同理。removed（取消排除）与一般 changed 属运营动作，low。
+		switch ev.Kind {
+		case inventory.DiffAdded:
+			return model.SeverityCritical, 75, []string{"T1562.001"}
+		case inventory.DiffChanged:
+			// Detail 里带字段级差异；排除列表增长按 critical、其余按 low
+			if strings.Contains(ev.Detail, "新增") || strings.Contains(ev.Detail, "exclusion") {
+				return model.SeverityCritical, 75, []string{"T1562.001"}
+			}
+			return model.SeverityLow, 30, nil
+		default:
+			return model.SeverityLow, 30, []string{"T1562.001"}
+		}
+	case "firewall":
+		// 配置档被关闭 = critical（T1562.004）；重新开启是恢复动作，medium
+		if ev.Kind == inventory.DiffChanged && strings.Contains(ev.Detail, "disabled") {
+			return model.SeverityCritical, 75, []string{"T1562.004"}
+		}
+		if ev.Kind == inventory.DiffChanged {
+			return model.SeverityMedium, 45, []string{"T1562.004"}
+		}
+		return model.SeverityLow, 30, nil
+	case "accounts":
+		// 管理员组成员变化是最直接的权限提升证据（T1098）
+		if ev.Kind == inventory.DiffAdded {
+			return model.SeverityCritical, 80, []string{"T1098"}
+		}
+		if ev.Kind == inventory.DiffRemoved {
+			return model.SeverityMedium, 45, []string{"T1098"}
+		}
+		return model.SeverityLow, 30, nil
 	default:
 		// adapters 及未来新增节：保守 low
 		return model.SeverityLow, 30, nil

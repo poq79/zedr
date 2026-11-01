@@ -66,6 +66,10 @@ type Agent struct {
 
 	// policyInterval 是服务端策略下发的扫描间隔（纳秒），0=用本地配置
 	policyInterval atomic.Int64
+
+	// upgradeExit 由 self_upgrade 指令置位：回执上报完成后退出进程，
+	// 让 SCM 拉起新版本（磁盘换装已在指令处理时完成）。
+	upgradeExit atomic.Bool
 }
 
 // New 装配探针。
@@ -77,6 +81,12 @@ func New(version string) (*Agent, error) {
 
 	log := logx.New(logx.Options{Level: cfg.LogLevel, Format: cfg.LogFormat})
 	log.Info("agent_starting", "version", version, "data_dir", cfg.DataDir, "server", cfg.ServerURL)
+
+	// 自升级换装必须在一切初始化之前完成：如果上次运行留下了
+	// "已校验待换装"的标记，现在把新二进制换到当前 exe 的位置，
+	// 然后本次启动用的还是旧镜像——由调用方感知版本变化后自行退出，
+	// 让 SCM 重启拿到新版本（见 applyPendingUpgrade 的返回语义）。
+	applyPendingUpgrade(cfg, log)
 
 	store := state.New(500)
 
@@ -853,6 +863,8 @@ func (a *Agent) handleCommands(ctx context.Context, cmds []model.Command) {
 			res = a.handleQuarantineFile(c)
 		case "quarantine_restore":
 			res = a.handleQuarantineRestore(c)
+		case "self_upgrade":
+			res = a.handleSelfUpgrade(ctx, c)
 		case "collect":
 			res.Result = fmt.Sprintf("进程 %d 个", a.store.Runtime().ProcCount)
 		default:
@@ -867,6 +879,10 @@ func (a *Agent) handleCommands(ctx context.Context, cmds []model.Command) {
 	if err := a.up.ReportCommandResults(rctx, results); err != nil {
 		a.log.Warn("command_result_report_failed", "err", err)
 	}
+
+	// 回执送达后才允许为升级退出：进程在回执前消失，指令会永远
+	// 挂在"已下发、无回执"（见 maybeExitForUpgrade 注释）
+	a.maybeExitForUpgrade()
 }
 
 // handleTerminate 处理终止进程指令（需服务端与终端双重开启）。
@@ -1080,9 +1096,15 @@ func (a *Agent) inventoryLoop(ctx context.Context) {
 	// startup：真实自启动项，来自 persist.Monitor 的持久化基线（7 类位置）
 	m.Register("startup", a.invStartupSection)
 	m.Register("agent", a.invAgentSection)
+	// 安全姿态三节：检测价值最高的一组——排除项新增/防火墙关闭/管理员组
+	// 变更都会经变更管线直接产生 critical 告警（见 classifyInventoryEvent）。
+	m.Register("defender", a.invDefenderSection)
+	m.Register("firewall", a.invFirewallSection)
+	m.Register("accounts", a.invAccountsSection)
 
-	// 可 diff 节的条目主键。system/agent 是标量与探针健康度节，
-	// 没有稳定的条目主键，不做条目级 diff。
+	// 可 diff 节的条目主键。system/agent/defender 是标量与聚合快照节，
+	// 没有稳定的条目主键（defender 的排除列表作为整节 changed 处理），
+	// 不做条目级 diff。
 	keyFns := map[string]func(map[string]any) string{
 		"services":  inventoryFieldKey("name"),
 		"tasks":     inventoryFieldKey("path"),
@@ -1091,6 +1113,8 @@ func (a *Agent) inventoryLoop(ctx context.Context) {
 		// 两个表并给条目注入列表名作为 proto 字段，key 形如 "tcp|8080"。
 		"listeners": inventoryFieldKey("proto", "port"),
 		"startup":   inventoryFieldKey("kind", "location"),
+		"firewall":  inventoryFieldKey("name"),
+		"accounts":  inventoryFieldKey("name"),
 	}
 
 	m.Run(ctx, inventoryInterval, func(sections []model.InventorySection) ([]string, error) {

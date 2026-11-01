@@ -393,3 +393,18 @@ type InventoryReport struct {
 type InventoryAck struct {
 	Applied []string `json:"applied"`
 }
+
+// ---------------------------------------------------------------- 自升级
+
+// UpgradeManifest 是探针自升级包描述（独立签名，payload 前缀 upgv1）。
+//
+// 不并入 RuleBundle/IOCBundle 的理由同 IOCBundle：老探针不认识升级端点
+// 自然忽略，且升级包直接替换探针自身二进制，签名域必须与规则/IOC 彻底隔离。
+// 签名实现与 payload 公式在 platform/rulehash（upgv1|<version>|<sha256>|<size>|），
+// 服务端 api 侧必须与之一字不差。
+type UpgradeManifest struct {
+	Version   string `json:"version"`
+	SHA256    string `json:"sha256"`
+	Size      int64  `json:"size"`
+	Signature string `json:"signature,omitempty"`
+}

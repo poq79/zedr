@@ -52,10 +52,16 @@ type Config struct {
 	// 需与服务端 HG_SERVER_RULE_SIGN_KEY 一致；留空则不校验（仅记录告警）。
 	RuleSignKey string
 	// InventoryEnabled 控制资产清单快照循环（system/adapters/listeners/
-	// services/tasks/startup/agent 七节，差量上报）。
+	// services/tasks/startup/agent 及 defender/firewall/accounts 三节，差量上报）。
 	// 清单采集（服务/任务/网卡枚举）本身有成本，且老服务端没有对应端点
 	// 时上报只会持续报错——现场可整体关闭。
 	InventoryEnabled bool
+	// UpgradeEnabled 控制是否接受服务端下发的自升级指令（self_upgrade）。
+	// 升级包走"清单 HMAC 签名（upgv1 域，密钥同 HG_AGENT_RULE_SIGN_KEY）
+	// + 下载后 sha256 校验"双重把关，换装在进程退出后的重启中完成。
+	// 默认 false：替换自身二进制是探针所有能力里信任要求最高的一类，
+	// 必须现场显式开启，且与 terminate/quarantine 同一套双层开关纪律。
+	UpgradeEnabled bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -88,6 +94,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.AdaptiveScan = l.Bool("HG_AGENT_ADAPTIVE_SCAN", true)
 	c.RuleSignKey = l.Env("HG_AGENT_RULE_SIGN_KEY", "")
 	c.InventoryEnabled = l.Bool("HG_AGENT_INVENTORY", true)
+	c.UpgradeEnabled = l.Bool("HG_AGENT_UPGRADE_ENABLED", false)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
@@ -107,6 +114,9 @@ func LoadConfig(version string) (*Config, error) {
 	}
 	if strings.EqualFold(c.Env, "production") && c.QuarantineEnabled {
 		l.SecurityWarning(false, "已启用文件隔离能力（HG_AGENT_QUARANTINE_ENABLED），请确认这是预期行为")
+	}
+	if strings.EqualFold(c.Env, "production") && c.UpgradeEnabled {
+		l.SecurityWarning(false, "已启用探针自升级（HG_AGENT_UPGRADE_ENABLED），探针将接受服务端推送的二进制并自动换装，请确认这是预期行为")
 	}
 
 	if err := l.Err(); err != nil {
