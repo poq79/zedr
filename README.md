@@ -1,10 +1,31 @@
 # HostGuard · Windows 主机进程安全检测平台
 
-基于 Go 实现的**主机入侵检测探针（HIDS）**，聚焦"恶意进程检测"这一条主线：
+基于 Go 实现的**检测优先的 EDR**（Endpoint Detection & Response，HIDS 路线），
+全部能力在**用户态、低侵入**前提下实现，聚焦"恶意进程检测"这一条主线：
 从 Windows 采集 → 五层检测 → 证据链 → 总控汇聚 → 人工闭环处置，全链路可运行、可观测、可运维。
 
 > 设计依据见 [`docs/DETECTION.md`](docs/DETECTION.md)：把"关键词匹配只配做第一层过滤，
 > 真正的判定要靠多信号上下文组合"落成可执行的工程结构。
+
+## 0. 设计原则（不可妥协）
+
+本项目是 **EDR（检测与响应）**，不是 **EPP/杀毒（执行前防御）**——两者边界如下：
+
+- **只做检测，不做执行前拦截**：不搞内联阻断、不挂文件系统过滤、不阻止进程启动。
+  执行前的"防御/拦截"是 EPP/NGAV 的职责；本项目在攻击**发生之后**负责记录、
+  发现、调查与响应（assume breach）。
+- **用户态、低侵入**：全部采集走文档化的用户态 API（NtQuerySystemInformation、
+  ReadDirectoryChangesW、注册表/服务枚举等），**零内核驱动、零 Hook、零进程注入**。
+  卸载后系统不留补丁痕迹。
+- **响应是显式可选项**：`terminate` / `quarantine_file` 等处置动作默认关闭
+  （服务端 + 探针双层开关，见 [docs/OPS.md](docs/OPS.md) §7），需人工审批；
+  本项目不会自动隔离主机、不自动删除文件。
+- **诚实接受代价**：没有内核遥测 = 轮询采集存在 TOCTOU 盲区（短命进程可能错过）、
+  无自保护（agent 可被终止）。这些是刻意的取舍，理由与重启触发条件见
+  [docs/TRADEOFFS.md](docs/TRADEOFFS.md) §3.3。
+
+> **English**: a detection-first, user-mode EDR. No kernel driver, no hooking,
+> no inline blocking — observation, investigation and human-approved response only.
 
 ---
 
