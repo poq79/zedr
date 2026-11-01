@@ -147,7 +147,7 @@ function AppInner() {
                 <Route path="/intel" element={<IntelPage key={`io${refreshTick}`} user={user} />} />
                 <Route path="/report" element={<ReportPage key={`r${refreshTick}`} />} />
                 <Route path="/hosts" element={<HostsPage key={`h${refreshTick}`} />} />
-                <Route path="/hosts/:id" element={<HostDetailPage key="host-detail" />} />
+                <Route path="/hosts/:id" element={<HostDetailPage key="host-detail" user={user} />} />
                 <Route path="/rules" element={<RulesPage key={`ru${refreshTick}`} user={user} />} />
                 <Route path="/allowlist" element={<AllowlistPage key={`w${refreshTick}`} user={user} />} />
                 <Route path="/audit" element={<AuditPage key={`l${refreshTick}`} />} />

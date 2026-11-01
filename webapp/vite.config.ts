@@ -7,6 +7,13 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
+  // dev 专用：把 /api 转发到本机 secserver，省去自备后端/mock；
+  // 只影响 npm run dev，构建产物不经过这里
+  server: {
+    proxy: {
+      '/api': { target: 'http://127.0.0.1:8080', changeOrigin: true },
+    },
+  },
   build: {
     outDir: '../internal/server/web/static',
     emptyOutDir: true,

@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, Search } from 'lucide-react';
 import { api } from '../lib/api';
-import type { AgentCommand, Alert, Host, HostInventorySection } from '../lib/types';
+import type { AgentCommand, Alert, Host, HostInventorySection, User } from '../lib/types';
 import { relTime, fmtTime, SEV_LABEL } from '../lib/format';
 import { Badge, Button, Card, CardTitle, Input, SkeletonRows, Tabs } from '../components/ui/basics';
 import { useToast, useConfirm } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
+import { LiveFilesTab } from './HostLiveFiles';
 
 /* 主机详情（整页，/hosts/:id）。
    资产清单 7 节各有明确 schema（服务/任务/自启动动辄数百行），
@@ -26,7 +27,7 @@ const CMD_STATUS_TONE: Record<string, string> = {
 const num = (v: unknown) => (typeof v === 'number' ? v : Number(v) || 0);
 const str = (v: unknown) => (v == null ? '' : String(v));
 
-export function HostDetailPage() {
+export function HostDetailPage({ user }: { user: User }) {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const err = useError();
@@ -127,6 +128,7 @@ export function HostDetailPage() {
               { key: 'tasks', label: '计划任务', count: rowsOf('tasks').length },
               { key: 'startup', label: '自启动', count: rowsOf('startup').length },
               { key: 'network', label: '网络', count: rowsOf('adapters').length + rowsOf('listeners').length },
+              { key: 'live', label: '实时文件' },
               { key: 'changes', label: '变更', count: changes?.length },
               { key: 'ops', label: '处置与历史', count: cmds?.length },
             ]}
@@ -213,6 +215,7 @@ export function HostDetailPage() {
 
               </>
             )}
+            {tab === 'live' && <LiveFilesTab agentId={id} user={user} />}
             {tab === 'changes' && (
               <Card className="p-4">
                 <div className="mb-2.5 flex flex-wrap items-center gap-2.5">

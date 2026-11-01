@@ -146,3 +146,28 @@ export interface Investigation {
   recommended_actions: RecommendedAction[];
   created_at: string;
 }
+
+/* ---- 实时隧道（docs/LIVE-TUNNEL.md §5.2 契约的前端镜像） ---- */
+
+/** 隧道目录条目：服务端只给 name，全路径由前端用 path + name 拼接 */
+export interface LiveFsEntry {
+  name: string;
+  size: number;
+  is_dir: boolean;
+  hidden: boolean;
+  system: boolean;
+  readonly: boolean;
+  reparse: boolean;
+  mtime_unix: number; /* 秒级时间戳 */
+}
+
+/** GET /hosts/{id}/live/fs —— next_cursor 非空表示还有下一页（游标 o<offset>） */
+export interface LiveFsList { path: string; entries: LiveFsEntry[]; next_cursor: string }
+
+/** GET /hosts/{id}/live/fs/hash —— state: valid|unsigned|distrusted|bad_digest|expired|untrusted|error… */
+export interface LiveHash {
+  path: string;
+  sha256: string;
+  size: number;
+  authenticode: { state: string; subject?: string; issuer?: string };
+}
