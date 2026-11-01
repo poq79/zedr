@@ -26,6 +26,10 @@ func NewSlack(url, consoleURL string, log *slog.Logger) *imChannel {
 		}
 		c.sent.Add(1)
 	}
+	// 限流摘要卡：顶层 text 即普通消息
+	c.sendText = func(text string) error {
+		return c.postJSON(url, map[string]any{"text": text})
+	}
 	c.start()
 	return c
 }

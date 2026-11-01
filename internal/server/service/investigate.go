@@ -71,14 +71,16 @@ func (s *AIService) Investigate(ctx context.Context, alertID string) (*Investiga
 	score := investigateScoreBase
 
 	// ---- 步骤 1：告警本体画像 ----
-	sigIDs := make([]string, 0, len(a.Evidence.Signals))
-	for _, sg := range a.Evidence.Signals {
-		sigIDs = append(sigIDs, sg.ID)
+	// 主机级事件（资产变更等）没有进程上下文：画像按"事实是什么"呈现，
+	// 不硬凑"进程 （）"这种空壳文案
+	profile := sprintf("主机级事件，得分 %d，严重度 %s", a.Score, a.Severity)
+	if a.ProcessName != "" {
+		profile = sprintf("进程 %s（%s），得分 %d，严重度 %s，签名 %s",
+			a.ProcessName, a.ImagePath, a.Score, a.Severity, signatureDesc(a.Signed, a.Signer))
 	}
 	inv.Steps = append(inv.Steps, InvestigationStep{
-		Name: "告警本体",
-		Finding: sprintf("进程 %s（%s），得分 %d，严重度 %s，签名 %s",
-			a.ProcessName, a.ImagePath, a.Score, a.Severity, signatureDesc(a.Signed, a.Signer)),
+		Name:      "告警本体",
+		Finding:   profile,
 		Citations: []string{a.ID},
 	})
 
@@ -124,8 +126,8 @@ func (s *AIService) Investigate(ctx context.Context, alertID string) (*Investiga
 		AgentID: a.AgentID, Page: 1, PageSize: 50, Sort: "oldest",
 	})
 	relatedN := 0
+	var relCit []string
 	if err == nil {
-		var cit []string
 		for _, ra := range related {
 			if ra.ID == a.ID {
 				continue
@@ -133,18 +135,25 @@ func (s *AIService) Investigate(ctx context.Context, alertID string) (*Investiga
 			if !ra.CreatedAt.Add(-30 * time.Minute).After(a.CreatedAt) && !ra.CreatedAt.After(a.CreatedAt.Add(30*time.Minute)) {
 				relatedN++
 				if relatedN <= 5 {
-					cit = append(cit, ra.ID+"("+ra.Title+")")
+					relCit = append(relCit, ra.ID+"("+ra.Title+")")
 				}
 			}
 		}
-		if relatedN > 0 {
-			score += 10
-			inv.Steps = append(inv.Steps, InvestigationStep{
-				Name:      "同主机关联告警",
-				Finding:   sprintf("前后 30 分钟内同主机还有 %d 条相关告警", relatedN),
-				Citations: cit,
-			})
-		}
+	}
+	if relatedN > 0 {
+		score += 10
+		inv.Steps = append(inv.Steps, InvestigationStep{
+			Name:      "同主机关联告警",
+			Finding:   sprintf("前后 30 分钟内同主机还有 %d 条相关告警", relatedN),
+			Citations: relCit,
+		})
+	} else {
+		// 无关联也如实成步：分析师需要知道"这一路查过了"而不是怀疑漏查
+		inv.Steps = append(inv.Steps, InvestigationStep{
+			Name:      "同主机关联告警",
+			Finding:   "前后 30 分钟内同主机无其他相关告警",
+			Citations: []string{a.AgentID},
+		})
 	}
 
 	// ---- 步骤 4：IOC 比对 ----
@@ -197,6 +206,13 @@ func (s *AIService) Investigate(ctx context.Context, alertID string) (*Investiga
 		inv.VerdictSuggestion = "suspicious"
 	default:
 		inv.VerdictSuggestion = "benign-需人工确认"
+	}
+
+	// 全步骤 Citations 归一为空数组（JSON null 会让前端 len() 崩）
+	for i := range inv.Steps {
+		if inv.Steps[i].Citations == nil {
+			inv.Steps[i].Citations = []string{}
+		}
 	}
 
 	// ---- 建议动作（Available 反映双层开关现状）----

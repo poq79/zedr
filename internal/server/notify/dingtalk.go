@@ -43,6 +43,11 @@ func NewDingTalk(url, secret, consoleURL string, log *slog.Logger) *imChannel {
 		}
 		c.sent.Add(1)
 	}
+	// 限流摘要卡：text 类型（文案含"告警"关键词，关键词安全设置的机器人也能收）
+	c.sendText = func(text string) error {
+		return c.postJSON(dingSignedURL(url, secret, time.Now().UnixMilli()),
+			map[string]any{"msgtype": "text", "text": map[string]any{"content": text}})
+	}
 	c.start()
 	return c
 }

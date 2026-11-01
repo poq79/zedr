@@ -73,6 +73,12 @@ func NewEmail(cfg EmailConfig, log *slog.Logger) *imChannel {
 		}
 		c.sent.Add(1)
 	}
+	// 限流摘要：邮件渠道同样接入防风暴（过滤在共享 dispatch 里），
+	// 摘要以固定主题的纯文本邮件发出，正文即摘要文案。
+	c.sendText = func(text string) error {
+		msg := buildEmailRFC822(fromHdr, cfg.To, "[HostGuard] 通知摘要", text, time.Now())
+		return sendEmail(cfg, fromAddr, msg)
+	}
 	c.start()
 	return c
 }

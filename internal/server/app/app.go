@@ -197,6 +197,51 @@ func New() (*App, error) {
 		}
 	}
 
+	// critical 告警自动触发确定性调查（v1 编排的自动触发器，LLM 叙事层后续接入）。
+	//
+	// Investigate 原本只能手动 POST 触发——critical 意味着"正在发生"，
+	// 等值班点按钮就慢了一拍。这里另起一个总线订阅（Bus.Subscribe 支持
+	// 多订阅者，与通知互不干扰）：critical 一到就异步调查，结果自动写入
+	// investigateCache，前端 GET 同一端点即得，无感于触发方式。
+	// 纪律：纯旁路——调查失败只记 warn，绝不影响告警入库与通知主链路；
+	// 装配顺序已保证 svc.AI 先于本订阅构造（service.New 在前）。
+	if _, ch := svc.Bus.Subscribe(); ch != nil {
+		// 并发闸：最多同时 2 个调查。Investigate 是纯 DB 查询编排，
+		// 但爆发事件会瞬间产生几十条 critical，不设闸会挤占共享 SQLite。
+		const (
+			autoInvConcurrency = 2
+			// 防重集合容量上界：告警 ID 唯一且只发布一次，集合只增不减，
+			// 触顶整表清空防止长尾泄漏（清空后同 ID 若再广播也只会多查一次）。
+			autoInvDedupCap = 4096
+		)
+		sem := make(chan struct{}, autoInvConcurrency)
+		seen := make(map[string]bool)
+		go func() {
+			for alert := range ch {
+				if alert.Severity != model.SeverityCritical {
+					continue
+				}
+				// 防重：同 ID 只调查一次（去重聚合/重放可能重复发布同一 ID）
+				if seen[alert.ID] {
+					continue
+				}
+				if len(seen) >= autoInvDedupCap {
+					seen = make(map[string]bool)
+				}
+				seen[alert.ID] = true
+				go func(id string) {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if _, err := svc.AI.Investigate(ctx, id); err != nil {
+						log.Warn("auto_investigate_failed", "alert_id", id, "err", err)
+					}
+				}(alert.ID)
+			}
+		}()
+	}
+
 	router := api.Router(api.Deps{
 		Services:     svc,
 		Tokens:       tokens,

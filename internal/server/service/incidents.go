@@ -19,9 +19,13 @@ import (
 // 距上次同步不足该间隔就直接读库（聚类本身要拉 200 条告警，不能每查必算）。
 const incidentSyncInterval = 30 * time.Second
 
-// incidentChangeCap 是单次懒同步允许的告警扫描规模——与旧内存版口径一致；
-// 超过部分靠下一轮追赶（事件表是持久化的，不会丢，只是聚类有延迟）。
+// incidentSyncPageSize 是单次懒同步的翻页页宽（仓储层钳制上界即 200）。
 const incidentSyncPageSize = 200
+
+// incidentSyncMaxAlerts 是单次懒同步翻页拉取的硬上界：open+acknowledged 超过
+// 该值时，本轮只聚类最老的 5000 条，其余等待下一轮追赶——事件表是持久化的，
+// 不会丢，只是聚类有延迟；没有上界的话，堆积中的库每次查询都要翻几十页。
+const incidentSyncMaxAlerts = 5000
 
 // IncidentService 承载事件的持久化、状态机与主机变更事件查询。
 type IncidentService struct {
@@ -53,15 +57,26 @@ func (s *IncidentService) EnsureSynced(ctx context.Context) error {
 
 // Sync 把未处置告警聚类成事件并持久化（Upsert 保护人工处置）。
 // 顺带执行超期 open 告警归档（OpenAlertTTL>0 时启用）。
+//
+// 翻页拉全量：聚类输入必须覆盖全部未处置告警，否则 open+acknowledged 超
+// 200 条时事件计数永远缺尾巴（规模债）。Sort=oldest 是 created_at 升序的
+// 稳定分页，逐页拼接即全局有序，clusterByGap 可直接消费、无需重排。
 func (s *IncidentService) Sync(ctx context.Context) (int, error) {
-	alerts, _, err := s.repos.Alerts.List(ctx, domain.AlertFilter{
-		Status:   []domain.AlertStatus{model.StatusOpen, model.StatusAcknowledged},
-		Page:     1,
-		PageSize: incidentSyncPageSize,
-		Sort:     "oldest",
-	})
-	if err != nil {
-		return 0, err
+	var alerts []domain.Alert
+	for page := 1; len(alerts) < incidentSyncMaxAlerts; page++ {
+		batch, _, err := s.repos.Alerts.List(ctx, domain.AlertFilter{
+			Status:   []domain.AlertStatus{model.StatusOpen, model.StatusAcknowledged},
+			Page:     page,
+			PageSize: incidentSyncPageSize,
+			Sort:     "oldest",
+		})
+		if err != nil {
+			return 0, err
+		}
+		alerts = append(alerts, batch...)
+		if len(batch) < incidentSyncPageSize {
+			break // 取空了：不足一页即到尾
+		}
 	}
 
 	byHost := map[string][]domain.Alert{}
