@@ -26,9 +26,30 @@ export const ROUTES = [
   { to: '/users', label: '账号管理', icon: Users, adminOnly: true },
 ];
 
+/* 导航 IA 分组（DESIGN.md §4.2）：组标签是信息架构，不是装饰 */
+const NAV_GROUPS: Array<{ label: string; tos: string[] }> = [
+  { label: '总览', tos: ['/overview'] },
+  { label: '运营', tos: ['/alerts', '/incidents', '/report', '/hosts'] },
+  { label: '策略', tos: ['/rules', '/allowlist'] },
+  { label: '治理', tos: ['/audit', '/users'] },
+];
+
 const TITLES: Record<string, string> = {
   overview: '概览', alerts: '告警中心', incidents: '事件（攻击链聚类）', report: '运营周报',
   hosts: '主机终端', rules: '检测规则', allowlist: '白名单与降噪', audit: '审计日志', users: '账号管理',
+};
+
+/* 页头副行：一句话说明本页职责——真实信息，不是口号 */
+const SUBTITLES: Record<string, string> = {
+  overview: '检测态势与运营指标',
+  alerts: '实时检测输出 · 处置需人工确认',
+  incidents: '告警聚类为攻击链 · 一个事件看全程',
+  report: 'MTTR / 误报率 / 运营周报',
+  hosts: '已接入探针的主机与进程视图',
+  rules: '检测规则集中管理与签名下发',
+  allowlist: '加白降噪 · 误报回收',
+  audit: '全部管理操作留痕',
+  users: '账号 · 角色 · 密码策略',
 };
 
 export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, children }: {
@@ -89,26 +110,35 @@ export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, c
           <b className="text-[15px] tracking-[.2px] text-foreground">HostGuard</b>
         </div>
 
-        <nav className="mt-1.5 flex flex-col gap-0.5">
-          {ROUTES.filter((r) => !r.adminOnly || isAdmin).map((r) => (
-            <NavLink
-              key={r.to}
-              to={r.to}
-              className={({ isActive }) => cn(
-                'flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors duration-150',
-                'hover:bg-accent hover:text-foreground',
-                isActive ? 'bg-brand-soft font-medium text-foreground shadow-[inset_2px_0_0_var(--primary)]' : 'text-muted-foreground',
-              )}
-            >
-              <r.icon size={16} strokeWidth={1.6} className={cn('shrink-0 opacity-85', loc.pathname === r.to && 'text-primary opacity-100')} />
-              {r.label}
-              {r.badge === 'alerts' && unread > 0 && (
-                <span key={unread} className="anim-badge ml-auto rounded-full bg-crit px-1.5 py-px text-[10.5px] font-bold text-[#1a0508]">
-                  {unread > 99 ? '99+' : unread}
-                </span>
-              )}
-            </NavLink>
-          ))}
+        <nav className="mt-1.5 flex flex-col">
+          {NAV_GROUPS.map((group) => {
+            const items = ROUTES.filter((r) => group.tos.includes(r.to) && (!r.adminOnly || isAdmin));
+            if (!items.length) return null;
+            return (
+              <div key={group.label} className="mt-3.5 first:mt-1.5">
+                <div className="px-3 pb-1 text-[10px] font-semibold tracking-[1px] text-faint">{group.label}</div>
+                {items.map((r) => (
+                  <NavLink
+                    key={r.to}
+                    to={r.to}
+                    className={({ isActive }) => cn(
+                      'flex items-center gap-2.5 rounded-md px-3 py-[7px] text-[13.5px] transition-colors duration-150',
+                      'hover:bg-accent hover:text-foreground',
+                      isActive ? 'bg-brand-soft font-medium text-foreground shadow-[inset_2px_0_0_var(--primary)]' : 'text-muted-foreground',
+                    )}
+                  >
+                    <r.icon size={16} strokeWidth={1.6} className={cn('shrink-0 opacity-85', loc.pathname === r.to && 'text-primary opacity-100')} />
+                    {r.label}
+                    {r.badge === 'alerts' && unread > 0 && (
+                      <span key={unread} className="anim-badge ml-auto rounded-full bg-crit px-1.5 py-px text-[10.5px] font-bold text-[#1a0508]">
+                        {unread > 99 ? '99+' : unread}
+                      </span>
+                    )}
+                  </NavLink>
+                ))}
+              </div>
+            );
+          })}
         </nav>
 
         <div className="mt-auto border-t border-border-soft pt-3.5">
@@ -131,7 +161,12 @@ export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, c
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* 顶栏纯平：毛玻璃（backdrop-blur）在反模式清单里，发丝线就够 */}
         <header className="flex h-14 shrink-0 items-center gap-3.5 border-b border-border-soft bg-background px-5">
-          <h1 className="m-0 text-[15px] font-semibold tracking-[.2px]">{title}</h1>
+          <div className="min-w-0">
+            <h1 className="m-0 text-[16.5px] font-semibold leading-[1.2] tracking-tight">{title}</h1>
+            {SUBTITLES[loc.pathname.replace(/^\//, '')] && (
+              <p className="m-0 hidden truncate text-[11px] leading-[1.3] text-faint sm:block">{SUBTITLES[loc.pathname.replace(/^\//, '')]}</p>
+            )}
+          </div>
           <div className="flex-1" />
           <span className={cn('flex items-center gap-1.5 text-[11.5px] text-faint', !live && 'opacity-80')}>
             <CircleDot size={11} className={cn(live ? 'text-ok' : 'text-ghost')} style={live ? { animation: 'pulse-dot 2.4s infinite' } : undefined} />
