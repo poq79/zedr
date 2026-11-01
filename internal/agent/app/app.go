@@ -20,6 +20,7 @@ import (
 	"hostguard/internal/agent/enrich"
 	"hostguard/internal/agent/localapi"
 	"hostguard/internal/agent/persist"
+	"hostguard/internal/agent/quarantine"
 	"hostguard/internal/agent/state"
 	"hostguard/internal/agent/uplink"
 	"hostguard/internal/agent/winapi"
@@ -42,6 +43,7 @@ type Agent struct {
 	eng  *detect.Engine
 	up   *uplink.Client
 	cpu  *winapi.CPUSampler
+	qtn  *quarantine.Store
 
 	// 行为采集层：文件落地监控 + 持久化项监控
 	fw *winapi.FileWatcher
@@ -134,10 +136,17 @@ func New(version string) (*Agent, error) {
 		log.Warn("persist_baseline_load_failed", "err", err)
 	}
 
+	// 隔离区初始化失败不阻塞启动：后续隔离指令会得到明确失败回执
+	qtn, err := quarantine.New(cfg.DataDir, installDir())
+	if err != nil {
+		log.Warn("quarantine_init_failed", "err", err, "hint", "文件隔离指令将不可用")
+	}
+
 	a := &Agent{
 		cfg: cfg, log: log, store: store,
 		coll: coll, enr: enr, base: base, alw: alw, eng: eng, up: up,
 		pm: pm,
+		qtn: qtn,
 		cpu:       &winapi.CPUSampler{},
 		startedAt: time.Now(),
 		scanReq:   make(chan bool, 1),
@@ -813,6 +822,10 @@ func (a *Agent) handleCommands(ctx context.Context, cmds []model.Command) {
 			res.Result = fmt.Sprintf("规则已同步，当前 %d 条；IOC %d 条", a.eng.RuleCount(), a.eng.IOCCount())
 		case "terminate":
 			res = a.handleTerminate(c)
+		case "quarantine_file":
+			res = a.handleQuarantineFile(c)
+		case "quarantine_restore":
+			res = a.handleQuarantineRestore(c)
 		case "collect":
 			res.Result = fmt.Sprintf("进程 %d 个", a.store.Runtime().ProcCount)
 		default:
@@ -874,6 +887,96 @@ func (a *Agent) handleTerminate(c model.Command) model.CommandResult {
 	res.Result = fmt.Sprintf("已终止 %s (PID %d)", name, payload.PID)
 	a.log.Warn("process_terminated", "pid", payload.PID, "name", name, "command", c.ID)
 	return res
+}
+
+// handleQuarantineFile 处理文件隔离指令（需终端侧显式开启）。
+// 运行中的程序镜像通常因文件锁无法移出，此时如实回执失败——
+// 正确的处置顺序是先 terminate 再 quarantine，这也是业界惯例。
+func (a *Agent) handleQuarantineFile(c model.Command) model.CommandResult {
+	res := model.CommandResult{CommandID: c.ID}
+	if !a.cfg.QuarantineEnabled {
+		res.Status = "failed"
+		res.Result = "终端未启用文件隔离（HG_AGENT_QUARANTINE_ENABLED=false）"
+		return res
+	}
+	if a.qtn == nil {
+		res.Status = "failed"
+		res.Result = "隔离区不可用（初始化失败）"
+		return res
+	}
+	var payload struct {
+		Path  string `json:"path"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(c.Payload), &payload); err != nil {
+		res.Status = "failed"
+		res.Result = "指令参数解析失败"
+		return res
+	}
+	if strings.TrimSpace(payload.Path) == "" {
+		res.Status = "failed"
+		res.Result = "缺少 path 参数"
+		return res
+	}
+
+	e, err := a.qtn.Quarantine(payload.Path, payload.Reason, c.ID)
+	if err != nil {
+		res.Status = "failed"
+		res.Result = "隔离失败: " + err.Error()
+		a.log.Warn("file_quarantine_failed", "path", redactPath(payload.Path), "err", err)
+		return res
+	}
+	res.Result = fmt.Sprintf("已隔离 %s → 隔离记录 %s（可用 quarantine_restore 恢复）",
+		redactPath(payload.Path), e.ID)
+	a.log.Warn("file_quarantined", "entry_id", e.ID,
+		"path", redactPath(e.OriginalPath), "size", e.Size, "command", c.ID)
+	return res
+}
+
+// handleQuarantineRestore 处理隔离文件恢复指令。
+func (a *Agent) handleQuarantineRestore(c model.Command) model.CommandResult {
+	res := model.CommandResult{CommandID: c.ID}
+	if !a.cfg.QuarantineEnabled {
+		res.Status = "failed"
+		res.Result = "终端未启用文件隔离（HG_AGENT_QUARANTINE_ENABLED=false）"
+		return res
+	}
+	if a.qtn == nil {
+		res.Status = "failed"
+		res.Result = "隔离区不可用（初始化失败）"
+		return res
+	}
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(c.Payload), &payload); err != nil || payload.ID == "" {
+		res.Status = "failed"
+		res.Result = "缺少隔离记录 ID"
+		return res
+	}
+	e, err := a.qtn.Restore(payload.ID, c.ID)
+	if err != nil {
+		res.Status = "failed"
+		res.Result = "恢复失败: " + err.Error()
+		return res
+	}
+	res.Result = fmt.Sprintf("已恢复 %s", redactPath(e.OriginalPath))
+	a.log.Warn("file_restored", "entry_id", e.ID, "path", redactPath(e.OriginalPath), "command", c.ID)
+	return res
+}
+
+// installDir 返回探针可执行文件所在目录（自保护边界之一）。
+func installDir() string {
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Dir(exe)
+	}
+	return ""
+}
+
+// redactPath 日志里的路径只保留文件名与上级目录名，不写全路径
+// （与 redact.Path 的策略一致，避免日志本身成为敏感信息泄漏面）。
+func redactPath(p string) string {
+	return filepath.Base(p)
 }
 
 // flushLoop 周期性批量上报告警。

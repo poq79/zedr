@@ -30,6 +30,10 @@ type Config struct {
 	MaxHashMB     int64
 	OfflineQueue  int
 	KillEnabled   bool
+	// QuarantineEnabled 控制是否执行文件隔离指令。
+	// 与 KillEnabled 同一套双层开关先例：服务端、终端都要显式打开，
+	// 隔离动作才会真正执行——现场排障时可以只关终端侧。
+	QuarantineEnabled bool
 	BaselineLearn bool
 	Warmup        time.Duration
 	HeartbeatSec  int
@@ -70,6 +74,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.MaxHashMB = int64(l.Int("HG_AGENT_MAX_HASH_MB", 64))
 	c.OfflineQueue = l.Int("HG_AGENT_OFFLINE_QUEUE", 5000)
 	c.KillEnabled = l.Bool("HG_AGENT_KILL_ENABLED", false)
+	c.QuarantineEnabled = l.Bool("HG_AGENT_QUARANTINE_ENABLED", false)
 	c.BaselineLearn = l.Bool("HG_AGENT_BASELINE_LEARN", true)
 	c.Warmup = l.DurationZeroOK("HG_AGENT_WARMUP", 5*time.Minute) // 允许 0 = 关闭静默期
 	c.HeartbeatSec = l.Int("HG_AGENT_HEARTBEAT_SEC", 30)
@@ -93,6 +98,9 @@ func LoadConfig(version string) (*Config, error) {
 
 	if strings.EqualFold(c.Env, "production") && c.KillEnabled {
 		l.SecurityWarning(false, "已启用主动终止进程能力（HG_AGENT_KILL_ENABLED），请确认这是预期行为")
+	}
+	if strings.EqualFold(c.Env, "production") && c.QuarantineEnabled {
+		l.SecurityWarning(false, "已启用文件隔离能力（HG_AGENT_QUARANTINE_ENABLED），请确认这是预期行为")
 	}
 
 	if err := l.Err(); err != nil {

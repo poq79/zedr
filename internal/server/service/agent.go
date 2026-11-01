@@ -260,7 +260,9 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 	return s.repos.Agents.Delete(ctx, id)
 }
 
-// EnqueueCommand 下发指令（terminate/rescan/sync_rules/collect）。
+// EnqueueCommand 下发指令（terminate/quarantine_file/quarantine_restore/rescan/sync_rules/collect）。
+// 处置类指令走双层开关：服务端在这里拦一道，终端侧再各自配置确认——
+// 单侧误开不会让破坏性动作真正生效。
 func (s *AgentService) EnqueueCommand(ctx context.Context, agentID, typ, payload, by string) (*domain.AgentCommand, error) {
 	a, err := s.repos.Agents.ByID(ctx, agentID)
 	if err != nil {
@@ -272,7 +274,11 @@ func (s *AgentService) EnqueueCommand(ctx context.Context, agentID, typ, payload
 	switch typ {
 	case "terminate":
 		if !s.cfg.KillEnabled {
-			return nil, apperr.Forbidden("服务端未启用主动处置能力（HG_AGENT_KILL_ENABLED / 服务端配置）")
+			return nil, apperr.Forbidden("服务端未启用主动处置能力（HG_SERVER_KILL_ENABLED）")
+		}
+	case "quarantine_file", "quarantine_restore":
+		if !s.cfg.QuarantineEnabled {
+			return nil, apperr.Forbidden("服务端未启用文件隔离能力（HG_SERVER_QUARANTINE_ENABLED）")
 		}
 	case "rescan", "sync_rules", "collect":
 		// 只读类动作始终允许

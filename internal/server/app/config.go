@@ -52,6 +52,7 @@ type Config struct {
 	LoginBurst  float64
 	RateBurst       float64
 	KillEnabled     bool
+	QuarantineEnabled bool
 	RetentionDays   int
 	DupWindow       time.Duration // 同指纹告警聚合窗口
 	HeartbeatSec    int
@@ -103,6 +104,7 @@ func LoadConfig() (*Config, error) {
 	c.LoginRPS = l.Float("HG_SERVER_LOGIN_RPS", 0.5)   // 登录：约每 2 秒 1 次
 	c.LoginBurst = float64(l.Int("HG_SERVER_LOGIN_BURST", 5))
 	c.KillEnabled = l.Bool("HG_SERVER_KILL_ENABLED", false)
+	c.QuarantineEnabled = l.Bool("HG_SERVER_QUARANTINE_ENABLED", false)
 	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 30)
 	c.DupWindow = l.Duration("HG_SERVER_DUP_WINDOW", 5*time.Minute) // 同指纹告警聚合窗口
 	c.HeartbeatSec = l.Int("HG_SERVER_HEARTBEAT_SEC", 30)

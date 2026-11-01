@@ -17,6 +17,7 @@ import (
 type Config struct {
 	EnrollToken       string        // 终端注册预共享令牌
 	KillEnabled       bool          // 是否允许下发终止进程指令
+	QuarantineEnabled bool          // 是否允许下发文件隔离/恢复指令
 	HeartbeatInterval time.Duration // 心跳间隔（下发给终端）
 	ScanInterval      time.Duration // 采集间隔（下发给终端）
 	DupWindow         time.Duration // 同指纹告警聚合窗口

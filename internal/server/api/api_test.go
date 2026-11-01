@@ -403,6 +403,24 @@ func TestKillCommandRequiresServerOptIn(t *testing.T) {
 		map[string]string{"type": "rescan"}, http.StatusOK, env.token, nil)
 }
 
+// TestQuarantineCommandRequiresServerOptIn 验证文件隔离指令的双层开关：
+// 服务端默认关闭时下发必须 403，未知类型仍 400。
+func TestQuarantineCommandRequiresServerOptIn(t *testing.T) {
+	env := newTestEnv(t)
+	agent := env.enrollAgent()
+
+	// 服务端未开启文件隔离时，两类隔离指令都必须被拒绝
+	for _, typ := range []string{"quarantine_file", "quarantine_restore"} {
+		env.doJSON(http.MethodPost, "/api/v1/hosts/"+agent.AgentID+"/commands",
+			map[string]string{"type": typ, "payload": `{"path":"C:\\x\\y.exe"}`},
+			http.StatusForbidden, env.token, nil)
+	}
+
+	// 未知指令类型 → 400
+	env.doJSON(http.MethodPost, "/api/v1/hosts/"+agent.AgentID+"/commands",
+		map[string]string{"type": "format_disk"}, http.StatusBadRequest, env.token, nil)
+}
+
 func TestAuditTrail(t *testing.T) {
 	env := newTestEnv(t)
 	env.doJSON(http.MethodPost, "/api/v1/allowlist",

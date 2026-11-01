@@ -85,6 +85,7 @@ func New() (*App, error) {
 	svc := service.New(repos, tokens, service.Config{
 		EnrollToken:       cfg.EnrollToken,
 		KillEnabled:       cfg.KillEnabled,
+		QuarantineEnabled: cfg.QuarantineEnabled,
 		HeartbeatInterval: time.Duration(cfg.HeartbeatSec) * time.Second,
 		ScanInterval:      time.Duration(cfg.ScanSec) * time.Second,
 		RetentionDays:     cfg.RetentionDays,
