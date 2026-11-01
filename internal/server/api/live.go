@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
+	"strings"
 	"time"
 
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
 	"zedr/internal/platform/logx"
+	"zedr/internal/platform/redact"
 )
 
 // 实时查询代理：管理端 REST → 隧道内只读 REST 的薄转发层。
@@ -25,8 +29,10 @@ type liveEndpoint struct {
 	fileRead bool // 需要 HG_SERVER_LIVEQUERY_FILEREAD 子开关把门
 }
 
-// 预算表（契约 §5.1）：fs/hash 要扫全文件所以最长；fs/read 受 512KB
-// 钳制且流式传输，20s 足够覆盖慢速盘；其余都是内存级枚举。
+// 预算表（契约 §5.1 / §11.3）：fs/hash 与 analyze 要扫全文件所以最长；
+// fs/read 受 512KB 钳制且流式传输，20s 足够覆盖慢速盘；fs/search 探针侧
+// 自带 30s 预算（超时返回 truncated 部分），代理给 35s 让 truncated 语义
+// 有机会送达而不是被代理先掐；其余都是内存级枚举。
 var liveEndpoints = map[string]liveEndpoint{
 	"ping":      {timeout: 5 * time.Second},
 	"fs":        {timeout: 15 * time.Second},
@@ -35,6 +41,11 @@ var liveEndpoints = map[string]liveEndpoint{
 	"fs/hash":   {timeout: 30 * time.Second},
 	"processes": {timeout: 10 * time.Second},
 	"netstat":   {timeout: 10 * time.Second},
+	"analyze":   {timeout: 30 * time.Second},
+	"ads":       {timeout: 10 * time.Second},
+	"fs/search": {timeout: 35 * time.Second},
+	"procinfo":  {timeout: 10 * time.Second},
+	"info":      {timeout: 5 * time.Second},
 }
 
 // errTunnelNotConnected 是前端据以渲染"隧道未连接"状态条的错误码。
@@ -124,11 +135,12 @@ func (h *adminHandler) liveForward(w http.ResponseWriter, r *http.Request, rest 
 	}
 	defer resp.Body.Close()
 
-	// 审计口径与 sendCommand 一致：记"发生了什么"（端点+结果+耗时）。
-	// 请求级粒度是本设计的隐私对价（TRADEOFFS §9.6），目录浏览与
-	// 内容预览都必须可追责到操作员。
+	// 审计口径与 sendCommand 一致：记"发生了什么"（端点+查询参数+结果+耗时）。
+	// v2 起带查询参数——v1 只记 "fs 200 2ms"，事后无法回答"当时看了哪个目录"，
+	// 追责链断了半截；路径类参数非敏感但可能很长，过 redact 截断。
 	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "host.live_query",
-		hostID, fmt.Sprintf("%s %d %dms", rest, resp.StatusCode, ms), httpx.ClientIP(r))
+		hostID, fmt.Sprintf("%s %d %dms %s", rest, resp.StatusCode, ms, liveQueryDetail(r.URL.Query())),
+		httpx.ClientIP(r))
 
 	// fs/read 是字节流直通（契约 §5.1）；其余 JSON 的 {data} 包装由探针侧
 	// httpx.WriteJSON 完成，这里原样透传状态码与响应体
@@ -142,4 +154,25 @@ func (h *adminHandler) liveForward(w http.ResponseWriter, r *http.Request, rest 
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// liveQueryDetail 把查询参数整理成可读审计串（k=v 空格分隔，值过 redact）。
+// 为什么不用 RawQuery 原文：URL 编码后的 C%3A%5C 在审计里不可读，
+// 排查的人还要手动解码；逐值截断防超长路径撑爆 detail 字段。
+func liveQueryDetail(q url.Values) string {
+	keys := make([]string, 0, len(q))
+	for k := range q {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(redact.Path(q.Get(k)))
+	}
+	return b.String()
 }

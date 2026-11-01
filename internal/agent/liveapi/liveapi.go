@@ -21,6 +21,7 @@ import (
 
 	"zedr/internal/agent/state"
 	"zedr/internal/agent/winapi"
+	"zedr/internal/model"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
 )
@@ -41,6 +42,21 @@ type Deps struct {
 
 	// FS 文件系统抽象；nil 时用 OSFS（单测注入内存/桩实现）。
 	FS FSys
+
+	// ---- v2（契约 §11.1/§11.2）：三个新依赖全部 nil-able，向后兼容 ----
+
+	// Modules 返回指定进程的模块列表（collector.Modules 直通引用，按需
+	// 高成本接口）；nil 时 /procinfo 省略 modules/unsigned_module_count
+	// 块，端点其余功能照常。
+	Modules func(pid uint32) []model.ModuleInfo
+
+	// Snapshot 返回采集层进程快照（通常包一层 state.Store.Procs(2000)）；
+	// nil 时退回用 Procs(procMax)。/netstat 与 /procinfo 的富化共用。
+	Snapshot func() []state.ProcRow
+
+	// Runtime 返回探针运行时状态（state.Store.Runtime 直通引用）；nil →
+	// /info 返回 501。
+	Runtime func() state.RuntimeInfo
 }
 
 // 各端点参数上限（契约 §5.2"双侧钳制"的探针侧；中心代理侧还有一道）。
@@ -77,8 +93,13 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /fs/stat", s.handleFSStat)
 	mux.HandleFunc("GET /fs/read", s.handleFSRead)
 	mux.HandleFunc("GET /fs/hash", s.handleFSHash)
+	mux.HandleFunc("GET /fs/search", s.handleFSSearch)
 	mux.HandleFunc("GET /processes", s.handleProcesses)
 	mux.HandleFunc("GET /netstat", s.handleNetstat)
+	mux.HandleFunc("GET /analyze", s.handleAnalyze)
+	mux.HandleFunc("GET /ads", s.handleADS)
+	mux.HandleFunc("GET /procinfo", s.handleProcInfo)
+	mux.HandleFunc("GET /info", s.handleInfo)
 	return recoverWrap(mux)
 }
 
@@ -112,42 +133,16 @@ func (s *server) handleProcesses(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// netItem 是 /netstat 输出行：连接五元组 + 富化的归属进程信息。
-// 内嵌 winapi.NetRow 让 JSON 字段原地展开，线协议与契约 §5.2 逐字对齐。
-type netItem struct {
-	winapi.NetRow
-	ProcName string `json:"proc_name"`
-	ProcPath string `json:"proc_path"`
-}
-
-func (s *server) handleNetstat(w http.ResponseWriter, r *http.Request) {
-	if s.d.Netstat == nil {
-		httpx.WriteError(w, r, errNotImplemented("网络连接表"))
-		return
+// snapshotRows 取当前进程快照：优先 Snapshot（全量口径），未接线时退回
+// Procs(procMax)，两者都 nil 才返回 nil。/netstat 与 /procinfo 共用。
+func (s *server) snapshotRows() []state.ProcRow {
+	if s.d.Snapshot != nil {
+		return s.d.Snapshot()
 	}
-	rows := s.d.Netstat()
-	if len(rows) > procMax {
-		rows = rows[:procMax]
-	}
-	items := make([]netItem, 0, len(rows))
-	// 富化映射：pid → 进程名/路径。进程表与连接表是两次快照，中间进程
-	// 可能消失/新增，查不到就留空——诚实呈现比猜测好。
-	var byPID map[uint32]state.ProcRow
 	if s.d.Procs != nil {
-		byPID = make(map[uint32]state.ProcRow, 256)
-		for _, p := range s.d.Procs(procMax) {
-			byPID[p.PID] = p
-		}
+		return s.d.Procs(procMax)
 	}
-	for _, row := range rows {
-		item := netItem{NetRow: row}
-		if p, ok := byPID[row.PID]; ok {
-			item.ProcName = p.Name
-			item.ProcPath = p.Path
-		}
-		items = append(items, item)
-	}
-	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"items": items})
+	return nil
 }
 
 // queryInt 解析整数 query 参数：缺省/非法回退 def，并钳制到 [min,max]。

@@ -243,20 +243,27 @@ func (a *Agent) Run(ctx context.Context) error {
 			ServerURL: a.cfg.ServerURL,
 			Creds:     a.up.TunnelCreds,
 			Handler: liveapi.New(liveapi.Deps{
-				Version:   a.cfg.Version,
-				Hostname:  winapi.Hostname(),
-				StartTime: a.startedAt,
-				Procs:     a.Procs,
-				Netstat: func() []winapi.NetRow {
-					// GetNetstat 带错误返回而 Deps 收敛为行切片：
-					// 失败时记日志返回空表，让端点保持 200 语义
-					rows, err := winapi.GetNetstat()
-					if err != nil {
-						a.log.Warn("netstat_query_failed", "err", err)
-					}
-					return rows
-				},
-			}),
+					Version:   a.cfg.Version,
+					Hostname:  winapi.Hostname(),
+					StartTime: a.startedAt,
+					Procs:     a.Procs,
+					Modules:   a.coll.Modules,
+					Snapshot: func() []state.ProcRow {
+						// procinfo 需要全量快照做 PID 定位与 netstat join；
+						// 2000 与 localapi/processes 的钳制口径一致
+						return a.store.Procs(2000)
+					},
+					Runtime: a.store.Runtime,
+					Netstat: func() []winapi.NetRow {
+						// GetNetstat 带错误返回而 Deps 收敛为行切片：
+						// 失败时记日志返回空表，让端点保持 200 语义
+						rows, err := winapi.GetNetstat()
+						if err != nil {
+							a.log.Warn("netstat_query_failed", "err", err)
+						}
+						return rows
+					},
+				}),
 		})
 		go mgr.Start(ctx)
 		defer mgr.Stop()
@@ -399,6 +406,7 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 
 	a.store.SetRuntime(func(ri *state.RuntimeInfo) {
 		ri.RuleCount = ok
+		ri.RuleVersion = bundle.Version
 		ri.Whitelist = a.alw.Size()
 	})
 	a.log.Info("rules_applied", "version", bundle.Version, "rules", ok, "allow", len(entries), "bad", len(bad))
@@ -839,7 +847,10 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 				CPUPercent:  ri.CPUPercent,
 				MemMB:       ri.MemMB,
 				UptimeSec:   int64(time.Since(a.startedAt).Seconds()),
-				RuleVersion: 0,
+				// 上报终端实际应用的版本（0 = 尚未成功拉取）。
+				// 规则包版本由 uplink 在验签/版本单调检查通过后记录，
+				// 服务端据此判断灰度是否真正落地。
+				RuleVersion: a.up.RuleVersion(),
 				Detector: model.DetectorStats{
 					EventsScanned: ri.Stats.Scanned,
 					AlertsFired:   ri.Stats.Fired,

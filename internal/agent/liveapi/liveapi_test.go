@@ -1,7 +1,8 @@
 package liveapi
 
 // liveapi_test.go：/ping、/processes、/netstat 与真实 winapi 冒烟。
-// fs* 端点测试见 fs_test.go。全部用 httptest 直打 New() handler。
+// fs* 端点测试见 fs_test.go；v2 端点测试见 analyze/search/procinfo/info_test.go。
+// 全部用 httptest 直打 New() handler。
 
 import (
 	"encoding/json"
@@ -135,15 +136,17 @@ func TestNetstatEnrichment(t *testing.T) {
 		t.Fatal(err)
 	}
 	var items []struct {
-		Proto      string `json:"proto"`
-		LocalIP    string `json:"local_ip"`
-		LocalPort  uint16 `json:"local_port"`
-		RemoteIP   string `json:"remote_ip"`
-		RemotePort uint16 `json:"remote_port"`
-		State      string `json:"state"`
-		PID        uint32 `json:"pid"`
-		ProcName   string `json:"proc_name"`
-		ProcPath   string `json:"proc_path"`
+		Proto       string `json:"proto"`
+		LocalIP     string `json:"local_ip"`
+		LocalPort   uint16 `json:"local_port"`
+		RemoteIP    string `json:"remote_ip"`
+		RemotePort  uint16 `json:"remote_port"`
+		State       string `json:"state"`
+		PID         uint32 `json:"pid"`
+		ProcName    string `json:"proc_name"`
+		ProcPath    string `json:"proc_path"`
+		RemoteClass string `json:"remote_class"`
+		Exited      bool   `json:"exited"`
 	}
 	if err := json.Unmarshal(raw, &items); err != nil {
 		t.Fatalf("items 反序列化失败: %v raw=%s", err, raw)
@@ -151,7 +154,7 @@ func TestNetstatEnrichment(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("期望 2 行实得 %d", len(items))
 	}
-	// 行 1：pid 100 可富化
+	// 行 1：pid 100 可富化（v2 §11.2：附带内外网分类与退出标记）
 	if items[0].ProcName != "foo.exe" || items[0].ProcPath != `C:\tools\foo.exe` {
 		t.Errorf("富化失败: %+v", items[0])
 	}
@@ -159,9 +162,16 @@ func TestNetstatEnrichment(t *testing.T) {
 		items[0].RemoteIP != "1.2.3.4" || items[0].State != "ESTABLISHED" {
 		t.Errorf("五元组不符: %+v", items[0])
 	}
-	// 行 2：pid 999 查不到 → 留空，不猜
-	if items[1].ProcName != "" || items[1].ProcPath != "" {
-		t.Errorf("查不到的 PID 应留空: %+v", items[1])
+	if items[0].RemoteClass != "public" || items[0].Exited {
+		t.Errorf("v2 富化字段不符: %+v", items[0])
+	}
+	// 行 2：pid 999 不在快照 → exited:true + "(已退出)"
+	//（v2 §11.2 变更：v1 口径是留空；快照不保留历史名，降级标注）
+	if !items[1].Exited || items[1].ProcName != "(已退出)" || items[1].ProcPath != "" {
+		t.Errorf("查不到的 PID 应标退出: %+v", items[1])
+	}
+	if items[1].RemoteClass != "reserved" {
+		t.Errorf("UDP 端点 0.0.0.0 应归 reserved: %+v", items[1])
 	}
 }
 
@@ -172,7 +182,7 @@ func TestNetstatNotImplementedAndClamp(t *testing.T) {
 		t.Fatalf("Netstat==nil 期望 501 实得 %d", code)
 	}
 
-	// 超 2000 行钳制；Procs==nil 时仍可用（富化字段留空）
+	// 超 2000 行钳制；Procs==nil 时仍可用（快照外行全部标 exited）
 	h = New(Deps{
 		StartTime: time.Now(),
 		Netstat: func() []winapi.NetRow {
