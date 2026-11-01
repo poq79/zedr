@@ -1,0 +1,13 @@
+#!/bin/sh
+# Z-EDR pre-commit 钩子：密钥与敏感文件防线
+# 启用方式：bash scripts/install-hooks.sh（等价于 git config core.hooksPath .githooks）
+# 扫描器实现见 scripts/security/secret-scan.sh（零外部依赖）
+
+# 某些环境 PATH 里没有 git：按常见安装位置兜底（钩子由 git 调用，通常已就绪）
+if ! command -v git >/dev/null 2>&1; then
+  for d in "/c/Program Files/Git/cmd" "/c/dev-tools/git/cmd" "$LOCALAPPDATA/Programs/Git/cmd"; do
+    if [ -x "$d/git.exe" ]; then PATH="$d:$PATH"; export PATH; break; fi
+  done
+fi
+
+exec sh "$(git rev-parse --show-toplevel)/scripts/security/secret-scan.sh" staged

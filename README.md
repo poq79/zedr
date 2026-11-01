@@ -154,6 +154,18 @@ EICAR string — no external executables are ever downloaded.
 Issues and pull requests are welcome. Please run `go vet ./...` and
 `go test ./...` before opening a PR, and keep changes focused.
 
+**Enable the local secret scanner** (recommended once per clone, zero dependencies):
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+The pre-commit hook blocks commits that contain private keys, common token
+formats (AWS/GitHub/Slack/Google), `.env`-style files, or non-placeholder
+credential assignments. Bypass for a single commit with `git commit --no-verify`
+(discouraged — if a real secret was committed, rotate it; cleaning history does
+not make it safe). Full audit: `sh scripts/security/secret-scan.sh all`.
+
 ## License
 
 A license is being selected before the first public release — see `LICENSE`

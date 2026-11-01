@@ -144,6 +144,17 @@ python scripts/scenarios.py all       # 场景矩阵 / 误报面 / 性能 / 压�
 欢迎 Issue 与 PR。提交前请确保 `go vet ./...` 与 `go test ./...` 全绿，
 并保持改动聚焦。
 
+**启用本地密钥扫描钩子**（克隆后执行一次，零外部依赖）：
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+pre-commit 钩子会拦截：私钥块、主流令牌格式（AWS/GitHub/Slack/Google）、
+`.env` 系列文件、非占位符的凭据赋值。单次跳过用 `git commit --no-verify`
+（不建议——真实密钥被提交过就必须轮换，清理历史不代表安全）。
+全量审计：`sh scripts/security/secret-scan.sh all`。
+
 ## 许可证
 
 首次公开发布前选定，届时补 `LICENSE` 文件。在此之前保留所有权利。
