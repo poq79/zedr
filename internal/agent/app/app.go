@@ -332,6 +332,12 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 	if notModified && !force {
 		return
 	}
+	// force=true 且服务端版本未变时 FetchRules 返回 (nil, true, nil)——
+	// 此时无包可应用。此前直接解引用 bundle.Rules，任何一条
+	// "规则未变化的 sync_rules 指令"都会空指针 panic 杀死探针。
+	if bundle == nil {
+		return
+	}
 
 	ok, bad := a.eng.SetRules(bundle.Rules)
 	entries := make([]allow.Entry, 0, len(bundle.Allowlist))
@@ -362,6 +368,9 @@ func (a *Agent) syncIOCs(ctx context.Context, force bool) {
 		return
 	}
 	if notModified && !force {
+		return
+	}
+	if bundle == nil { // 同 syncRules：force 且未变化时无包可应用
 		return
 	}
 
