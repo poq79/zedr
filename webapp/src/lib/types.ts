@@ -8,7 +8,7 @@ export type Role = 'admin' | 'analyst' | 'viewer';
 export interface User { id: number; username: string; role: Role }
 
 export interface Alert {
-  id: number;
+  id: string; /* 服务端生成的十六进制 ID（不是数字） */
   hostname: string;
   pid: number;
   process_name: string;
@@ -94,4 +94,18 @@ export interface AttackTechStat {
 export interface IntegrityReport {
   days: { day: string; status: 'ok' | 'purged' | 'tampered' | string; alerts?: number }[];
   ok: number; purged: number; tampered: number;
+}
+
+/** 自然语言狩猎（POST /api/v1/ai/hunt）：AI 把自然语言翻译成受控过滤条件 */
+export interface HuntFilter { field: string; op: string; value: string; values?: string[] }
+export interface HuntQuery {
+  target: string; filters: HuntFilter[]; since_sec: number;
+  order_by: string; desc: boolean; limit: number;
+  explain: string; /* 模型对查询的自然语言解释，供分析师确认意图 */
+}
+export interface HuntResult {
+  query: HuntQuery;
+  total: number;
+  alerts: Alert[];
+  elapsed: string;
 }

@@ -25,9 +25,9 @@ export function Alerts({ user }: { user: User }) {
   const [page, setPage] = useState(1);
   const [sortKey, setSortKey] = useState<SortKey>('time');
   const [sortDesc, setSortDesc] = useState(true);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIdx, setFocusIdx] = useState(-1);
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -35,7 +35,7 @@ export function Alerts({ user }: { user: User }) {
   useEffect(() => {
     const open = searchParams.get('open');
     const mitre = searchParams.get('mitre');
-    if (open) { setOpenId(Number(open)); }
+    if (open) { setOpenId(open); }
     // ATT&CK 矩阵格子下钻：?mitre=T1059 精确过滤（后端 CSV 定界匹配，不会误中 T1059.001）
     if (mitre) { setFilters((f) => ({ ...f, mitre })); }
     if (open || mitre) { setSearchParams({}, { replace: true }); }
@@ -86,7 +86,7 @@ export function Alerts({ user }: { user: User }) {
 
   const setFilter = (k: keyof typeof filters, v: string) => { setFilters((f) => ({ ...f, [k]: v })); setPage(1); };
 
-  const toggleRow = (id: number, checked: boolean) => {
+  const toggleRow = (id: string, checked: boolean) => {
     setSelected((s) => { const n = new Set(s); checked ? n.add(id) : n.delete(id); return n; });
   };
   const allChecked = items.length > 0 && items.every((a) => selected.has(a.id));

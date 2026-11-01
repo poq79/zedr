@@ -22,7 +22,7 @@ const TRIAGE_VERDICT: Record<string, [string, string]> = {
 };
 
 export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
-  alertId: number | null; onClose: () => void; onChanged: () => void; canWrite: boolean;
+  alertId: string | null; onClose: () => void; onChanged: () => void; canWrite: boolean;
 }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -216,7 +216,7 @@ function ScoreBar({ a }: { a: Alert }) {
 
 /* ---------------- AI 研判面板 ---------------- */
 
-function AiPanel({ alertId }: { alertId: number }) {
+function AiPanel({ alertId }: { alertId: string }) {
   const toast = useToast();
   const [stats, setStats] = useState<{ enabled?: boolean; stats?: { model?: string; budget_used?: number; budget_cap?: number } } | null>(null);
   const [result, setResult] = useState<TriageResp | null>(null);

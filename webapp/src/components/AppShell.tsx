@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, TriangleAlert, GitBranch, BarChart3, Monitor,
   ShieldCheck, ShieldBan, ScrollText, Users, LogOut, RefreshCw, Settings,
-  Moon, Sun, Rows3, Keyboard, CircleDot, Crosshair, Fingerprint,
+  Moon, Sun, Rows3, Keyboard, CircleDot, Crosshair, Fingerprint, ScanSearch,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Button } from './ui/basics';
@@ -17,6 +17,7 @@ import { ShortcutsDialog } from './ShortcutsDialog';
 export const ROUTES = [
   { to: '/overview', label: '概览', icon: LayoutDashboard },
   { to: '/alerts', label: '告警中心', icon: TriangleAlert, badge: 'alerts' as const },
+  { to: '/hunt', label: 'AI 狩猎', icon: ScanSearch },
   { to: '/incidents', label: '事件', icon: GitBranch },
   { to: '/attack', label: '攻击矩阵', icon: Crosshair },
   { to: '/report', label: '报表', icon: BarChart3 },
@@ -31,13 +32,13 @@ export const ROUTES = [
 /* 导航 IA 分组（DESIGN.md §4.2）：组标签是信息架构，不是装饰 */
 const NAV_GROUPS: Array<{ label: string; tos: string[] }> = [
   { label: '总览', tos: ['/overview'] },
-  { label: '运营', tos: ['/alerts', '/incidents', '/attack', '/report', '/hosts'] },
+  { label: '运营', tos: ['/alerts', '/hunt', '/incidents', '/attack', '/report', '/hosts'] },
   { label: '策略', tos: ['/rules', '/intel', '/allowlist'] },
   { label: '治理', tos: ['/audit', '/users'] },
 ];
 
 const TITLES: Record<string, string> = {
-  overview: '概览', alerts: '告警中心', incidents: '事件（攻击链聚类）', attack: 'ATT&CK 矩阵',
+  overview: '概览', alerts: '告警中心', hunt: 'AI 狩猎', incidents: '事件（攻击链聚类）', attack: 'ATT&CK 矩阵',
   report: '运营周报', hosts: '主机终端', rules: '检测规则', intel: '威胁情报',
   allowlist: '白名单与降噪', audit: '审计日志', users: '账号管理',
 };
@@ -46,6 +47,7 @@ const TITLES: Record<string, string> = {
 const SUBTITLES: Record<string, string> = {
   overview: '检测态势与运营指标',
   alerts: '实时检测输出 · 处置需人工确认',
+  hunt: '自然语言查告警 · 先看翻译再信结果',
   incidents: '告警聚类为攻击链 · 一个事件看全程',
   attack: '命中与覆盖两个维度 · 点击格子按技术编号下钻',
   report: 'MTTR / 误报率 / 运营周报',
