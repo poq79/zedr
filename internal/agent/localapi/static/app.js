@@ -191,7 +191,7 @@ function renderAlerts() {
   }
   $('#alertMeta').textContent = `共 ${alerts.length} 条 · 检测 ${status ? status.stats.scanned : 0} 次`;
   box.innerHTML = alerts.slice(0, 60).map((a) => `
-    <div class="alert-row" data-id="${esc(a.id)}">
+    <div class="alert-row sev-${esc(a.severity)}" data-id="${esc(a.id)}">
       <span class="badge ${esc(a.severity)}">${esc(SEV[a.severity] || a.severity)}</span>
       <span class="main-col">
         <div class="t">${esc(a.title)}</div>

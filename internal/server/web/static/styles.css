@@ -4,32 +4,74 @@
    ========================================================== */
 
 :root {
-  --bg: #0a0f1a;
-  --bg-elev: #0f1726;
-  --panel: #111b2e;
-  --panel-2: #16213a;
-  --line: #1f2b45;
-  --line-soft: #182238;
-  --text: #e6edf7;
-  --text-dim: #9aa9c2;
-  --text-faint: #6b7c99;
-  --accent: #3d8bfd;
-  --accent-2: #22d3ee;
-  --ok: #34d399;
-  --warn: #fbbf24;
-  --danger: #f87171;
-  --crit: #fb7185;
+  /* ---- 表面层次 ----
+     用"亮度差 + 极细边框"分层，而不是靠粗线条分割。
+     深色界面里，边框越粗越显廉价；靠明度阶梯才有纵深。
+     这些暗色值是给深色主题的；运行时会被下面的浅色主题块覆盖。 */
+  --bg: #070b14;
+  --bg-grad-1: rgba(61, 139, 253, .10);
+  --bg-grad-2: rgba(34, 211, 238, .06);
+
+  --surface-1: #0d1420;   /* 面板 */
+  --surface-2: #111a29;   /* 面板内卡片 */
+  --surface-3: #16202f;   /* 悬浮/选中 */
+  --surface-4: #1b2738;   /* 浮层 */
+
+  --line: rgba(148, 170, 200, .16);
+  --line-soft: rgba(148, 170, 200, .09);
+  --line-strong: rgba(148, 170, 200, .28);
+
+  --panel: var(--surface-1);
+  --panel-2: var(--surface-2);
+
+  /* ---- 文字 ----
+     四级层次：主文本 / 次级 / 弱化 / 极弱。
+     之前只有三级，导致"标签"和"辅助说明"抢同一层级。 */
+  --text: #e8eefb;
+  --text-dim: #9fb0cb;
+  --text-faint: #6c7f9c;
+  --text-ghost: #4d5f7a;
+
+  /* ---- 语义色 ----
+     危险色刻意降低饱和度：安全产品最忌讳"满屏红"，
+     那会让人对真正的红失去反应。 */
+  --accent: #4b93ff;
+  --accent-soft: rgba(75, 147, 255, .14);
+  --accent-2: #2dd4bf;
+  --ok: #3ddc97;
+  --ok-soft: rgba(61, 220, 151, .13);
+  --warn: #f0b429;
+  --warn-soft: rgba(240, 180, 41, .13);
+  --danger: #f4756b;
+  --danger-soft: rgba(244, 117, 107, .13);
+  --crit: #fb6a8b;
+  --crit-soft: rgba(251, 106, 139, .14);
   --purple: #a78bfa;
+
   --radius: 10px;
-  --shadow: 0 8px 28px rgba(0, 0, 0, .38);
-  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  --radius-sm: 7px;
+  --radius-lg: 14px;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-2: 0 6px 20px rgba(0, 0, 0, .35);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, .5);
+
+  --mono: "Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, monospace;
+
+  /* 行高与密度：紧凑模式会整体缩小，用于大屏值班场景 */
+  --row-h: 46px;
+  --gap: 16px;
 }
 
 * { box-sizing: border-box; }
 
 html, body {
   margin: 0; padding: 0; height: 100%;
-  background: var(--bg);
+  background:
+    radial-gradient(1100px 520px at 8% -8%, var(--bg-grad-1), transparent 62%),
+    radial-gradient(900px 460px at 96% 4%, var(--bg-grad-2), transparent 58%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 14px;
@@ -318,3 +360,221 @@ pre.code {
   animation: spin .7s linear infinite; display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ==========================================================
+   v0.5 视觉与运营效率增强
+   ----------------------------------------------------------
+   这一层只做两件事：
+   1) 让信息层次更清晰（表面阶梯、字号阶梯、语义色收敛）；
+   2) 提供"值班时可高效操作"的组件（队列、批量条、时间线、快捷键提示）。
+   刻意不改动既有类名的语义，避免破坏已渲染的视图。
+   ========================================================== */
+
+/* ---------------- 焦点可见性 ----------------
+   键盘操作是效率的核心。默认 outline 在深色下几乎看不见，
+   这会让"能用键盘"变成"敢用键盘"的分水岭。 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: none; }
+
+/* ---------------- 卡片与面板 ---------------- */
+.card {
+  background: linear-gradient(180deg, rgba(255,255,255,.018), transparent 120px), var(--surface-1);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+}
+.card-title { color: var(--text-dim); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+
+/* KPI 卡片：数值用等宽字形，避免位数跳动时宽度抖动 */
+.kpi .num, .kpi .value {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+.kpi:hover {
+  border-color: var(--line);
+  transform: translateY(-1px);
+  transition: transform .12s ease, border-color .12s ease;
+}
+
+/* ---------------- 表格 ----------------
+   安全运营的绝大部分时间花在表格上，因此这里的可读性投资回报最高。 */
+table { border-collapse: separate; border-spacing: 0; }
+thead th {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line-soft);
+  padding: 9px 14px;
+  position: sticky; top: 0; z-index: 2;
+}
+tbody td { padding: 11px 14px; border-bottom: 1px solid var(--line-soft); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr.clickable { transition: background .1s ease; }
+tbody tr.clickable:hover { background: var(--surface-3); }
+tbody tr.selected { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+tbody tr.selected:hover { background: rgba(75, 147, 255, .2); }
+tbody tr.focused { box-shadow: inset 2px 0 0 var(--accent-2); }
+
+/* 分值：等宽 + 右对齐，纵向扫视时数字列能形成视觉节奏 */
+td.mono, td .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* ---------------- 徽章 ----------------
+   统一尺寸与字重，避免不同徽章宽度差异过大导致列抖动 */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; line-height: 1.6;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.badge.ok    { background: var(--ok-soft);     color: var(--ok);     border-color: rgba(61,220,151,.25); }
+.badge.warn  { background: var(--warn-soft);   color: var(--warn);   border-color: rgba(240,180,41,.25); }
+.badge.crit  { background: var(--crit-soft);   color: var(--crit);   border-color: rgba(251,106,139,.28); }
+.badge.danger{ background: var(--danger-soft); color: var(--danger); border-color: rgba(244,117,107,.25); }
+.badge.info  { background: var(--accent-soft); color: var(--accent); border-color: rgba(75,147,255,.25); }
+
+/* ---------------- 按钮 ---------------- */
+.btn {
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  transition: background .12s ease, border-color .12s ease, transform .06s ease;
+}
+.btn:hover { background: var(--surface-3); border-color: var(--line-strong); }
+.btn:active { transform: translateY(1px); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #06101f; font-weight: 600; }
+.btn.primary:hover { background: #5ea0ff; border-color: #5ea0ff; }
+.btn.ghost { background: transparent; }
+.btn.ghost:hover { background: var(--surface-3); }
+
+/* ---------------- 工具栏 ---------------- */
+.toolbar { gap: 10px; flex-wrap: wrap; }
+.toolbar input[type="search"], .toolbar select {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 7px 11px;
+}
+.toolbar input[type="search"]:focus, .toolbar select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ---------------- 批量操作条 ----------------
+   出现在屏幕底部：不遮挡内容，也不随表格滚走。
+   只有真正选中行时才出现，避免常驻占位。 */
+.bulkbar {
+  position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 130%);
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  z-index: 60;
+  transition: transform .18s cubic-bezier(.2,.9,.3,1);
+}
+.bulkbar.show { transform: translate(-50%, 0); }
+.bulkbar .count { font-weight: 600; padding-right: 6px; border-right: 1px solid var(--line); margin-right: 4px; }
+
+/* ---------------- 快捷键提示 ---------------- */
+.kbd {
+  display: inline-block; min-width: 18px; text-align: center;
+  padding: 1px 5px; margin: 0 1px;
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  color: var(--text-dim);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+}
+
+/* ---------------- 实时状态点 ---------------- */
+.status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.status-dot.live { background: var(--ok); box-shadow: 0 0 0 0 rgba(61,220,151,.6); animation: pulse 2.4s infinite; }
+.status-dot.off  { background: var(--text-ghost); }
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(61,220,151,.5); }
+  70%  { box-shadow: 0 0 0 7px rgba(61,220,151,0); }
+  100% { box-shadow: 0 0 0 0 rgba(61,220,151,0); }
+}
+
+/* ---------------- 紧凑密度 ----------------
+   值班大屏上一屏能看多少行，直接决定发现速度。 */
+body.dense tbody td { padding: 6px 12px; }
+body.dense thead th { padding: 6px 12px; }
+body.dense .card { border-radius: var(--radius-sm); }
+
+/* ---------------- 事件时间线 ---------------- */
+.timeline { position: relative; padding-left: 22px; }
+.timeline::before {
+  content: ''; position: absolute; left: 6px; top: 4px; bottom: 4px;
+  width: 1px; background: linear-gradient(180deg, var(--accent), var(--line-soft));
+}
+.timeline-item { position: relative; padding: 0 0 16px 0; }
+.timeline-item::before {
+  content: ''; position: absolute; left: -20px; top: 5px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--surface-1); border: 2px solid var(--accent);
+}
+.timeline-item.sev-critical::before { border-color: var(--crit); background: var(--crit); }
+.timeline-item.sev-high::before { border-color: var(--danger); }
+.timeline-item.sev-medium::before { border-color: var(--warn); }
+.timeline-item .t-time { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
+
+/* ---------------- 证据引用徽章 ----------------
+   AI 结论里的 E1/E2 要能一眼认出"这是一个可回跳的锚点" */
+.cite {
+  display: inline-block; padding: 0 5px; border-radius: 4px;
+  font-family: var(--mono); font-size: 11px;
+  background: var(--accent-soft); color: var(--accent);
+  border: 1px solid rgba(75,147,255,.3);
+  cursor: pointer;
+}
+.cite:hover { background: rgba(75,147,255,.24); }
+
+/* ---------------- 空状态 ----------------
+   "安静"是安全产品该有的默认状态，空状态要说明"这是好事"而不是"出错了" */
+.empty {
+  color: var(--text-faint);
+  padding: 28px 16px;
+  text-align: center;
+  line-height: 1.9;
+}
+
+/* ---------------- 浮层抽屉 ---------------- */
+#drawer {
+  background: var(--surface-1);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-3);
+}
+#drawerMask { backdrop-filter: blur(2px); background: rgba(4,7,13,.62); }
+
+/* ---------------- 顶栏 ---------------- */
+.topbar, header {
+  background: rgba(13, 20, 32, .82);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* 导航项：选中用左侧竖条 + 底色，比整块高亮更克制 */
+.nav-item { border-radius: var(--radius-sm); transition: background .12s ease; }
+.nav-item:hover { background: var(--surface-2); }
+.nav-item.active {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--text);
+}
+
+/* ---------------- 滚动条 ---------------- */
+::-webkit-scrollbar-thumb { background: rgba(148,170,200,.22); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(148,170,200,.36); }

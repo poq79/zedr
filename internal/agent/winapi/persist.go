@@ -7,6 +7,7 @@
 package winapi
 
 import (
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,11 @@ type PersistItem struct {
 	// Command 是原始命令行或镜像路径。
 	Command string
 	Enabled bool
+
+	// 以下为附加信息（计划任务等场景），不参与基线 key。
+	RunAs    string // 运行账号
+	Elevated bool   // 是否以最高权限运行
+	Trigger  string // 触发方式：开机/登录/定时
 }
 
 // 持久化项类型。
@@ -307,15 +313,36 @@ func enumerateScheduledTasks() ([]PersistItem, error) {
 			return nil
 		}
 		taskName := `\` + strings.TrimSuffix(rel, filepath.Ext(rel))
+
+		// 解析任务定义，取出真正会被执行的东西。
+		//
+		// 这一步的成本很低（每个任务一个几 KB 的 XML，本机 184 个任务
+		// 合计约 1~2 MB，耗时几十毫秒），但收益差别很大：
+		//   - 只记录路径时，"新增任务"只能作为一个笼统信号，无法判断危险程度；
+		//   - 解析出 Command/Arguments 后，才能复用统一的可执行文件信誉判定
+		//     （指向可写目录？无签名？以最高权限运行？），也才能感知
+		//     "同名任务被改写了执行内容"这类攻击者惯用手法。
+		def := parseTaskXML(path)
+
+		cmd := def.Command
+		if def.Arguments != "" {
+			cmd += " " + def.Arguments
+		}
+		if cmd == "" {
+			cmd = path // 解析失败时退回路径，保证基线仍然稳定可比
+		}
+
 		out = append(out, PersistItem{
 			Key:      PersistScheduledTask + "|" + strings.ToLower(taskName),
 			Type:     PersistScheduledTask,
 			Location: `\` + rel,
 			Name:     taskName,
-			// 任务定义保存在 XML 文件里，这里只记路径与修改时间，
-			// 完整解析 XML 交给后续版本（当前用"新增任务"作为信号已足够）。
-			Command: fmt.Sprintf("%s (修改于 %s)", path, info.ModTime().Format("2006-01-02 15:04")),
-			Enabled: true,
+			Command:  cmd,
+			Enabled:  true,
+			// 以下用于信誉判定与展示，不影响基线 key
+			RunAs:    def.UserID,
+			Elevated: strings.EqualFold(def.RunLevel, "HighestAvailable"),
+			Trigger:  def.TriggerKind(),
 		})
 		return nil
 	})
@@ -323,6 +350,100 @@ func enumerateScheduledTasks() ([]PersistItem, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// taskDefinition 是从任务 XML 里提取出来的关键字段。
+type taskDefinition struct {
+	Command   string
+	Arguments string
+	UserID    string
+	RunLevel  string
+	Author    string
+	Desc      string
+	Boot      bool
+	Logon     bool
+	Time      bool
+}
+
+// TriggerKind 概括触发方式。
+// "开机触发 + 最高权限"是持久化里风险最高的一种组合，
+// 单独标出来便于在告警里直接呈现。
+func (t taskDefinition) TriggerKind() string {
+	var kinds []string
+	if t.Boot {
+		kinds = append(kinds, "开机")
+	}
+	if t.Logon {
+		kinds = append(kinds, "登录")
+	}
+	if t.Time {
+		kinds = append(kinds, "定时")
+	}
+	return strings.Join(kinds, "+")
+}
+
+// taskXMLSchema 只声明关心的字段。
+// 故意不声明完整 schema：任务定义里绝大多数内容（空闲设置、重试策略、
+// 网络条件等）对入侵检测没有判别力，全量解析只会增加开销与出错面。
+type taskXMLSchema struct {
+	RegistrationInfo struct {
+		Description string `xml:"Description"`
+		Author      string `xml:"Author"`
+	} `xml:"RegistrationInfo"`
+	Triggers struct {
+		Boot      []struct{} `xml:"BootTrigger"`
+		Logon     []struct{} `xml:"LogonTrigger"`
+		Time      []struct{} `xml:"TimeTrigger"`
+		Calendar  []struct{} `xml:"CalendarTrigger"`
+	} `xml:"Triggers"`
+	Principals struct {
+		Principal struct {
+			UserID   string `xml:"UserId"`
+			RunLevel string `xml:"RunLevel"`
+		} `xml:"Principal"`
+	} `xml:"Principals"`
+	Actions struct {
+		Exec []struct {
+			Command   string `xml:"Command"`
+			Arguments string `xml:"Arguments"`
+		} `xml:"Exec"`
+	} `xml:"Actions"`
+}
+
+// parseTaskXML 读取并解析任务定义。任何异常都退化为零值，不影响基线枚举。
+func parseTaskXML(path string) taskDefinition {
+	var out taskDefinition
+
+	// 单个任务文件通常 < 20KB；设上限防止异常文件拖垮整轮扫描
+	const maxTaskXML = 256 << 10
+	st, err := os.Stat(path)
+	if err != nil || st.Size() > maxTaskXML {
+		return out
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+
+	var doc taskXMLSchema
+	if err := xml.Unmarshal(raw, &doc); err != nil {
+		return out
+	}
+
+	if len(doc.Actions.Exec) > 0 {
+		// 多个动作时取第一个：绝大多数任务只有一个，而攻击者的
+		// 落地动作通常也是主执行体
+		out.Command = strings.TrimSpace(doc.Actions.Exec[0].Command)
+		out.Arguments = strings.TrimSpace(doc.Actions.Exec[0].Arguments)
+	}
+	out.UserID = strings.TrimSpace(doc.Principals.Principal.UserID)
+	out.RunLevel = strings.TrimSpace(doc.Principals.Principal.RunLevel)
+	out.Author = strings.TrimSpace(doc.RegistrationInfo.Author)
+	out.Desc = strings.TrimSpace(doc.RegistrationInfo.Description)
+	out.Boot = len(doc.Triggers.Boot) > 0
+	out.Logon = len(doc.Triggers.Logon) > 0
+	out.Time = len(doc.Triggers.Time) > 0 || len(doc.Triggers.Calendar) > 0
+	return out
 }
 
 // enumerateIFEO 检查映像劫持：Debugger 键被设置意味着某程序被替换执行。

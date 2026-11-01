@@ -207,3 +207,85 @@ pre.code {
   background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.3);
   color: #fcd34d; font-size: 12px; padding: 9px 13px; border-radius: 8px; margin-bottom: 14px;
 }
+
+/* ==========================================================
+   v0.5 视觉增强 —— 与管理台同一套设计语言
+   ----------------------------------------------------------
+   原则：桌面端是"扫一眼就知道机器安不安全"的界面，
+   不是管理台的缩小版。所以这里强化三件事：
+   1) 一眼可见的健康状态（顶部状态、卡片语义色）；
+   2) 告警列表的扫视效率（严重度色条、等宽数字）；
+   3) 操作反馈（按钮按压、toast 动效、焦点可见）。
+   ========================================================== */
+
+html, body {
+  background:
+    radial-gradient(900px 420px at 6% -6%, rgba(61,139,253,.09), transparent 60%),
+    radial-gradient(760px 380px at 98% 2%, rgba(34,211,238,.05), transparent 56%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* 键盘可达性：桌面端同样支持全键盘操作 */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* 顶栏毛玻璃：内容滚动时标题区仍有层次 */
+.topbar {
+  background: rgba(15, 23, 38, .85);
+  backdrop-filter: blur(10px);
+}
+
+/* 卡片：悬浮微抬 + 顶部语义色线，危险状态不靠整块染色 */
+.card { transition: transform .12s ease, border-color .12s ease; }
+.card:hover { transform: translateY(-1px); border-color: #26344f; }
+.card.crit::before, .card.warn::before, .card.ok::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+}
+.card.crit::before { background: linear-gradient(90deg, var(--crit), transparent 70%); }
+.card.warn::before { background: linear-gradient(90deg, var(--warn), transparent 70%); }
+.card.ok::before   { background: linear-gradient(90deg, var(--ok), transparent 70%); }
+
+/* 告警行：左侧严重度色条让纵向扫视时严重度一目了然，
+   不必逐行读徽章文字 */
+.alert-row { border-left: 2px solid transparent; }
+.alert-row.sev-critical { border-left-color: var(--crit); }
+.alert-row.sev-high     { border-left-color: var(--danger); }
+.alert-row.sev-medium   { border-left-color: var(--warn); }
+.alert-row:hover { background: #16213a; }
+
+/* 表格：表头字距与粘性，行悬浮过渡 */
+thead th { letter-spacing: .5px; }
+tbody tr { transition: background .1s ease; }
+
+/* 徽章统一圆角与描边，弱化"满屏色块"感 */
+.badge { border: 1px solid transparent; border-radius: 999px; }
+.badge.critical { border-color: rgba(251,113,133,.3); }
+.badge.high     { border-color: rgba(248,113,113,.26); }
+.badge.medium   { border-color: rgba(251,191,36,.26); }
+.badge.safe     { border-color: rgba(52,211,153,.24); }
+
+/* 按钮：按压反馈 */
+.btn:active { transform: translateY(1px); }
+.btn.danger:hover { background: rgba(248,113,113,.22); }
+
+/* 连接状态点：在线时轻微呼吸，一眼分辨"活着"与"卡了" */
+.conn.on .dot { animation: breathe 2.6s infinite; }
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,.35); }
+  50%      { box-shadow: 0 0 0 5px rgba(52,211,153,0); }
+}
+
+/* 抽屉进入更顺滑 + 遮罩模糊 */
+.mask.show { backdrop-filter: blur(2px); }
+.drawer { transition: transform .22s cubic-bezier(.2,.9,.3,1); box-shadow: -18px 0 48px rgba(0,0,0,.45); }
+
+/* toast 带进出动效 */
+.toast { animation: in .2s cubic-bezier(.2,.9,.3,1); }
+.toast.out { opacity: 0; transform: translateY(8px); transition: all .25s ease; }
+
+/* 静默期横幅：加图标与左侧色条，弱化突兀感 */
+.warmup { border-left: 3px solid var(--warn); display: flex; gap: 8px; align-items: center; }
+
+/* 观察列表（接近阈值）行内按钮默认弱化，悬浮才强调 */
+.alert-row .btn.sm { opacity: .75; }
+.alert-row:hover .btn.sm { opacity: 1; }

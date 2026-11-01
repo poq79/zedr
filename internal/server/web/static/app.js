@@ -179,7 +179,12 @@ const api = {
 const state = {
   user: null,
   route: 'overview',
-  alerts: { page: 1, pageSize: 20, total: 0, items: [], filters: { status: '', severity: '', verdict: '', q: '' } },
+  alerts: {
+    page: 1, pageSize: 20, total: 0, items: [],
+    filters: { status: '', severity: '', verdict: '', q: '' },
+    selected: new Set(),   // 批量处置用
+    focus: -1,             // 键盘焦点行索引
+  },
   hosts: [],
   rules: [],
   allowlist: [],
@@ -373,7 +378,10 @@ async function viewAlerts() {
       <div class="spacer"></div>
       <button class="btn sm primary" id="fApply">应用筛选</button>
       <button class="btn sm ghost" id="fReset">重置</button>
+      <button class="btn sm ghost" id="fSaveView" title="把当前筛选条件存为本机视图">保存视图</button>
+      <button class="btn sm ghost" id="helpKeys" title="查看键盘快捷键">?</button>
     </div>
+    <div class="toolbar" id="savedViews" style="margin-top:-4px"></div>
     <div class="toolbar" style="margin-top:-6px">
       <input type="search" id="aiHunt" placeholder="用一句话检索，例如：最近24小时未签名的高分告警"
              style="flex:1;min-width:280px" />
@@ -396,6 +404,11 @@ async function viewAlerts() {
     loadAlertTable();
   });
   bindAIHunt();
+  renderSavedViews();
+  const sv = $('#fSaveView');
+  if (sv) sv.addEventListener('click', saveCurrentView);
+  const hk = $('#helpKeys');
+  if (hk) hk.addEventListener('click', showShortcuts);
 
   $('#fReset').addEventListener('click', () => {
     state.alerts.filters = { status: '', severity: '', verdict: '', q: '' };
@@ -431,12 +444,14 @@ async function loadAlertTable() {
   } else {
     box.innerHTML = `<table>
       <thead><tr>
+        <th style="width:36px"><input type="checkbox" id="selAll" title="全选当前页 (a)" /></th>
         <th style="width:64px">严重度</th><th>告警</th><th style="width:150px">主机</th>
         <th style="width:200px">进程</th><th style="width:64px">分值</th>
         <th style="width:88px">状态</th><th style="width:96px">时间</th>
       </tr></thead>
-      <tbody>${state.alerts.items.map((a) => `
-        <tr class="clickable" data-id="${esc(a.id)}">
+      <tbody>${state.alerts.items.map((a, i) => `
+        <tr class="clickable ${state.alerts.selected.has(a.id) ? 'selected' : ''} ${state.alerts.focus === i ? 'focused' : ''}" data-id="${esc(a.id)}" data-idx="${i}">
+          <td><input type="checkbox" class="rowSel" data-id="${esc(a.id)}" ${state.alerts.selected.has(a.id) ? 'checked' : ''} /></td>
           <td>${sevBadge(a.severity)}</td>
           <td>
             <div style="font-weight:500">${esc(a.title)}</div>
@@ -450,9 +465,28 @@ async function loadAlertTable() {
         </tr>`).join('')}
       </tbody></table>`;
     $$('#alertTable tr[data-id]').forEach((tr) => {
-      tr.addEventListener('click', () => openAlert(tr.dataset.id));
+      tr.addEventListener('click', (e) => {
+        if (e.target && e.target.classList.contains('rowSel')) return;
+        openAlert(tr.dataset.id);
+      });
     });
+    $$('#alertTable .rowSel').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        if (cb.checked) state.alerts.selected.add(cb.dataset.id);
+        else state.alerts.selected.delete(cb.dataset.id);
+        const tr = cb.closest('tr');
+        if (tr) tr.classList.toggle('selected', cb.checked);
+        syncBulkbar();
+      });
+    });
+    const selAll = $('#selAll');
+    if (selAll) {
+      const items = state.alerts.items || [];
+      selAll.checked = items.length > 0 && items.every((a) => state.alerts.selected.has(a.id));
+      selAll.addEventListener('change', () => toggleSelectAll(selAll.checked));
+    }
   }
+  syncBulkbar();
 
   const pages = Math.max(1, Math.ceil(state.alerts.total / state.alerts.pageSize));
   $('#alertPager').innerHTML = `
@@ -460,8 +494,8 @@ async function loadAlertTable() {
     <button class="btn sm" id="prevPage" ${state.alerts.page <= 1 ? 'disabled' : ''}>上一页</button>
     <button class="btn sm" id="nextPage" ${state.alerts.page >= pages ? 'disabled' : ''}>下一页</button>`;
   const prev = $('#prevPage'), next = $('#nextPage');
-  if (prev) prev.addEventListener('click', () => { state.alerts.page--; loadAlertTable(); });
-  if (next) next.addEventListener('click', () => { state.alerts.page++; loadAlertTable(); });
+  if (prev) prev.addEventListener('click', () => { state.alerts.page--; clearSelection(); loadAlertTable(); });
+  if (next) next.addEventListener('click', () => { state.alerts.page++; clearSelection(); loadAlertTable(); });
 }
 
 /* ------------------------------------------------------------------ 告警详情抽屉 */
@@ -600,6 +634,13 @@ function renderAlertDetail(a) {
       <div class="card" style="padding:14px"><div class="tree">${ancestry}</div></div>
     </section>
 
+    <section class="block">
+      <h3>同主机事件时间线</h3>
+      <div class="card" style="padding:16px 14px 4px">
+        <div id="hostTimeline"><div class="empty small"><span class="spin"></span> 加载中…</div></div>
+      </div>
+    </section>
+
     ${net ? `<section class="block"><h3>网络连接</h3>
       <div class="card" style="padding:6px 12px 10px"><table>
         <thead><tr><th>协议</th><th>本地</th><th>远端</th><th>状态</th></tr></thead>
@@ -630,6 +671,7 @@ function renderAlertDetail(a) {
     ['open', '重新打开', 'ghost'],
   ];
   bindAITriage(a);
+  loadHostTimeline(a);
 
   $('#drawerFoot').innerHTML = canWrite
     ? `${actions.map(([st, label, cls]) =>
@@ -1084,6 +1126,10 @@ function showApp() {
 }
 
 async function boot() {
+  // 恢复上次的密度选择：值班习惯应当跨会话保留
+  if (localStorage.getItem('hg_dense') === '1') document.body.classList.add('dense');
+  installKeyboard();
+
   // 登录表单
   $('#loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1342,4 +1388,273 @@ async function runAIHunt() {
   $$('#aiHuntResult tr[data-hunt-id]').forEach((tr) => {
     tr.addEventListener('click', () => openAlert(tr.dataset.huntId));
   });
+}
+
+/* ==================================================================
+   运营效率层：批量处置 / 键盘导航 / 保存视图 / 同主机时间线
+   ------------------------------------------------------------------
+   设计依据（业界控制台的共同做法）：
+   - 分析师的时间瓶颈不是"看"，而是"重复操作"。批量与快捷键直接压缩这部分；
+   - 队列要能被保存和恢复：从调查返回时不能丢失筛选条件与位置；
+   - 从告警到动作的路径必须短：误报加白应当一次点击完成，并自动回收同指纹历史告警。
+   ================================================================== */
+
+/* ---------------- 批量操作条 ---------------- */
+function syncBulkbar() {
+  let bar = document.getElementById('bulkbar');
+  const n = state.alerts.selected.size;
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'bulkbar';
+    bar.className = 'bulkbar';
+    document.body.appendChild(bar);
+  }
+  if (n === 0) { bar.classList.remove('show'); return; }
+
+  bar.innerHTML = `
+    <span class="count">已选 ${n} 条</span>
+    <button class="btn sm" data-bulk="resolved">标记已处理</button>
+    <button class="btn sm" data-bulk="false_positive">标记误报</button>
+    <button class="btn sm ghost" data-bulk="acknowledged">确认</button>
+    <button class="btn sm ghost" id="bulkClear">取消选择 <span class="kbd">Esc</span></button>`;
+
+  bar.querySelectorAll('[data-bulk]').forEach((b) => {
+    b.addEventListener('click', () => bulkSetStatus(b.dataset.bulk));
+  });
+  const c = bar.querySelector('#bulkClear');
+  if (c) c.addEventListener('click', () => { clearSelection(); });
+  bar.classList.add('show');
+}
+
+function clearSelection() {
+  state.alerts.selected.clear();
+  state.alerts.focus = -1;
+  $$('#alertTable .rowSel').forEach((cb) => { cb.checked = false; });
+  $$('#alertTable tr[data-id]').forEach((tr) => tr.classList.remove('selected', 'focused'));
+  const selAll = $('#selAll');
+  if (selAll) selAll.checked = false;
+  syncBulkbar();
+}
+
+function toggleSelectAll(checked) {
+  const items = state.alerts.items || [];
+  if (checked) items.forEach((a) => state.alerts.selected.add(a.id));
+  else state.alerts.selected.clear();
+  $$('#alertTable .rowSel').forEach((cb) => { cb.checked = checked; });
+  $$('#alertTable tr[data-id]').forEach((tr) => tr.classList.toggle('selected', checked));
+  syncBulkbar();
+}
+
+// bulkSetStatus 批量处置。
+//
+// 逐条调用而不是新增批量接口：告警数量级很小（一页 20 条），
+// 新增一个批量端点会引入"部分成功"的状态处理，收益不抵复杂度。
+// 这里串行执行，失败时明确告知哪几条没成功。
+async function bulkSetStatus(status) {
+  const ids = Array.from(state.alerts.selected);
+  if (!ids.length) return;
+  const label = STATUS_LABEL[status] || status;
+  if (!confirm(`将 ${ids.length} 条告警标记为「${label}」？`)) return;
+
+  let ok = 0, fail = 0;
+  for (const id of ids) {
+    try {
+      await api.post(`/api/v1/alerts/${encodeURIComponent(id)}/status`, { status, note: '批量处置' });
+      ok++;
+    } catch (_) { fail++; }
+  }
+  toast(fail ? `完成 ${ok} 条，失败 ${fail} 条` : `已更新 ${ok} 条`, fail ? 'err' : 'ok');
+  clearSelection();
+  loadAlertTable();
+}
+
+/* ---------------- 键盘导航 ----------------
+   值机场景下鼠标是瓶颈：一次判断 + 一次点击 = 两次手部位移。
+   这里只做最高频的几个动作，不做全键盘化（那会变成需要记忆的负担）。 */
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
+
+function installKeyboard() {
+  document.addEventListener('keydown', (e) => {
+    // ? 随时可看帮助
+    if (e.key === '?' && !isTypingTarget(e.target)) { showShortcuts(); return; }
+
+    if (e.key === 'Escape') {
+      const drawer = $('#drawer');
+      if (drawer && drawer.classList.contains('show')) { closeDrawer(); return; }
+      if (state.alerts.selected.size) { clearSelection(); return; }
+      return;
+    }
+
+    if (isTypingTarget(e.target)) return;
+    if (state.route !== 'alerts') return;
+
+    const items = state.alerts.items || [];
+    if (!items.length) return;
+
+    switch (e.key) {
+      case 'j': moveFocus(1); e.preventDefault(); break;
+      case 'k': moveFocus(-1); e.preventDefault(); break;
+      case 'Enter': {
+        const a = items[state.alerts.focus];
+        if (a) { openAlert(a.id); e.preventDefault(); }
+        break;
+      }
+      case 'x': {
+        const a = items[state.alerts.focus];
+        if (!a) break;
+        if (state.alerts.selected.has(a.id)) state.alerts.selected.delete(a.id);
+        else state.alerts.selected.add(a.id);
+        redrawRowState();
+        e.preventDefault();
+        break;
+      }
+      case 'a':
+        toggleSelectAll(state.alerts.selected.size !== items.length);
+        e.preventDefault();
+        break;
+      case '/': {
+        const q = $('#fQ');
+        if (q) { q.focus(); q.select(); e.preventDefault(); }
+        break;
+      }
+      case 'd':
+        document.body.classList.toggle('dense');
+        localStorage.setItem('hg_dense', document.body.classList.contains('dense') ? '1' : '0');
+        toast(document.body.classList.contains('dense') ? '已切换为紧凑视图' : '已切换为标准视图');
+        e.preventDefault();
+        break;
+    }
+  });
+}
+
+function moveFocus(delta) {
+  const items = state.alerts.items || [];
+  if (!items.length) return;
+  let i = state.alerts.focus + delta;
+  if (i < 0) i = 0;
+  if (i >= items.length) i = items.length - 1;
+  state.alerts.focus = i;
+  redrawRowState();
+  const tr = document.querySelector(`#alertTable tr[data-idx="${i}"]`);
+  if (tr) tr.scrollIntoView({ block: 'nearest' });
+}
+
+function redrawRowState() {
+  const items = state.alerts.items || [];
+  $$('#alertTable tr[data-id]').forEach((tr) => {
+    const idx = Number(tr.dataset.idx);
+    tr.classList.toggle('focused', idx === state.alerts.focus);
+    tr.classList.toggle('selected', state.alerts.selected.has(tr.dataset.id));
+  });
+  $$('#alertTable .rowSel').forEach((cb) => {
+    cb.checked = state.alerts.selected.has(cb.dataset.id);
+  });
+  void items;
+  syncBulkbar();
+}
+
+function showShortcuts() {
+  const rows = [
+    ['j / k', '下一个 / 上一个告警'],
+    ['Enter', '打开详情'],
+    ['x', '选中 / 取消选中当前行'],
+    ['a', '全选当前页'],
+    ['Esc', '关闭详情 / 取消选择'],
+    ['/', '聚焦搜索框'],
+    ['d', '切换紧凑视图'],
+    ['?', '显示本帮助'],
+  ];
+  const html = `<div style="max-width:420px;padding:22px;background:var(--surface-1);border:1px solid var(--line-strong);border-radius:var(--radius-lg);box-shadow:var(--shadow-3)">
+    <div style="font-size:15px;font-weight:600;margin-bottom:14px">键盘快捷键</div>
+    <table style="width:100%">${rows.map(([k, d]) =>
+      `<tr><td style="padding:5px 0;width:96px"><span class="kbd">${k}</span></td>
+        <td style="padding:5px 0;color:var(--text-dim)">${d}</td></tr>`).join('')}
+    </table>
+    <div style="margin-top:16px;text-align:right">
+      <button class="btn sm" onclick="document.getElementById('kbdMask').remove()">关闭</button>
+    </div>
+  </div>`;
+  const mask = document.createElement('div');
+  mask.id = 'kbdMask';
+  mask.style.cssText = 'position:fixed;inset:0;background:rgba(4,7,13,.7);display:flex;align-items:center;justify-content:center;z-index:200;backdrop-filter:blur(3px)';
+  mask.innerHTML = html;
+  mask.addEventListener('click', (e) => { if (e.target === mask) mask.remove(); });
+  document.body.appendChild(mask);
+}
+
+/* ---------------- 保存视图 ----------------
+   分析师通常只关心两三种固定视角（"待处理的高危"、"误报巡查"）。
+   每次重进都要重新点一遍筛选，是每天重复几十次的浪费。 */
+const VIEW_KEY = 'hg_saved_views';
+
+function savedViews() {
+  try { return JSON.parse(localStorage.getItem(VIEW_KEY) || '[]'); } catch (_) { return []; }
+}
+
+function saveCurrentView() {
+  const f = state.alerts.filters;
+  const name = prompt('为当前筛选条件命名：', '我的视图');
+  if (!name) return;
+  const views = savedViews().filter((v) => v.name !== name);
+  views.push({ name, filters: { ...f }, pageSize: state.alerts.pageSize });
+  localStorage.setItem(VIEW_KEY, JSON.stringify(views.slice(-8)));
+  renderSavedViews();
+  toast('视图已保存');
+}
+
+function applyView(name) {
+  const v = savedViews().find((x) => x.name === name);
+  if (!v) return;
+  Object.assign(state.alerts.filters, { status: '', severity: '', verdict: '', q: '' }, v.filters);
+  state.alerts.page = 1;
+  state.alerts.selected.clear();
+  viewAlerts();
+}
+
+function renderSavedViews() {
+  const box = $('#savedViews');
+  if (!box) return;
+  const views = savedViews();
+  box.innerHTML = views.length
+    ? views.map((v) => `<button class="btn sm ghost" data-view="${esc(v.name)}">${esc(v.name)}</button>`).join('')
+    : '';
+  box.querySelectorAll('[data-view]').forEach((b) => {
+    b.addEventListener('click', () => applyView(b.dataset.view));
+  });
+}
+
+/* ---------------- 同主机时间线 ----------------
+   单个告警脱离上下文时很难判断轻重；把它放回同一台机器的事件序列里，
+   "这是一次孤立误报"还是"这是一串攻击的第 3 步"立刻就能看出来。 */
+async function loadHostTimeline(a) {
+  const box = $('#hostTimeline');
+  if (!box) return;
+  try {
+    const r = await api.get('/api/v1/alerts?page_size=30&sort=oldest&q=' + encodeURIComponent(a.hostname));
+    const items = (r.items || []).filter((x) => x.hostname === a.hostname).slice(-15);
+    if (!items.length) {
+      box.innerHTML = '<div class="empty small">该主机暂无其它告警</div>';
+      return;
+    }
+    box.innerHTML = `<div class="timeline">${items.map((x) => `
+      <div class="timeline-item sev-${esc(x.severity)}">
+        <div class="t-time">${fmtTime(x.created_at)}</div>
+        <div style="margin-top:2px">
+          <b style="cursor:pointer" data-tl="${esc(x.id)}">${esc(x.title)}</b>
+          ${x.id === a.id ? '<span class="badge info" style="margin-left:6px">当前</span>' : ''}
+        </div>
+        <div class="small muted" style="margin-top:2px">
+          ${esc(x.process_name)} · ${x.score} 分 · ${esc(VERDICT_LABEL[x.verdict] || x.verdict)}
+        </div>
+      </div>`).join('')}</div>`;
+    box.querySelectorAll('[data-tl]').forEach((el) => {
+      el.addEventListener('click', () => openAlert(el.dataset.tl));
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="empty small">加载失败：${esc(e.message)}</div>`;
+  }
 }

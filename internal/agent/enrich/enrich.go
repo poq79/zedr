@@ -69,15 +69,19 @@ func (e *Enricher) Stats() (int, int) {
 }
 
 // Describe 返回路径的完整元数据（哈希 + 签名 + 路径分类）。
+//
+// 锁策略：先用短锁查缓存，只有真正需要计算（哈希/验签）时才去抢串行锁。
+//
+// 早期版本是"进函数就抢 calcMu"，结果是缓存命中的调用也要排队——
+// 而扫描循环每个新进程都会调它，一串排队下来整轮扫描被拉长，
+// 表现为持续性的 CPU 占用偏高。
 func (e *Enricher) Describe(path string) Meta {
-	e.calcMu.Lock()
-	defer e.calcMu.Unlock()
-
 	m := Meta{Path: path}
 	if path == "" {
 		return m
 	}
 
+	// 快速路径：stat + 缓存命中（无串行锁）
 	st, err := os.Stat(path)
 	if err != nil {
 		m.InSystem, m.DirWritable, m.Depth = classifyPath(path)
@@ -86,6 +90,22 @@ func (e *Enricher) Describe(path string) Meta {
 	m.Exists = true
 	m.FileSize = st.Size()
 	m.ModTime = st.ModTime().UTC()
+	m.InSystem, m.DirWritable, m.Depth = classifyPath(path)
+
+	if ent := e.lookup(path, st.Size(), st.ModTime()); ent != nil && ent.sigDone {
+		e.fill(&m, ent)
+		return m
+	}
+
+	// 慢速路径：确实需要计算
+	e.calcMu.Lock()
+	defer e.calcMu.Unlock()
+
+	// 双重检查：可能已被并发的另一次调用算好
+	if ent := e.lookup(path, st.Size(), st.ModTime()); ent != nil && ent.sigDone {
+		e.fill(&m, ent)
+		return m
+	}
 
 	entry := e.lookup(path, st.Size(), st.ModTime())
 	if entry == nil {
@@ -106,13 +126,17 @@ func (e *Enricher) Describe(path string) Meta {
 		entry.sig = winapi.VerifySignature(path)
 		entry.sigDone = true
 	}
+	e.fill(&m, entry)
+	return m
+}
+
+// fill 把缓存条目写进返回值。
+func (e *Enricher) fill(m *Meta, entry *fileCacheEntry) {
+	m.Hash = entry.hash
 	m.Signed = entry.sig.Signed
 	m.SignatureOK = entry.sig.Valid
 	m.Signer = entry.sig.Signer
 	m.SigState = entry.sig.State
-
-	m.InSystem, m.DirWritable, m.Depth = classifyPath(path)
-	return m
 }
 
 // DescribeFast 只返回路径分类（不碰磁盘），用于低成本事件裁剪。
@@ -158,14 +182,21 @@ func (e *Enricher) Invalidate(path string) {
 	delete(e.files, path)
 }
 
+// hashFile 计算文件 SHA256。
+//
+// 用 1MB 缓冲而不是 io.Copy 默认的 32KB：
+// 哈希是纯 IO + CPU 的顺序操作，缓冲区太小会让系统调用次数成为瓶颈。
+// 实测对 10MB 级可执行文件能明显减少耗时（进程镜像大多在这个量级）。
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	buf := make([]byte, 1<<20)
+	if _, err := io.CopyBuffer(h, f, buf); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil

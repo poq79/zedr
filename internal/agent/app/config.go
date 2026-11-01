@@ -39,6 +39,9 @@ type Config struct {
 	PersistCheck time.Duration
 	// FileWatch 控制是否启用文件落地监控（落地即执行关联检测的依据）。
 	FileWatch bool
+	// AdaptiveScan 开启后，空闲时段自动降低扫描频率以节省 CPU。
+	// 代价是空闲时段漏检短命进程的概率上升；活跃时会立刻回到基础间隔。
+	AdaptiveScan bool
 	// LocalToken 是本地接口（桌面 UI 对接）的访问令牌，启动时自动生成。
 	LocalToken string
 	// RuleSignKey 非空时强制校验下发规则包的 HMAC 签名。
@@ -72,6 +75,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.HeartbeatSec = l.Int("HG_AGENT_HEARTBEAT_SEC", 30)
 	c.PersistCheck = l.Duration("HG_AGENT_PERSIST_INTERVAL", 5*time.Minute)
 	c.FileWatch = l.Bool("HG_AGENT_FILEWATCH", true)
+	c.AdaptiveScan = l.Bool("HG_AGENT_ADAPTIVE_SCAN", true)
 	c.RuleSignKey = l.Env("HG_AGENT_RULE_SIGN_KEY", "")
 
 	// 校验

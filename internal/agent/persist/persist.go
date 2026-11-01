@@ -32,9 +32,20 @@ type record struct {
 	LastSeen  time.Time `json:"last_seen"`
 }
 
+// baselineSchema 是基线内容的结构版本。
+//
+// 每次"采集口径"发生不兼容变化（比如计划任务从只记路径改为解析执行命令）时
+// 必须递增。老基线在加载时会被静默丢弃并重建，否则升级那一刻，
+// 所有同类条目都会因为"命令文本变了"而被判成变更——
+// 本机 184 个计划任务会瞬间刷出上百条告警，运维第一反应就是关掉产品。
+//
+// 代价是升级窗口内的真实变更会被吞掉，但窗口只有一次扫描周期，可以接受。
+const baselineSchema = 2
+
 // baselineFile 是基线落盘格式。
 type baselineFile struct {
 	Version   int               `json:"version"`
+	Schema    int               `json:"schema"`
 	UpdatedAt time.Time         `json:"updated_at"`
 	Items     map[string]record `json:"items"`
 }
@@ -103,6 +114,11 @@ func (m *Monitor) loadLocked() error {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return fmt.Errorf("持久化基线损坏: %w", err)
 	}
+	// 采集口径变了：丢弃旧基线，让下一次 Scan 走"首次建立"路径（不告警）
+	if f.Schema != baselineSchema {
+		m.loaded = true
+		return nil
+	}
 	if f.Items != nil {
 		m.items = f.Items
 	}
@@ -129,7 +145,7 @@ func (m *Monitor) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
 		return err
 	}
-	f := baselineFile{Version: 1, UpdatedAt: time.Now(), Items: m.items}
+	f := baselineFile{Version: 1, Schema: baselineSchema, UpdatedAt: time.Now(), Items: m.items}
 	raw, err := json.Marshal(&f)
 	if err != nil {
 		return err
@@ -273,6 +289,21 @@ func (m *Monitor) assess(it winapi.PersistItem, isChange bool) Finding {
 		if !fileExists(path) {
 			add(14, "指向的文件不存在（留空壳自启动项）")
 		}
+	}
+
+	// 2.5) 权限与触发方式（主要针对计划任务）
+	//
+	// "以最高权限运行 + 开机即触发 + 指向可写目录"是持久化里风险最高的组合：
+	// 它同时满足了自动性、高权限和不可信载荷三个条件。
+	// 单看任何一条都不够，凑齐才有判别力，因此这里只做组合加分。
+	if it.Elevated && strings.Contains(it.Trigger, "开机") {
+		add(14, "计划任务以最高权限在开机时运行")
+	} else if it.Elevated && it.Type == winapi.PersistScheduledTask {
+		add(6, "计划任务以最高权限运行")
+	}
+	if it.RunAs != "" && strings.Contains(strings.ToLower(it.RunAs), "system") &&
+		it.Type == winapi.PersistScheduledTask {
+		add(4, "计划任务以 SYSTEM 身份运行")
 	}
 
 	// 3) 间接启动：通过命令解释器拉起

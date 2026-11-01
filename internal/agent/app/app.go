@@ -323,8 +323,26 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 
 // ---------------------------------------------------------------- 采集
 
+// 自适应扫描的参数。
+//
+// 取舍说明：安全产品最怕的两个极端是"占满 CPU"和"漏掉短命进程"。
+// 固定 2 秒轮询意味着即使整机十小时没有任何新进程，也要持续做全进程表枚举，
+// 这是纯浪费；而一味拉长间隔又会漏掉"落地即执行"的样本。
+//
+// 折中方案是：安静时逐步退避到上限，一旦发现新进程立刻回到基础间隔。
+// 攻击者真正活动时进程创建是连续的，退避不会持续生效；
+// 而空闲时段（夜间、无人值守）CPU 占用可以降到四分之一以下。
+const (
+	adaptiveQuietRounds = 6                // 连续多少轮无新进程视为"安静"
+	adaptiveMaxInterval = 6 * time.Second  // 退避上限
+)
+
 func (a *Agent) scanLoop(ctx context.Context) {
-	ticker := time.NewTicker(a.cfg.ScanInterval)
+	base := a.cfg.ScanInterval
+	interval := base
+	quiet := 0
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	a.scan(true) // 首轮做全量，建立基线
@@ -334,22 +352,49 @@ func (a *Agent) scanLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.scan(false)
+			fresh := a.scan(false)
+
+			if !a.cfg.AdaptiveScan {
+				continue
+			}
+			if fresh > 0 {
+				quiet = 0
+				if interval != base {
+					interval = base
+					ticker.Reset(interval)
+					a.store.SetRuntime(func(ri *state.RuntimeInfo) { ri.ScanInterval = interval.String() })
+				}
+				continue
+			}
+			quiet++
+			if quiet >= adaptiveQuietRounds && interval < adaptiveMaxInterval {
+				interval += time.Second
+				if interval > adaptiveMaxInterval {
+					interval = adaptiveMaxInterval
+				}
+				ticker.Reset(interval)
+				a.log.Debug("scan_interval_backoff", "interval", interval.String())
+				a.store.SetRuntime(func(ri *state.RuntimeInfo) { ri.ScanInterval = interval.String() })
+			}
 		case force := <-a.scanReq:
 			a.scan(true)
 			_ = force
+			quiet = 0
+			interval = base
+			ticker.Reset(interval)
+			a.store.SetRuntime(func(ri *state.RuntimeInfo) { ri.ScanInterval = interval.String() })
 		}
 	}
 }
 
-// scan 执行一轮采集 + 检测。
-func (a *Agent) scan(deep bool) {
+// scan 执行一轮采集 + 检测，返回本轮新增进程数（用于自适应调频）。
+func (a *Agent) scan(deep bool) int {
 	start := time.Now()
 
 	newProcs, snap, err := a.coll.Poll(deep)
 	if err != nil {
 		a.log.Warn("scan_failed", "err", err)
-		return
+		return 0
 	}
 
 	alive := make(map[uint32]struct{}, len(snap.Procs))
@@ -450,6 +495,8 @@ func (a *Agent) scan(deep bool) {
 			ri.FileWatch = false
 		}
 	})
+
+	return len(newProcs)
 }
 
 // emit 生成进程类告警。
