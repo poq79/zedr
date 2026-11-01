@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, RefreshCw, Search } from 'lucide-react';
-import { api } from '../lib/api';
-import type { AgentCommand, Alert, Host, HostInventorySection, User } from '../lib/types';
+import { ArrowLeft, ChevronRight, RefreshCw, ScanSearch, Search, ShieldCheck } from 'lucide-react';
+import { api, ApiError, live, liveErrorKind } from '../lib/api';
+import type { AgentCommand, Alert, Host, HostInventorySection, LiveHash, LiveNetConn, LiveProcRow, User } from '../lib/types';
 import { relTime, fmtTime, SEV_LABEL } from '../lib/format';
 import { Badge, Button, Card, CardTitle, Input, SkeletonRows, Tabs } from '../components/ui/basics';
 import { useToast, useConfirm } from '../components/ui/overlays';
@@ -11,6 +11,8 @@ import { cn } from '../lib/utils';
 import { LiveFilesTab } from './HostLiveFiles';
 import { LiveProcsTab, LiveProbeInfo } from './HostLiveProcs';
 import { HostReconTab } from './HostReconTab';
+import { HostBaselineTab } from './HostBaselineTab';
+import { HostAccountsTab } from './HostAccountsTab';
 
 /* 主机详情（整页，/hosts/:id）。
    资产清单 7 节各有明确 schema（服务/任务/自启动动辄数百行），
@@ -28,6 +30,251 @@ const CMD_STATUS_TONE: Record<string, string> = {
 
 const num = (v: unknown) => (typeof v === 'number' ? v : Number(v) || 0);
 const str = (v: unknown) => (v == null ? '' : String(v));
+
+/* ================= 服务 / 任务 / 网络深化（LIVE-TUNNEL §13.1） ================= */
+
+/* 从服务路径或任务动作字符串里提取第一个绝对可执行路径。
+   任务动作可能是 `"C:\x\a.exe" --arg` 或 `C:\x\a.bat /c ...`；非贪婪
+   匹配到第一个扩展名即停，后面的参数不会混进哈希请求。 */
+const EXE_RE = /[A-Za-z]:\\[^"]+?\.(?:exe|dll|com|bat|cmd|ps1)/i;
+
+function extractExePath(raw: string): string {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  const quoted = s.match(/^"([^"]+?\.(?:exe|dll|com|bat|cmd|ps1))"/i);
+  if (quoted) return quoted[1].trim();
+  const m = s.match(EXE_RE);
+  return m ? m[0].trim() : '';
+}
+
+const normPath = (p: string) => (p || '').trim().replace(/^"|"$/g, '').replace(/\//g, '\\').toLowerCase();
+
+/* 用户可写（或低权限可写）位置 = 服务/任务的提权面。只做前缀/片段匹配，
+   不做文件系统 ACL 查询——后者需要现场枚举父目录，成本远高于本轮收益。 */
+const WRITABLE_RULES: { re: RegExp; label: string }[] = [
+  { re: /^[a-z]:\\users\\/i, label: 'C:\\Users 用户目录' },
+  { re: /\\windows\\temp\\/i, label: 'Windows\\Temp 临时目录' },
+  { re: /\\temp\\/i, label: 'Temp 临时目录' },
+  { re: /^[a-z]:\\programdata\\/i, label: 'ProgramData 公共目录' },
+  { re: /\\(?:\$recycle\.bin|recycler)\\/i, label: '回收站目录' },
+  { re: /\\appdata\\/i, label: 'AppData 用户配置目录' },
+  { re: /\\downloads\\/i, label: '下载目录' },
+  { re: /\\desktop\\/i, label: '桌面目录' },
+];
+
+function writableRiskLabel(path: string): string | null {
+  const p = (path || '').trim().replace(/"/g, '');
+  if (!/^[a-z]:\\/i.test(p)) return null;
+  return WRITABLE_RULES.find((r) => r.re.test(p))?.label || null;
+}
+
+const isLoopbackAddr = (addr: string) => {
+  const a = (addr || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
+  return a === '::1' || a === '127.0.0.1' || a.startsWith('127.');
+};
+
+/* 公网 IPv4：排除回环/私网/链路本地/组播/保留段；IPv6 只排除 ::/::1/
+   fe80 链路本地与 fc00::/7 唯一本地地址，其余按公网处理（保守警示）。 */
+function isPublicBind(addr: string): boolean {
+  const a = (addr || '').trim().replace(/^\[|\]$/g, '');
+  if (!a) return false;
+  if (a.includes(':')) {
+    const low = a.toLowerCase();
+    if (low === '::' || low === '::1') return false;
+    if (low.startsWith('fe80:') || low.startsWith('fc') || low.startsWith('fd')) return false;
+    return true;
+  }
+  const parts = a.split('.').map((x) => Number(x));
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [b1, b2] = parts;
+  if (b1 === 0 || b1 === 10 || b1 === 127 || b1 >= 224) return false;
+  if (b1 === 172 && b2 >= 16 && b2 <= 31) return false;
+  if (b1 === 192 && b2 === 168) return false;
+  if (b1 === 169 && b2 === 254) return false;
+  if (b1 === 100 && b2 >= 64 && b2 <= 127) return false; // CGNAT
+  return true;
+}
+
+type ProcClass = 'system' | 'third' | 'unknown';
+
+const SYSTEM_PROC = new Set([
+  'system', 'smss.exe', 'csrss.exe', 'wininit.exe', 'winlogon.exe', 'services.exe',
+  'lsass.exe', 'svchost.exe', 'spoolsv.exe', 'dwm.exe', 'fontdrvhost.exe',
+  'audiodg.exe', 'msmpeng.exe', 'nissrv.exe', 'securityhealthservice.exe', 'wudfhost.exe',
+]);
+
+const PROC_CLASS_META: Record<ProcClass, { label: string; tone: string }> = {
+  system: { label: '系统服务', tone: 'neutral' },
+  third: { label: '第三方', tone: 'medium' },
+  unknown: { label: '未知', tone: 'neutral' },
+};
+
+function classifyProc(name: string, path: string): ProcClass {
+  const n = (name || '').trim().toLowerCase();
+  const p = (path || '').trim().toLowerCase();
+  if (p && /^[a-z]:\\windows\\(?:system32|syswow64|winsxs)\\/.test(p)) return 'system';
+  if (n && SYSTEM_PROC.has(n)) return 'system';
+  if (n === '(已退出)') return 'unknown';
+  if (p || n) return 'third';
+  return 'unknown';
+}
+
+interface BindExposure { label: string; tone: string; hint: string }
+
+function exposureOf(addr: string, cls: ProcClass): BindExposure {
+  if (!addr) {
+    return { label: '绑定未知', tone: 'neutral', hint: '资产清单不含绑定地址，实时连接表也未匹配到该端口' };
+  }
+  const bare = addr.trim().replace(/^\[|\]$/g, '');
+  if (isPublicBind(bare)) {
+    return { label: '对外监听（公网）', tone: 'critical', hint: `绑定 ${addr}：可从公网直接访问，暴露面最高` };
+  }
+  if (bare === '0.0.0.0' || bare === '::') {
+    return {
+      label: '对外监听', tone: cls === 'system' ? 'neutral' : 'medium',
+      hint: `绑定 ${addr}（全部网卡）${cls === 'system' ? '；系统服务，按中性呈现' : '；非系统进程监听全部网卡'}`,
+    };
+  }
+  if (isLoopbackAddr(bare)) {
+    return { label: '仅本机', tone: 'neutral', hint: `绑定 ${addr}，仅回环可达` };
+  }
+  return {
+    label: '对外监听', tone: cls === 'system' ? 'neutral' : 'medium',
+    hint: `绑定 ${addr}（非回环地址）`,
+  };
+}
+
+/* 监听行的绑定地址：同一端口可能有 0.0.0.0 与 127.0.0.1 两条，优先展示
+   暴露面最大的那条；没有实时连接表时返回空串，由 UI 显示"绑定未知"。 */
+function pickBindAddr(conns: LiveNetConn[]): string {
+  const addrs = conns.map((c) => (c.local_ip || '').trim()).filter(Boolean);
+  return addrs.find((a) => isPublicBind(a))
+    || addrs.find((a) => a === '0.0.0.0' || a === '::')
+    || addrs.find((a) => !isLoopbackAddr(a))
+    || addrs[0]
+    || '';
+}
+
+/* 计划任务动作/触发/作者可能以对象或数组出现（后端后续版本扩展），
+   统一压成可读文本；取不到就是空串，UI 明确写"清单未包含"。 */
+function textOfValue(v: unknown): string {
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number') return String(v);
+  if (Array.isArray(v)) return v.map(textOfValue).filter(Boolean).join('；');
+  if (v && typeof v === 'object') {
+    const o = v as Row;
+    const cmd = textOfValue(o.command);
+    const args = textOfValue(o.arguments);
+    if (cmd) return [cmd, args].filter(Boolean).join(' ');
+    for (const k of ['path', 'exec', 'value', 'name', 'kind', 'type', 'description']) {
+      const t = textOfValue(o[k]);
+      if (t) return t;
+    }
+  }
+  return '';
+}
+
+function pickText(row: Row, keys: string[]): string {
+  for (const k of keys) {
+    const t = textOfValue(row[k]);
+    if (t) return t;
+  }
+  return '';
+}
+
+const START_MODE_LABEL: Record<string, string> = {
+  auto: '自动', manual: '手动', disabled: '禁用', boot: '启动', system: '系统',
+  'delayed-auto': '延迟自动', delayed: '延迟自动', unknown: '未知',
+};
+
+const AUTH_STATE_META: Record<string, { label: string; tone: string }> = {
+  valid: { label: '已签名', tone: 'resolved' },
+  unsigned: { label: '未签名', tone: 'high' },
+  distrusted: { label: '签名不受信', tone: 'critical' },
+  bad_digest: { label: '签名内容不符', tone: 'critical' },
+  expired: { label: '证书已过期', tone: 'medium' },
+  untrusted: { label: '证书链不受信', tone: 'medium' },
+  error: { label: '签名状态未知', tone: 'neutral' },
+};
+
+function hashErrNote(e: unknown): string {
+  switch (liveErrorKind(e)) {
+    case 'tunnel': return '探针隧道未连接';
+    case 'busy': return '探针忙，稍后重试';
+    case 'off': return '实时查询未启用或权限不足';
+    case 'unsupported': return '该探针版本不支持按需哈希';
+    default:
+      if (e instanceof ApiError && e.status === 404) return '文件不存在或不可访问';
+      return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/* 按需签名校验：一个按钮 + 一行结果，不缓存跨行结果（展开行各自持有状态）。
+   fs/hash 是 analyst+ 且不需要 FILEREAD 权限，见 LIVE-TUNNEL §13 契约说明。 */
+function HashCheck({ agentId, path, canLive }: { agentId: string; path: string; canLive: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<LiveHash | null>(null);
+  const [err, setErr] = useState('');
+
+  const run = async () => {
+    if (!path) return;
+    setBusy(true); setErr('');
+    try {
+      setRes(await live.hash(agentId, path));
+    } catch (e) {
+      setRes(null);
+      setErr(hashErrNote(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const meta = res ? (AUTH_STATE_META[str(res.authenticode?.state).toLowerCase()] || {
+    label: str(res.authenticode?.state) || '签名状态未知', tone: 'neutral',
+  }) : null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" variant="ghost" disabled={!canLive || !path || busy} onClick={() => void run()}
+        title={!path ? '没有可校验的绝对可执行路径' : !canLive ? '需要分析师及以上角色' : '现场计算 SHA256 并校验 Authenticode 签名'}>
+        {busy ? <RefreshCw size={13} className="anim-spin" /> : <ShieldCheck size={13} />}
+        {busy ? '校验中…' : '校验签名'}
+      </Button>
+      {!path && <span className="text-[11px] text-ghost">缺少可校验的可执行路径</span>}
+      {path && !canLive && <span className="text-[11px] text-ghost">需要分析师及以上角色</span>}
+      {err && <span className="text-[11px] break-all text-warn">{err}</span>}
+      {res && meta && (
+        <span className="flex flex-wrap items-center gap-2">
+          <Badge tone={meta.tone}>{meta.label}</Badge>
+          <span className="font-mono text-[11px] text-muted-foreground" title={res.sha256}>
+            SHA256 {res.sha256.slice(0, 16)}…
+          </span>
+          {res.authenticode?.subject && (
+            <span className="max-w-[360px] truncate text-[11px] text-faint" title={res.authenticode.subject}>
+              {res.authenticode.subject}
+            </span>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* 实时进程表关联：服务路径 → 进程路径精确匹配（同路径多实例时列出前几个）。 */
+function useLiveProcs(agentId: string, enabled: boolean) {
+  const [items, setItems] = useState<LiveProcRow[] | null>(null);
+  const [tried, setTried] = useState(false);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    setTried(false);
+    live.processes(agentId)
+      .then((r) => { if (alive) { setItems(r.items || []); setTried(true); } })
+      .catch(() => { if (alive) { setItems(null); setTried(true); } });
+    return () => { alive = false; };
+  }, [agentId, enabled]);
+  return { items, tried };
+}
 
 export function HostDetailPage({ user }: { user: User }) {
   const { id = '' } = useParams();
@@ -49,6 +296,12 @@ export function HostDetailPage({ user }: { user: User }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab') || 'overview';
   const setTab = (k: string) => setSearchParams(k === 'overview' ? {} : { tab: k }, { replace: true });
+  /* live/hash、live/processes、live/netstat 均要求 analyst+（viewer 只读到 403），
+     所以关联类请求在前端也按角色闸门，避免无意义的失败请求。 */
+  const canLive = user.role !== 'viewer';
+  /* 服务展开需要 PID 关联：只在主机已加载且服务 Tab 打开时拉一次实时进程表，
+     失败静默降级 */
+  const liveProcs = useLiveProcs(id, canLive && !!host && tab === 'services');
 
   const load = useCallback(async () => {
     try {
@@ -135,6 +388,8 @@ export function HostDetailPage({ user }: { user: User }) {
               { key: 'liveprocs', label: '实时进程' },
               { key: 'live', label: '实时文件' },
               { key: 'recon', label: '资产侦查' },
+              { key: 'baseline', label: '安全基线' },
+              { key: 'accounts', label: '账户与会话' },
               { key: 'changes', label: '变更', count: changes?.length },
               { key: 'ops', label: '处置与历史', count: cmds?.length },
             ]}
@@ -179,6 +434,12 @@ export function HostDetailPage({ user }: { user: User }) {
             {tab === 'services' && (
           <BigTable title="服务" rows={rowsOf('services')} searchKeys={['name', 'display_name', 'path_name', 'account']}
             stateKey="state" stateLabel="运行状态"
+            rowKey={(r) => `svc:${str(r.name)}`}
+            renderExpanded={(r) => (
+              <ServiceRowDetail row={r} agentId={id} canLive={canLive}
+                procs={liveProcs.items} procsTried={liveProcs.tried}
+                onOpenProcs={() => setTab('liveprocs')} />
+            )}
             columns={[
               { key: 'name', label: '服务名', mono: true },
               { key: 'display_name', label: '显示名' },
@@ -192,6 +453,8 @@ export function HostDetailPage({ user }: { user: User }) {
             {tab === 'tasks' && (
           <BigTable title="计划任务" rows={rowsOf('tasks')} searchKeys={['path', 'name']}
             stateKey="state" stateLabel="状态"
+            rowKey={(r) => `task:${str(r.path)}:${str(r.name)}`}
+            renderExpanded={(r) => <TaskRowDetail row={r} agentId={id} canLive={canLive} />}
             columns={[
               { key: 'name', label: '任务名', mono: true },
               { key: 'path', label: '路径', mono: true, truncate: true },
@@ -216,7 +479,10 @@ export function HostDetailPage({ user }: { user: User }) {
               </SectionCard>
 
               <SectionCard title="监听端口" extra={sec('listeners') && <ListenersSummary s={sec('listeners')!} />}>
-                {sec('listeners') && <ListenersTable s={sec('listeners')!} />}
+                {sec('listeners') && (
+                  <ListenersTable s={sec('listeners')!} agentId={id} canLive={canLive}
+                    onOpenRecon={() => setTab('recon')} />
+                )}
               </SectionCard>
 
               </>
@@ -230,6 +496,8 @@ export function HostDetailPage({ user }: { user: User }) {
                 openPath={liveFileTarget} onOpenPathDone={() => setLiveFileTarget(null)} />
             )}
             {tab === 'recon' && <HostReconTab agentId={id} />}
+            {tab === 'baseline' && <HostBaselineTab agentId={id} />}
+            {tab === 'accounts' && <HostAccountsTab agentId={id} />}
             {tab === 'changes' && (
               <Card className="p-4">
                 <div className="mb-2.5 flex flex-wrap items-center gap-2.5">
@@ -484,39 +752,316 @@ function ListenersSummary({ s }: { s: HostInventorySection }) {
   );
 }
 
-function ListenersTable({ s }: { s: HostInventorySection }) {
-  const rows = parseAny(s);
+interface ListenerView {
+  key: string;
+  proto: string;
+  port: number;
+  pid: number;
+  proc: string;
+  path: string;
+  addr: string;
+  user: string;
+  cls: ProcClass;
+  exposure: BindExposure;
+  conns: LiveNetConn[];
+}
+
+function ListenersTable({ s, agentId, canLive, onOpenRecon }: {
+  s: HostInventorySection; agentId: string; canLive: boolean; onOpenRecon?: () => void;
+}) {
+  const rows = useMemo(() => parseAny(s), [s]);
   const [q, setQ] = useState('');
-  const filtered: Row[] = useMemo(() => rows
-    .map((r): Row => ({ ...r, port: num(r.port), pid: num(r.pid) }))
-    .sort((x, y) => num(x.port) - num(y.port))
-    .filter((r) => !q || String(r.port).includes(q) || String(r.pid).includes(q)), [rows, q]);
+  const [conns, setConns] = useState<LiveNetConn[] | null>(null);
+  const [connTried, setConnTried] = useState(false);
+  const [openKey, setOpenKey] = useState('');
+
+  /* 资产清单的 listeners 节只有 port/pid/process，没有 bind 地址；
+     绑定地址与进程路径只能从实时连接表按 (协议, 端口, PID) join。
+     失败静默降级为"绑定未知"，不阻塞端口表本身。 */
+  useEffect(() => {
+    if (!canLive) { setConns(null); setConnTried(true); return; }
+    let alive = true;
+    setConns(null); setConnTried(false);
+    live.netstat(agentId)
+      .then((r) => { if (alive) { setConns(r.items || []); setConnTried(true); } })
+      .catch(() => { if (alive) { setConns(null); setConnTried(true); } });
+    return () => { alive = false; };
+  }, [agentId, canLive]);
+
+  const connMap = useMemo(() => {
+    const m = new Map<string, LiveNetConn[]>();
+    for (const c of conns || []) {
+      const proto = (c.proto || '').toUpperCase();
+      if (!proto) continue;
+      if (proto === 'TCP' && (c.state || '').toUpperCase() !== 'LISTEN') continue;
+      const k = `${proto}:${c.local_port}:${c.pid}`;
+      const arr = m.get(k);
+      if (arr) arr.push(c); else m.set(k, [c]);
+    }
+    return m;
+  }, [conns]);
+
+  const enriched = useMemo<ListenerView[]>(() => rows.map((r, i) => {
+    const proto = (str(r.proto) || 'TCP').toUpperCase();
+    const port = num(r.port);
+    const pid = num(r.pid);
+    const matched = connMap.get(`${proto}:${port}:${pid}`) || [];
+    const primary = matched.find((c) => c.proc_name || c.proc_path) || matched[0];
+    const proc = str(r.process) || str(r.proc_name) || primary?.proc_name || '';
+    const path = str(r.proc_path) || primary?.proc_path || '';
+    const addr = str(r.addr) || str(r.local_ip) || str(r.bind) || pickBindAddr(matched);
+    const cls = classifyProc(proc, path);
+    return {
+      key: `${proto}:${port}:${pid}:${i}`,
+      proto, port, pid, proc, path, addr,
+      user: primary?.proc_user || '',
+      cls, exposure: exposureOf(addr, cls), conns: matched,
+    };
+  }), [rows, connMap]);
+
+  const filtered = useMemo(() => [...enriched]
+    .sort((a, b) => a.port - b.port || a.pid - b.pid)
+    .filter((r) => {
+      if (!q) return true;
+      const needle = q.toLowerCase();
+      return [r.port, r.pid, r.proc, r.path, r.addr].some((v) => String(v).toLowerCase().includes(needle));
+    }), [enriched, q]);
   const page = filtered.slice(0, 60);
+
   if (!rows.length) return <div className="py-4 text-center text-[12.5px] text-faint">暂无数据</div>;
+
   return (
     <>
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <div className="relative">
           <Search size={13} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ghost" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="过滤端口 / PID" className="h-7 w-[200px] pl-7 font-mono text-[12px]" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="过滤端口 / PID / 进程"
+            className="h-7 w-[220px] pl-7 font-mono text-[12px]" />
         </div>
         <span className="text-[11px] text-faint">显示前 60 条（共 {rows.length}）</span>
+        <div className="flex-1" />
+        {!canLive ? (
+          <span className="text-[11px] text-ghost">当前角色无法读取实时连接表</span>
+        ) : !connTried ? (
+          <span className="text-[11px] text-ghost">正在匹配实时连接表…</span>
+        ) : conns === null ? (
+          <span className="text-[11px] text-ghost">实时连接表不可用，仅展示资产清单端口</span>
+        ) : null}
       </div>
-      <table className="w-full text-[12.5px]">
-        <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
-          {['协议', '端口', 'PID'].map((h) => <th key={h} className="px-3 py-2 font-semibold">{h}</th>)}
-        </tr></thead>
-        <tbody>
-          {page.map((r, i) => (
-            <tr key={i} className="border-b border-border-soft last:border-b-0">
-              <td className="px-3 py-1.5"><Badge tone={str(r.proto) === 'TCP' ? 'info' : 'neutral'}>{str(r.proto)}</Badge></td>
-              <td className="px-3 py-1.5 font-mono tabular-nums">{str(r.port)}</td>
-              <td className="px-3 py-1.5 font-mono tabular-nums text-faint">{str(r.pid) || '-'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[12.5px]">
+          <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+            <th className="w-7 px-2 py-2" aria-label="展开" />
+            {['协议', '端口', 'PID', '进程', '归类', '绑定地址', '暴露'].map((h) => (
+              <th key={h} className="px-3 py-2 font-semibold">{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {page.map((r) => {
+              const meta = PROC_CLASS_META[r.cls];
+              const open = openKey === r.key;
+              return (
+                <Fragment key={r.key}>
+                  <tr
+                    tabIndex={0}
+                    aria-expanded={open}
+                    onClick={() => setOpenKey(open ? '' : r.key)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setOpenKey(open ? '' : r.key);
+                      }
+                    }}
+                    className="cursor-pointer border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none"
+                  >
+                    <td className="px-2 py-1.5">
+                      <ChevronRight size={13} className={cn('text-ghost transition-transform duration-150', open && 'rotate-90')} />
+                    </td>
+                    <td className="px-3 py-1.5"><Badge tone={r.proto === 'TCP' ? 'info' : 'neutral'}>{r.proto || '-'}</Badge></td>
+                    <td className="px-3 py-1.5 font-mono tabular-nums">{r.port || '-'}</td>
+                    <td className="px-3 py-1.5 font-mono tabular-nums text-faint">{r.pid || '-'}</td>
+                    <td className="px-3 py-1.5">
+                      <span className="block max-w-[180px] truncate font-mono text-[11.5px]" title={r.proc || r.path || undefined}>
+                        {r.proc || '—'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5"><Badge tone={meta.tone}>{meta.label}</Badge></td>
+                    <td className="px-3 py-1.5">
+                      <span className={cn('font-mono text-[11.5px]', !r.addr && 'text-ghost')}>{r.addr || '—'}</span>
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <Badge tone={r.exposure.tone} title={r.exposure.hint}>{r.exposure.label}</Badge>
+                    </td>
+                  </tr>
+                  {open && (
+                    <tr className="border-b border-border-soft bg-secondary/20 last:border-b-0">
+                      <td colSpan={8} className="px-4 py-3">
+                        <div className="flex flex-col gap-2.5">
+                          <dl className="grid grid-cols-[84px_1fr] gap-x-3 gap-y-1.5 text-[12px]">
+                            <dt className="text-faint">进程路径</dt>
+                            <dd className="m-0 min-w-0 break-all font-mono text-[11.5px]">
+                              {r.path || <span className="font-sans text-faint">未获取（实时连接表不可用或进程已退出）</span>}
+                            </dd>
+                            <dt className="text-faint">运行账号</dt>
+                            <dd className="m-0 font-mono text-[11.5px]">{r.user || '—'}</dd>
+                            <dt className="text-faint">绑定判定</dt>
+                            <dd className="m-0 text-muted-foreground">{r.exposure.hint}</dd>
+                            {r.conns.length > 1 && (
+                              <>
+                                <dt className="text-faint">全部绑定</dt>
+                                <dd className="m-0 font-mono text-[11.5px] text-muted-foreground">
+                                  {r.conns.map((c) => c.local_ip).filter(Boolean).join('、')}
+                                </dd>
+                              </>
+                            )}
+                          </dl>
+                          <div className="flex flex-wrap items-center gap-2 border-t border-border-soft pt-2">
+                            <HashCheck agentId={agentId} path={r.path} canLive={canLive} />
+                            {onOpenRecon && (
+                              <Button size="sm" variant="ghost" onClick={onOpenRecon} title="切到资产侦查 Tab 查看该端口的业务归属">
+                                <ScanSearch size={13} /> 在资产侦查中查看
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!page.length && (
+              <tr><td colSpan={8} className="px-3 py-6 text-center text-[12.5px] text-faint">没有匹配的监听端口</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </>
+  );
+}
+
+/* ---------------- 服务 / 计划任务行展开 ---------------- */
+
+function ServiceRowDetail({ row, agentId, canLive, procs, procsTried, onOpenProcs }: {
+  row: Row; agentId: string; canLive: boolean; procs: LiveProcRow[] | null;
+  procsTried: boolean; onOpenProcs: () => void;
+}) {
+  const pathName = str(row.path_name);
+  const exePath = extractExePath(pathName) || pathName.trim();
+  const risk = writableRiskLabel(exePath);
+  const startMode = str(row.start_mode);
+  const startLabel = START_MODE_LABEL[startMode.toLowerCase()] || startMode || '—';
+
+  /* 同路径多实例（svchost 等）全部列出；只做精确路径匹配，不用服务名猜 */
+  const matched = useMemo(() => {
+    if (!procs || !exePath) return [];
+    const target = normPath(exePath);
+    return procs.filter((p) => normPath(p.path) === target);
+  }, [procs, exePath]);
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <dl className="grid grid-cols-[84px_1fr] gap-x-3 gap-y-1.5 text-[12px]">
+        <dt className="text-faint">二进制路径</dt>
+        <dd className="m-0 min-w-0 break-all font-mono text-[11.5px]">{pathName || '—'}</dd>
+        <dt className="text-faint">运行账户</dt>
+        <dd className="m-0 font-mono text-[11.5px]">{str(row.account) || '—'}</dd>
+        <dt className="text-faint">启动类型</dt>
+        <dd className="m-0">
+          {startLabel}
+          {startMode && startLabel !== startMode && <span className="ml-1.5 font-mono text-[11px] text-faint">({startMode})</span>}
+        </dd>
+        <dt className="text-faint">运行中进程</dt>
+        <dd className="m-0">
+          {!canLive ? (
+            <span className="text-faint">需要分析师及以上角色才能关联实时进程</span>
+          ) : !procsTried ? (
+            <span className="text-faint">关联实时进程表中…</span>
+          ) : !procs ? (
+            <span className="text-faint">实时进程表不可用（隧道未连接或未启用）</span>
+          ) : matched.length > 0 ? (
+            <button type="button" onClick={onOpenProcs}
+              title={matched.length > 1
+                ? '同路径有多个进程（如 svchost 共享宿主），无法仅凭路径归属到具体服务；切到实时进程 Tab 可按 PID 搜索'
+                : '切到实时进程 Tab（可在该页按 PID 搜索）'}
+              className="cursor-pointer font-mono text-[11.5px] text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              {matched.length === 1 ? 'PID ' : '同路径进程 PID '}
+              {matched.slice(0, 3).map((p) => p.pid).join('、')}
+              {matched.length > 3 ? ` 等 ${matched.length} 个` : ''} · 查看实时进程
+              {matched.length > 1 && <span className="text-faint">（共享宿主，无法归属到具体服务）</span>}
+            </button>
+          ) : (
+            <span className="text-faint">未在实时进程表找到匹配路径</span>
+          )}
+        </dd>
+        {risk && (
+          <>
+            <dt className="text-faint">路径风险</dt>
+            <dd className="m-0">
+              <Badge tone="critical" title="服务从低权限可写位置加载可执行文件，攻击者可替换文件取得服务权限">
+                可写目录中的可执行（提权面）
+              </Badge>
+              <span className="ml-2 text-[11px] text-faint">命中 {risk}</span>
+            </dd>
+          </>
+        )}
+      </dl>
+      <div className="flex flex-wrap items-center gap-2 border-t border-border-soft pt-2">
+        <HashCheck agentId={agentId} path={exePath} canLive={canLive} />
+      </div>
+    </div>
+  );
+}
+
+function TaskRowDetail({ row, agentId, canLive }: { row: Row; agentId: string; canLive: boolean }) {
+  /* 当前资产清单的 tasks 节只有 path/name/state；动作/触发/作者是后续探针
+     版本可能追加的字段，取不到就明确写"未包含"，不伪造。 */
+  const action = pickText(row, ['action', 'command', 'cmdline', 'exec', 'action_text', 'actions', 'arguments']);
+  const trigger = pickText(row, ['trigger', 'trigger_kind', 'triggers', 'schedule', 'trigger_text']);
+  const author = pickText(row, ['author', 'registration_author', 'run_as', 'account', 'user']);
+  const exePath = extractExePath(action);
+  const risk = writableRiskLabel(exePath);
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <dl className="grid grid-cols-[84px_1fr] gap-x-3 gap-y-1.5 text-[12px]">
+        <dt className="text-faint">任务路径</dt>
+        <dd className="m-0 min-w-0 break-all font-mono text-[11.5px]">{str(row.path) || '—'}</dd>
+        <dt className="text-faint">动作命令行</dt>
+        <dd className="m-0 min-w-0">
+          {action ? (
+            <pre className="m-0 rounded-md border border-border-soft bg-[var(--code-bg)] p-2.5 font-mono text-[11.5px] leading-[1.7] break-all whitespace-pre-wrap text-[var(--code-fg)]">{action}</pre>
+          ) : (
+            <span className="text-faint">当前资产清单未包含动作详情（仅有任务名/路径/状态）</span>
+          )}
+        </dd>
+        {exePath && (
+          <>
+            <dt className="text-faint">可执行路径</dt>
+            <dd className="m-0 min-w-0 break-all font-mono text-[11.5px]">{exePath}</dd>
+          </>
+        )}
+        {risk && (
+          <>
+            <dt className="text-faint">路径风险</dt>
+            <dd className="m-0">
+              <Badge tone="critical" title="计划任务从低权限可写位置执行可执行文件，攻击者可替换文件取得任务权限">
+                可写目录中的可执行（提权面）
+              </Badge>
+              <span className="ml-2 text-[11px] text-faint">命中 {risk}</span>
+            </dd>
+          </>
+        )}
+        <dt className="text-faint">触发方式</dt>
+        <dd className="m-0">{trigger || '—'}</dd>
+        <dt className="text-faint">作者</dt>
+        <dd className="m-0">{author || '—'}</dd>
+      </dl>
+      <div className="flex flex-wrap items-center gap-2 border-t border-border-soft pt-2">
+        <HashCheck agentId={agentId} path={exePath} canLive={canLive} />
+        {!action && <span className="text-[11px] text-ghost">动作路径缺失时签名校验不可用</span>}
+      </div>
+    </div>
   );
 }
 
@@ -526,13 +1071,18 @@ const KIND_LABEL: Record<string, string> = {
 
 interface Col { key: string; label: string; mono?: boolean; truncate?: boolean; badge?: boolean; tone?: (v: unknown) => string; labelMap?: Record<string, string> }
 
-/** 大行数表：搜索 + 状态过滤 + 分页（服务 247 / 任务 187 / 自启动 422 行实测） */
-function BigTable({ title, rows, columns, searchKeys, stateKey, stateLabel, kindLabel }: {
+/** 大行数表：搜索 + 状态过滤 + 分页（服务 247 / 任务 187 / 自启动 422 行实测）。
+    renderExpanded 存在时每行可点击/回车展开：首列加箭头，展开内容作为
+    下一行整宽插入（不弹抽屉，保持既有排查动线）。 */
+function BigTable({ title, rows, columns, searchKeys, stateKey, stateLabel, kindLabel, rowKey, renderExpanded }: {
   title: string; rows: Row[]; columns: Col[]; searchKeys: string[]; stateKey: string; stateLabel: string; kindLabel?: boolean;
+  rowKey?: (r: Row) => string;
+  renderExpanded?: (r: Row) => React.ReactNode;
 }) {
   const [q, setQ] = useState('');
   const [state, setState] = useState('');
   const [page, setPage] = useState(1);
+  const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
   const PAGE = 50;
 
   const states = useMemo(() => Array.from(new Set(rows.map((r) => str(r[stateKey])).filter(Boolean))).sort(), [rows, stateKey]);
@@ -550,6 +1100,8 @@ function BigTable({ title, rows, columns, searchKeys, stateKey, stateLabel, kind
   const view = filtered.slice((cur - 1) * PAGE, cur * PAGE);
 
   if (!rows.length) return null;
+
+  const toggle = (id: string) => setOpenRows((v) => ({ ...v, [id]: !v[id] }));
 
   return (
     <Card className="p-4">
@@ -570,21 +1122,52 @@ function BigTable({ title, rows, columns, searchKeys, stateKey, stateLabel, kind
       <div className="overflow-x-auto">
         <table className="w-full text-[12.5px]">
           <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+            {renderExpanded && <th className="w-7 px-2 py-2" aria-label="展开" />}
             {columns.map((c) => <th key={c.key} className="px-3 py-2 font-semibold">{c.label}</th>)}
           </tr></thead>
           <tbody>
-            {view.map((r, i) => (
-              <tr key={i} className="border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary">
-                {columns.map((c) => (
-                  <td key={c.key} className="px-3 py-1.5">
-                    {c.badge
-                      ? <Badge tone={c.tone ? c.tone(r[c.key]) : 'neutral'}>{c.labelMap ? (c.labelMap[str(r[c.key])] || str(r[c.key])) : (str(r[c.key]) || '-')}</Badge>
-                      : <span className={cn('block', c.mono && 'font-mono text-[11.5px]', c.truncate && 'max-w-[320px] truncate text-faint')} title={str(r[c.key])}>{str(r[c.key]) || '-'}</span>}
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {!view.length && <tr><td colSpan={columns.length} className="px-3 py-6 text-center text-[12.5px] text-faint">没有匹配的行</td></tr>}
+            {view.map((r, i) => {
+              const rid = rowKey ? rowKey(r) : `${cur}:${i}`;
+              const open = !!renderExpanded && !!openRows[rid];
+              return (
+                <Fragment key={`${rid}:${i}`}>
+                  <tr
+                    tabIndex={renderExpanded ? 0 : undefined}
+                    aria-expanded={renderExpanded ? open : undefined}
+                    onClick={renderExpanded ? () => toggle(rid) : undefined}
+                    onKeyDown={renderExpanded ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggle(rid);
+                      }
+                    } : undefined}
+                    className={cn(
+                      'border-b border-border-soft transition-colors',
+                      renderExpanded ? 'cursor-pointer hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none' : 'last:border-b-0 hover:bg-secondary',
+                    )}
+                  >
+                    {renderExpanded && (
+                      <td className="px-2 py-1.5">
+                        <ChevronRight size={13} className={cn('text-ghost transition-transform duration-150', open && 'rotate-90')} />
+                      </td>
+                    )}
+                    {columns.map((c) => (
+                      <td key={c.key} className="px-3 py-1.5">
+                        {c.badge
+                          ? <Badge tone={c.tone ? c.tone(r[c.key]) : 'neutral'}>{c.labelMap ? (c.labelMap[str(r[c.key])] || str(r[c.key])) : (str(r[c.key]) || '-')}</Badge>
+                          : <span className={cn('block', c.mono && 'font-mono text-[11.5px]', c.truncate && 'max-w-[320px] truncate text-faint')} title={str(r[c.key])}>{str(r[c.key]) || '-'}</span>}
+                      </td>
+                    ))}
+                  </tr>
+                  {open && (
+                    <tr className="border-b border-border-soft bg-secondary/20">
+                      <td colSpan={columns.length + 1} className="px-4 py-3">{renderExpanded!(r)}</td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!view.length && <tr><td colSpan={columns.length + (renderExpanded ? 1 : 0)} className="px-3 py-6 text-center text-[12.5px] text-faint">没有匹配的行</td></tr>}
           </tbody>
         </table>
       </div>

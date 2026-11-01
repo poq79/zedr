@@ -242,6 +242,18 @@ export const live = {
       `/api/v1/hosts/${encodeURIComponent(agentId)}/live/recon${q.length ? `?${q.join('&')}` : ''}`,
     );
   },
+
+  /* ---- 主机详情深化 v1（LIVE-TUNNEL.md §13，F5）---- */
+  /** 安全基线：10 项注册表/系统状态只读检查（analyst+） */
+  baseline: (agentId: string) =>
+    liveJSON<import('./types').LiveBaseline>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/baseline`,
+    ),
+  /** 账户与会话：本地账户表 + 密码策略（analyst+） */
+  accounts: (agentId: string) =>
+    liveJSON<import('./types').LiveAccounts>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/accounts`,
+    ),
 };
 
 /** 隧道错误分类：供 UI 层映射专用状态（状态条/Toast/内联说明） */

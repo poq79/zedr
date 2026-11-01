@@ -434,3 +434,60 @@ export interface ReconResult {
   truncated?: boolean;
   categories?: ReconCategory[];
 }
+
+/* ---- 主机详情深化 v1（docs/LIVE-TUNNEL.md §13，第四轮 F5）----
+   两个新 Tab 的契约镜像；字段名逐字对齐，状态枚举只认四档。 */
+
+export type BaselineStatus = 'pass' | 'warn' | 'fail' | 'info';
+
+/** 单个基线检查项：status=info 表示读取失败/无法判断（不猜测） */
+export interface BaselineItem {
+  key: string;
+  title: string;
+  status: BaselineStatus;
+  current: string;
+  recommended: string;
+  evidence: string;
+}
+
+/** info 不进入 pass/warn/fail，但 total 恒等于 items 长度 */
+export interface BaselineScore {
+  pass: number;
+  warn: number;
+  fail: number;
+  total: number;
+}
+
+/** GET /hosts/{id}/live/baseline —— 10 项只读安全检查（§13.2） */
+export interface LiveBaseline {
+  generated_at?: string;
+  score: BaselineScore;
+  items: BaselineItem[];
+}
+
+/** 本地账户行；last_logon_unix=0 表示从未登录/无记录 */
+export interface AccountUser {
+  name: string;
+  sid: string;
+  disabled: boolean;
+  password_never_expires: boolean;
+  password_age_days: number;
+  last_logon_unix: number;
+  comment: string;
+  is_admin: boolean;
+}
+
+/** 本地密码策略；0 值表示未配置/不限制（前端显示为 —） */
+export interface AccountPolicy {
+  min_password_length: number;
+  max_age_days: number;
+  lockout_threshold: number;
+}
+
+/** GET /hosts/{id}/live/accounts —— 账户与会话（§13.3） */
+export interface LiveAccounts {
+  generated_at?: string;
+  users: AccountUser[];
+  administrators: string[];
+  policy: AccountPolicy;
+}
