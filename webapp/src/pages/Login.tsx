@@ -47,13 +47,13 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
     // 分屏登录（Vercel/Linear auth 模式）：左品牌叙事 · 右极简表单，蓝图见 webapp/DESIGN.md §4.1
     <div className="fixed inset-0 z-100 flex bg-background">
       {/* 左屏：恒暗品牌面板（双主题不变，身份识别） */}
-      <div className="relative hidden w-[46%] shrink-0 flex-col justify-between overflow-hidden border-r border-border-soft bg-[#05080f] p-10 lg:flex">
+      <div className="relative hidden w-[46%] shrink-0 flex-col justify-between overflow-hidden border-r border-border-soft bg-[#08080a] p-10 lg:flex">
         {/* 蓝图网格纹理：全站唯一允许的装饰纹理，44px 仪器网格 */}
         <div
           className="pointer-events-none absolute inset-0"
           style={{
             backgroundImage:
-              'linear-gradient(rgba(148,170,200,.07) 1px, transparent 1px), linear-gradient(90deg, rgba(148,170,200,.07) 1px, transparent 1px)',
+              'linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px)',
             backgroundSize: '44px 44px',
           }}
         />
@@ -67,7 +67,7 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
             看见主机上每一次进程的<br />落地与执行。
           </h2>
           {/* 管线叙事母题：五层检测的真实事实，禁止换成营销话术 */}
-          <div className="mt-7 max-w-[430px] rounded-md border border-border-soft bg-[#0a101c] p-4 font-mono text-[12px] leading-[2.1]">
+          <div className="mt-7 max-w-[430px] rounded-md border border-border-soft bg-[#121214] p-4 font-mono text-[12px] leading-[2.1]">
             <div className="mb-1.5 text-[10px] tracking-[1.2px] text-faint">DETECTION PIPELINE · 五层检测流水线</div>
             {[
               ['[1/5 指纹]', '进程静态画像 · 签名 / 路径 / 哈希'],
