@@ -119,31 +119,24 @@ CPU 0.20% · 内存 11.9 MB · 平均单进程检测 32~47 ms · 快照 7.7 ms �
 
 ---
 
-## 4. 受控验证（不下载任何外部载荷）
+## 4. 自测结果
+
+完整报告见 [`docs/TEST-REPORT.md`](docs/TEST-REPORT.md)。要点：
+
+- **攻击场景 14 例**：检出 9 例，2 例不可观测（EICAR 无法执行 / 极短命进程），
+  3 例为单弱信号（`-enc`、`schtasks /create`、`reg add`）——刻意的降噪取舍，非缺陷
+- **稳态误报**：本机 256 个真实进程里仅 1 个越过可疑阈值（桌面上的未签名 GUI 工具）
+- **性能**：CPU 0.22%、内存 16MB、单进程检测 26ms、服务端接入 871 条/秒
+- 测试中发现并修复 6 个真实缺陷，详见报告第五章
 
 ```bash
-bash scripts/simulate_detection.sh
+bash scripts/simulate_detection.sh    # 最小验证（4 个场景，约 40 秒）
+python scripts/scenarios.py all       # 完整评估（场景 + 误报 + 性能 + 压测）
+python scripts/scenarios.py fp        # 只看误报面
 ```
 
-该脚本只用**本机自造样本**验证检测链路，安全边界明确：
-
-- 复制自己的 `hgdiag.exe` 改名为 `svchost.exe` / `nmap.exe`（内容是自己的诊断工具，零风险）
-- 用 `echo` + 回环 `ping` 构造可疑命令行（不执行任何实际操作）
-- 用行业标准 EICAR 测试串验证静态哈希层（该字符串不含可执行代码）
-
-实测结果：
-
-| 样本 | 命中 | 结论 | 分值 |
-|---|---|---|---|
-| `%TEMP%\svchost.exe` | HG-016 | 可疑（伪装系统进程） | 68 |
-| `%TEMP%\nmap.exe` | N-009 + HG-019 + HG-021 | 恶意 | 98 |
-| `cmd /c echo wevtutil cl ...` | K-022 / HG-034 | 恶意 | 83 |
-| `chfsgui.exe`（本机真实未签名应用） | HG-021 + HG-031 | 可疑 | 55 |
-
-> 脚本给样本进程加了 `-hold 12s`：探针默认 2 秒一轮轮询，而这类诊断进程本身只活 1–2 秒，
-> 不加保活会偶发漏检。这正说明"用户态轮询存在 TOCTOU 盲区"，也是换 ETW 的直接理由。
->
-> 告警经服务端入库后，会通过 SSE 实时推送到管理台（已实测 `event: alert` 帧携带完整告警负载）。
+> 判定口径：直接读引擎给出的 `score / verdict / suppressed`，而不是"有没有新告警"。
+> 这样才能区分"真漏检"和"检出但被去重抑制"。
 
 ---
 
