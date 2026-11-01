@@ -218,6 +218,27 @@ CPU 0.20% · 内存 11.9 MB · 平均单进程检测 32~47 ms · 快照 7.7 ms �
 | **主机资产清单** | osquery 式 7 节遥测（system/adapters/listeners/services/tasks/startup/agent），探针 30s 差量上报（节级 sha256 去重），`GET /api/v1/hosts/{id}/inventory` | `HG_AGENT_INVENTORY` 默认开，纯元数据（不采文件内容/流量内容）|
 | **资产变更告警** | 新服务/新计划任务/新监听端口/新启动项 → 签名富化定级 → ATT&CK 映射 → 进告警管线（AI 研判/Webhook/Syslog 全兼容） | 首轮快照只建基线；每轮事件数封顶 |
 
+### 实时隧道与 LiveFS（v0.9.7 起）
+
+对标 CrowdStrike RTR / Defender Live Response 的实时调查通道：探针维持
+**零监听、纯出站**的长连接（HTTP/1.1 升级 + yamux 复用，详见
+[docs/LIVE-TUNNEL.md](docs/LIVE-TUNNEL.md)），管理台经服务端代理实时查询
+终端进程/连接/文件系统——分析师不用再等 30s 心跳或离线清单：
+
+| 能力 | 端点（`/api/v1/hosts/{id}/live/...`） | 安全默认 |
+|---|---|---|
+| 探活（真·在线 + RTT） | `ping` | viewer+；总开关 `HG_SERVER_LIVEQUERY_ENABLED` 默认开 |
+| 实时进程表 | `processes` | analyst+ |
+| 实时 TCP/UDP 连接（带 PID 进程归属） | `netstat` | analyst+ |
+| 文件浏览（目录枚举/元数据） | `fs` `fs/stat` | analyst+ |
+| 文件哈希（SHA256+Authenticode） | `fs/hash` | analyst+ |
+| 文件内容预览（≤512KB/次） | `fs/read` | **默认关**（`HG_SERVER_LIVEQUERY_FILEREAD`，与处置类同纪律）|
+
+护栏：RBAC（analyst+）+ 每请求审计（operator/端点/耗时，`host.live_query`）
++ 每 agent 并发闸（4 在途，超限 429）+ 端点级超时预算（5~30s）+ 隧道内
+只读白名单 mux（无 CONNECT/端口转发/写方法）。探针离线时管理端得
+503 `tunnel_not_connected`，前端降级提示；心跳/指令/上报链路完全不受影响。
+
 ### 双视角打磨（v0.8）
 
 **普通用户**：告警自带「给你的说明」（发生了什么/意味着什么/建议你）；
@@ -355,6 +376,9 @@ hostguard/
 | POST | `/api/v1/alerts/{id}/status` | analyst+ |
 | GET | `/api/v1/hosts` `/hosts/{id}` `/hosts/{id}/inventory` | viewer+ |
 | POST | `/api/v1/hosts/{id}/commands` | analyst+ |
+| GET | `/api/v1/hosts/{id}/live/ping` | viewer+ |
+| GET | `/api/v1/hosts/{id}/live/{fs,fs/stat,fs/hash,fs/read,processes,netstat}` | analyst+（`fs/read` 受 FILEREAD 子开关）|
+| GET | `/api/v1/agent/tunnel` | 探针专用（隧道升级，API-Key）|
 | GET | `/api/v1/attack/matrix`（`?days=`）| viewer+ |
 | GET/POST/DELETE | `/api/v1/iocs` | viewer / analyst+ |
 | GET/POST | `/api/v1/rules`、`/rules/{id}/toggle` | viewer / analyst+ |
