@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { KeyRound, Monitor, Plus, RefreshCw, ShieldCheck } from 'lucide-react';
+import { KeyRound, Monitor, Plus, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Host, AllowEntry, AuditRow, User as UserRow, Severity, Role, IntegrityReport, Incident, Burst } from '../lib/types';
 import { SEV_LABEL, relTime, fmtTime } from '../lib/format';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
-import { useToast, useConfirm } from '../components/ui/overlays';
+import { Drawer, useToast, useConfirm } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
 
@@ -433,6 +433,25 @@ const INCIDENT_STATUS_TONE: Record<string, string> = {
   open: 'critical', investigating: 'medium', contained: 'info', resolved: 'resolved',
 };
 
+/* ---- 事件级 AI 检测：攻击链叙事的数据契约（对应 /api/v1/incidents/{id}/narrative） ---- */
+interface NarrativePhase {
+  name: string; tactic: string; tactic_id: string;
+  alerts: string[]; description: string;
+}
+interface NarrativeAction { type: string; target: string; detail: string; requires_approval: boolean }
+interface IncidentNarrative {
+  summary: string; risk_score: number;
+  phases: NarrativePhase[]; missing_phases?: string[]; coverage?: string[];
+  actions?: NarrativeAction[];
+  grounded: boolean; uncited: number; untrusted_ignored: number;
+  model: string; engine: string; latency_ms: number;
+  degraded: boolean; degraded_reason?: string;
+}
+interface IncidentNarrativeView {
+  incident_id: string; hostname: string; alert_total: number;
+  narrative: IncidentNarrative; generated_at: string;
+}
+
 export function IncidentsPage({ user }: { user?: { role: Role } }) {
   const err = useError();
   const toast = useToast();
@@ -442,6 +461,9 @@ export function IncidentsPage({ user }: { user?: { role: Role } }) {
   const [tick, setTick] = useState(0);
   const [status, setStatus] = useState('');
   const [busyId, setBusyId] = useState('');
+  const [narr, setNarr] = useState<IncidentNarrativeView | null>(null);
+  const [narrOpen, setNarrOpen] = useState(false);
+  const [narrBusy, setNarrBusy] = useState('');
   const canWrite = !user || user.role !== 'viewer';
 
   useEffect(() => {
@@ -488,6 +510,26 @@ export function IncidentsPage({ user }: { user?: { role: Role } }) {
       setTick((t) => t + 1);
     } catch (e) { toast((e as Error).message, 'err'); }
     finally { setBusyId(''); }
+  };
+
+  /* AI 攻击链：有缓存直接开；没有则确认后生成（可能触发模型调用）。 */
+  const openNarrative = async (it: Incident) => {
+    setNarrBusy(it.id);
+    try {
+      const cached = await api.get<IncidentNarrativeView | null>(`/api/v1/incidents/${encodeURIComponent(it.id)}/narrative`);
+      setNarrBusy('');
+      if (cached) { setNarr(cached); setNarrOpen(true); return; }
+      const ok = await confirm({
+        title: '生成 AI 攻击链叙事？',
+        message: '将把本事件的多条告警按时间线重建为攻击链（阶段 / 风险 / 缺失环节）。配置模型时会调用一次模型并消耗 token；未配置时由确定性引擎完成。',
+        okText: '生成',
+      });
+      if (!ok) return;
+      setNarrBusy(it.id);
+      const v = await api.post<IncidentNarrativeView>(`/api/v1/incidents/${encodeURIComponent(it.id)}/narrate`, {});
+      setNarr(v); setNarrOpen(true);
+    } catch (e) { toast((e as Error).message, 'err'); }
+    finally { setNarrBusy(''); }
   };
 
   return (
@@ -546,6 +588,9 @@ export function IncidentsPage({ user }: { user?: { role: Role } }) {
                 </div>
               </div>
               <Button size="sm" variant="ghost" onClick={() => navigate(`/alerts?q=${encodeURIComponent(it.hostname)}`)}>该主机告警</Button>
+              <Button size="sm" disabled={narrBusy === it.id} onClick={() => openNarrative(it)}>
+                <Sparkles size={12} /> {narrBusy === it.id ? '重建中…' : 'AI 攻击链'}
+              </Button>
             </div>
             <div className="mt-3 flex flex-wrap gap-1.5">
               {(it.processes || []).slice(0, 6).map((p, i) => <Badge key={`p${i}`} tone="neutral" title="进程">{p}</Badge>)}
@@ -566,6 +611,80 @@ export function IncidentsPage({ user }: { user?: { role: Role } }) {
           </Card>
         );
       })}
+
+      {/* AI 攻击链叙事抽屉（事件级检测 L6） */}
+      <Drawer open={narrOpen} onClose={() => setNarrOpen(false)} width={720}
+        title="AI 攻击链叙事"
+        sub={narr ? `${narr.hostname} · ${narr.alert_total} 条告警 · ${narr.narrative.engine === 'llm' ? 'LLM 引擎' : '确定性重建'}` : ''}
+        foot={narr && (
+          <>
+            <Button variant="ghost" onClick={() => setNarrOpen(false)}>关闭</Button>
+            <Button variant="primary" disabled={narrBusy === narr.incident_id}
+              onClick={() => { const it = items.find((x) => x.id === narr.incident_id); if (it) { setNarrOpen(false); setTimeout(() => openNarrative(it), 120); } }}>
+              <RefreshCw size={12} /> 重新生成
+            </Button>
+          </>
+        )}>
+        {narr && (
+          <div>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <Badge tone={narr.narrative.risk_score >= 70 ? 'critical' : narr.narrative.risk_score >= 40 ? 'high' : 'medium'}>
+                风险 {narr.narrative.risk_score}
+              </Badge>
+              {narr.narrative.grounded
+                ? <Badge tone="online">阶段全部可溯源</Badge>
+                : <Badge tone="medium">{narr.narrative.uncited} 个阶段无引用</Badge>}
+              {narr.narrative.untrusted_ignored > 0 && <Badge tone="high">注入已隔离 ×{narr.narrative.untrusted_ignored}</Badge>}
+              {narr.narrative.degraded && <Badge tone="medium">降级：{narr.narrative.degraded_reason || '确定性重建'}</Badge>}
+              <span className="text-[11px] text-faint">{narr.narrative.model || 'heuristic'} · {narr.narrative.latency_ms}ms · {relTime(narr.generated_at)}</span>
+            </div>
+            <p className="mb-4 text-[13px] leading-[1.8] text-foreground">{narr.narrative.summary}</p>
+
+            <CardTitle className="mb-2">攻击链阶段（按 ATT&CK 战术顺序）</CardTitle>
+            <div className="mb-4 grid gap-2">
+              {narr.narrative.phases.map((p, i) => (
+                <div key={`${p.tactic_id}-${i}`} className="rounded-lg border border-border-soft bg-secondary/40 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="grid h-5 w-5 place-items-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">{i + 1}</span>
+                    <b className="text-[12.5px] text-foreground">{p.name}</b>
+                    <Badge tone="info">{p.tactic}{p.tactic_id ? ` · ${p.tactic_id}` : ''}</Badge>
+                    <Badge tone="neutral">{p.alerts.length} 条告警</Badge>
+                  </div>
+                  <p className="mt-1.5 text-[12px] leading-[1.7] text-muted-foreground">{p.description}</p>
+                  {!!p.alerts.length && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {p.alerts.slice(0, 8).map((id) => (
+                        <span key={id} className="rounded border border-border-soft px-1.5 py-0.5 font-mono text-[10.5px] text-ghost" title="证据告警 ID">{id}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {!!narr.narrative.missing_phases?.length && (
+              <div className="mb-3 text-[12px] text-faint">
+                未观测到：{narr.narrative.missing_phases.join('、')}（可能已发生但未被检出，或尚未发生）
+              </div>
+            )}
+
+            {!!narr.narrative.actions?.length && (
+              <div>
+                <CardTitle className="mb-2">建议动作（全部需人工确认）</CardTitle>
+                <div className="grid gap-1.5">
+                  {narr.narrative.actions.map((a, i) => (
+                    <div key={i} className="flex flex-wrap items-center gap-2 text-[12px]">
+                      <Badge tone="medium">{a.type}</Badge>
+                      <span className="font-mono text-[11.5px]">{a.target}</span>
+                      <span className="text-muted-foreground">{a.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Drawer>
     </div>
   );
 }

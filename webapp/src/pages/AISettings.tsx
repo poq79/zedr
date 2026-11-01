@@ -48,6 +48,9 @@ interface EvalMetrics {
   approval_violations: number; injection_total: number; injection_intercepted: number;
   injection_flips: number; scanner_false_pos: number;
   avg_latency_ms: number; p95_latency_ms: number; degraded: number; errors: number;
+  narrative_total?: number; narrative_grounded_rate?: number;
+  narrative_tactic_coverage?: number; narrative_risk_ok?: number;
+  narrative_injection_flips?: number;
 }
 interface EvalFailure { id: string; suite: string; expected: string; actual: string; why: string }
 interface EvalRun {
@@ -59,8 +62,12 @@ const SLOT_META: Record<string, { label: string; desc: string }> = {
   triage: { label: '研判', desc: '告警研判：逐条结论带证据引用' },
   hunt: { label: '狩猎', desc: '自然语言查告警，翻译为受控查询' },
   investigate: { label: '调查', desc: '自动调查编排' },
+  narrative: { label: '叙事', desc: '事件级攻击链重建（长上下文，可单独配强模型）' },
 };
-const SLOT_KEYS = ['triage', 'hunt', 'investigate'];
+const SLOT_KEYS = ['triage', 'hunt', 'investigate', 'narrative'];
+
+interface SlotStat { calls: number; avg_ms: number }
+interface EngineStats { slots?: Record<string, SlotStat>; narrated?: number; triaged?: number }
 
 /* 槽位前端草稿：主面（enabled/model/effort）+ 高级覆盖。
    key_draft 是正在输入的新密钥（空=保留旧值）；clear_key 标记删除已存密钥。 */
@@ -293,16 +300,19 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
 
   const [lastEval, setLastEval] = useState<EvalRun | null>(null);
   const [evalRunning, setEvalRunning] = useState<string | null>(null);
+  const [engineStats, setEngineStats] = useState<EngineStats | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [c, p, s, e] = await Promise.all([
+      const [c, p, s, e, st] = await Promise.all([
         api.get<AIConfigView>('/api/v1/ai/config'),
         api.get<Record<string, AIPrompt>>('/api/v1/ai/prompts'),
         api.get<AISkill[]>('/api/v1/ai/skills'),
         api.get<EvalRun | null>('/api/v1/ai/eval/last'),
+        api.get<{ stats?: EngineStats }>('/api/v1/ai/stats'),
       ]);
       setLastEval(e);
+      setEngineStats(st.stats || null);
       setCfg(c);
       setProviderKeyDraft('');
       setProviderClearKey(false);
@@ -474,6 +484,16 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
         {cfg?.engine !== 'llm' && (
           <span className="text-faint">未配置模型时所有 AI 功能照常可用，结论由确定性引擎给出并标注。</span>
         )}
+        {engineStats?.slots && Object.keys(engineStats.slots).length > 0 && (
+          <span className="ml-auto flex flex-wrap items-center gap-2 text-[11px] text-faint">
+            <span>按能力用量：</span>
+            {Object.entries(engineStats.slots).map(([slot, st]) => (
+              <span key={slot} className="font-mono">
+                {SLOT_META[slot]?.label || slot} {st.calls}次/{st.avg_ms}ms
+              </span>
+            ))}
+          </span>
+        )}
       </div>
 
       {/* 统一服务接入 + 任务槽位 */}
@@ -556,6 +576,16 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
               <EvalCell label="可溯源率" v={`${(lastEval.metrics.grounded_rate * 100).toFixed(0)}%`} />
               <EvalCell label="平均延迟" v={`${lastEval.metrics.avg_latency_ms.toFixed(0)}ms`} />
             </div>
+            {!!lastEval.metrics.narrative_total && (
+              <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-border-soft pt-1.5 text-[12px] md:grid-cols-4">
+                <EvalCell label={`叙事可溯源（${lastEval.metrics.narrative_total} 事件）`}
+                  v={`${((lastEval.metrics.narrative_grounded_rate || 0) * 100).toFixed(0)}%`} />
+                <EvalCell label="战术覆盖" v={`${((lastEval.metrics.narrative_tactic_coverage || 0) * 100).toFixed(0)}%`} />
+                <EvalCell label="风险达标" v={`${((lastEval.metrics.narrative_risk_ok || 0) * 100).toFixed(0)}%`} />
+                <EvalCell label="叙事注入翻转" v={`${lastEval.metrics.narrative_injection_flips || 0}`}
+                  tone={(lastEval.metrics.narrative_injection_flips || 0) > 0 ? 'warn' : undefined} />
+              </div>
+            )}
             {!!lastEval.violations?.length && (
               <ul className="mt-2 grid gap-0.5 text-[11.5px] text-destructive">
                 {lastEval.violations.map((v) => <li key={v}>· {v}</li>)}

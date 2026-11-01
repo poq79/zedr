@@ -7,10 +7,16 @@ import { Badge, Button, Card, CardTitle, EmptyState, Input, SkeletonRows } from 
 import { AlertDrawer } from './AlertDrawer';
 import { useError } from '../lib/hooks';
 
-/* AI 狩猎（POST /api/v1/ai/hunt）：自然语言 → 受控 DSL → 告警。
+/* AI 狩猎 v2（POST /api/v1/ai/hunt）：自然语言 → 受控 DSL → 告警。
    页面的信任设计：先展示"AI 把你的话理解成了什么条件"（explain + 过滤器
    逐条 mono 列出），分析师确认意图没被曲解再往下看结果——
-   模型永远接触不到 SQL，这里展示的就是它仅有的全部权力。 */
+   模型永远接触不到 SQL，这里展示的就是它仅有的全部权力。
+
+   多轮会话：追问时把最近几轮"问题 + 当时理解"带给翻译器（仅 LLM 引擎；
+   确定性引擎只解析当前句，避免历史关键词污染过滤器）。会话状态在浏览器，
+   服务端无状态。 */
+
+interface TurnRecord { query: string; explain: string; total: number }
 
 const FIELD_LABEL: Record<string, string> = {
   process_name: '进程名', image_path: '文件路径', cmdline: '命令行',
@@ -33,6 +39,7 @@ export function HuntPage() {
   const [res, setRes] = useState<HuntResult | null>(null);
   const [engine, setEngine] = useState<string>('');
   const [openId, setOpenId] = useState<string | null>(null);
+  const [turns, setTurns] = useState<TurnRecord[]>([]);
 
   useEffect(() => {
     api.get<{ stats?: { engine?: string } }>('/api/v1/ai/stats')
@@ -40,16 +47,19 @@ export function HuntPage() {
       .catch(() => setEngine('deterministic'));
   }, []);
 
-  const run = useCallback(async (query: string) => {
+  const run = useCallback(async (query: string, withHistory: boolean) => {
     const text = query.trim();
     if (!text) return;
     setBusy(true);
     try {
-      setRes(await api.post<HuntResult>('/api/v1/ai/hunt', { query: text }));
+      const history = withHistory ? turns.slice(-5).map((t) => ({ query: t.query, explain: t.explain })) : [];
+      const r = await api.post<HuntResult>('/api/v1/ai/hunt', { query: text, history });
+      setRes(r);
+      setTurns((prev) => [...prev, { query: text, explain: r.query.explain || '', total: r.total }].slice(-10));
     } catch (e) { err.capture(e); }
     finally { setBusy(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [turns]);
 
   if (err.rendered) return err.rendered;
 
@@ -57,10 +67,10 @@ export function HuntPage() {
     <div>
       {/* 查询条 */}
       <Card className="mb-3.5 p-4">
-        <form onSubmit={(e) => { e.preventDefault(); run(q); }} className="flex items-center gap-2.5">
+        <form onSubmit={(e) => { e.preventDefault(); run(q, turns.length > 0); }} className="flex items-center gap-2.5">
           <div className="relative flex-1">
             <ScanSearch size={16} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ghost" />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="用自然语言描述你要找的告警，例：最近 24 小时严重级以上、未签名的告警"
+            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="用自然语言描述你要找的告警；有会话时可直接追问（例：只要其中未签名的）"
               className="h-10 w-full pl-9 text-[13.5px]" maxLength={500} spellCheck={false} />
           </div>
           <Button variant="primary" type="submit" disabled={busy || !q.trim()} className="h-10 px-5">
@@ -69,7 +79,7 @@ export function HuntPage() {
         </form>
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           {EXAMPLES.map((ex) => (
-            <button key={ex} onClick={() => { setQ(ex); run(ex); }}
+            <button key={ex} onClick={() => { setQ(ex); setTurns([]); run(ex, false); }}
               className="cursor-pointer rounded-full border border-border-soft bg-secondary px-2.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground">
               {ex}
             </button>
@@ -81,6 +91,27 @@ export function HuntPage() {
           </span>
         </div>
       </Card>
+
+      {/* 会话历史（多轮追问） */}
+      {turns.length > 0 && (
+        <Card className="mb-3.5 px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-2 text-[11.5px]">
+            <span className="text-faint">本次会话：</span>
+            {turns.map((t, i) => (
+              <span key={i} className="inline-flex items-center gap-1 rounded-full border border-border-soft bg-secondary px-2 py-0.5" title={t.explain}>
+                <span className="max-w-[240px] truncate">{t.query}</span>
+                <span className="font-mono text-[10.5px] text-ghost">{t.total}条</span>
+              </span>
+            ))}
+            <div className="flex-1" />
+            <button onClick={() => { setTurns([]); setRes(null); }}
+              className="cursor-pointer text-[11px] text-faint hover:text-foreground">清空会话</button>
+          </div>
+          {engine !== 'llm' && (
+            <div className="mt-1 text-[10.5px] text-ghost">确定性引擎不消费历史上下文（追问按当前句解析）。</div>
+          )}
+        </Card>
+      )}
 
       {/* 翻译可视化：AI 理解成了什么条件 */}
       {res && (
@@ -148,7 +179,7 @@ export function HuntPage() {
       )}
       {busy && <Card className="px-2 pb-2"><SkeletonRows rows={4} /></Card>}
 
-      <AlertDrawer alertId={openId} onClose={() => setOpenId(null)} onChanged={() => run(q)} canWrite />
+      <AlertDrawer alertId={openId} onClose={() => setOpenId(null)} onChanged={() => run(q, true)} canWrite />
     </div>
   );
 }
