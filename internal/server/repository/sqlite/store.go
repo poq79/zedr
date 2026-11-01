@@ -31,6 +31,7 @@ type Store struct {
 	commands  commandRepo
 	stats     statsRepo
 	inventory inventoryRepo
+	incidents incidentRepo
 }
 
 var _ = (*Store)(nil)
@@ -83,6 +84,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 	s.commands = commandRepo{s}
 	s.stats = statsRepo{s}
 	s.inventory = inventoryRepo{s}
+	s.incidents = incidentRepo{s}
 
 	repos := repository.Repos{
 		Users:     &s.users,
@@ -96,6 +98,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 		Commands:  &s.commands,
 		Stats:     &s.stats,
 		Inventory: &s.inventory,
+		Incidents: &s.incidents,
 	}
 	return s, repos, nil
 }
@@ -302,6 +305,36 @@ CREATE TABLE IF NOT EXISTS host_inventory (
   payload    TEXT NOT NULL, updated_at INTEGER NOT NULL,
   PRIMARY KEY (agent_id, section));
 CREATE INDEX IF NOT EXISTS idx_inventory_agent ON host_inventory(agent_id);
+`,
+	},
+	{
+		name: "006_incidents",
+		sql: `
+-- 持久化事件表：告警聚类 + 处置状态机（open→investigating→contained→resolved）。
+-- 替代"每次查询取 200 条内存聚合"的临时方案；ID 由主机+簇内最老告警锚定，
+-- 跨同步周期稳定，人工处置不因新告警加入而丢失。
+CREATE TABLE IF NOT EXISTS incidents (
+  id              TEXT PRIMARY KEY,
+  agent_id        TEXT NOT NULL DEFAULT '',
+  hostname        TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  peak_severity   TEXT NOT NULL DEFAULT 'medium',
+  max_score       INTEGER NOT NULL DEFAULT 0,
+  alert_count     INTEGER NOT NULL DEFAULT 0,
+  open_count      INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'open',
+  processes       TEXT NOT NULL DEFAULT '',
+  rule_ids        TEXT NOT NULL DEFAULT '',
+  mitre           TEXT NOT NULL DEFAULT '',
+  first_seen      INTEGER NOT NULL,
+  last_seen       INTEGER NOT NULL,
+  first_action_at INTEGER,
+  resolved_at     INTEGER,
+  note            TEXT NOT NULL DEFAULT '',
+  updated_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_agent ON incidents(agent_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status, updated_at DESC);
 `,
 	},
 }

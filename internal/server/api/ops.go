@@ -58,6 +58,23 @@ func (h *adminHandler) metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 事件状态分布 + MTTA：处置效率的量化口径（首次人工动作延迟）
+	if counts, err := h.deps.Services.Incident.CountByStatus(r.Context()); err == nil {
+		openish := 0
+		for st, n := range counts {
+			fmt.Fprintf(&b, "hg_incidents{status=%q} %d\n", st, n)
+			if st != string(domain.IncidentResolved) {
+				openish += n
+			}
+		}
+		gauge("hg_incidents_open", "未进入 resolved 的事件数", openish)
+	}
+	if mtta, err := h.deps.Services.Incident.AvgFirstActionMinutes(
+		r.Context(), time.Now().Add(-7*24*time.Hour)); err == nil {
+		gauge("hg_incident_mtta_minutes", "事件创建→首次人工动作平均分钟数（7 天窗口）",
+			fmt.Sprintf("%.2f", mtta))
+	}
+
 	gauge("hg_go_goroutines", "当前 goroutine 数", m.Goroutines)
 	gauge("hg_go_heap_alloc_bytes", "Go 堆已分配字节", m.HeapAlloc)
 	gauge("hg_uptime_seconds", "服务运行秒数", fmt.Sprintf("%.0f", m.UptimeSec))
@@ -164,14 +181,17 @@ func csvField(s string) string {
 
 // ---------------------------------------------------------------- 事件聚合
 
-// listIncidents 返回未处置告警聚类出的事件视图 + 跨主机爆发。
+// listIncidents 返回持久化事件（懒同步后读库）+ 跨主机爆发。
 // 两者都在同一个接口里：值班打开"事件"页要回答的正是
 // "本机在发生什么 + 整个环境在发生什么"。
 func (h *adminHandler) listIncidents(w http.ResponseWriter, r *http.Request) {
-	limit := atoiDefault(r.URL.Query().Get("limit"), 50)
-	incidents, err := h.deps.Services.Stats.ListIncidents(r.Context(), limit)
+	page := clampInt(atoiDefault(r.URL.Query().Get("page"), 1), 1, 10000)
+	pageSize := clampInt(atoiDefault(r.URL.Query().Get("page_size"), 50), 1, 200)
+	status := r.URL.Query().Get("status")
+
+	incidents, total, err := h.deps.Services.Incident.ListIncidents(r.Context(), status, page, pageSize)
 	if err != nil {
-		httpx.WriteError(w, r, apperr.Internal(err))
+		httpx.WriteError(w, r, err)
 		return
 	}
 	bursts, err := h.deps.Services.Stats.ListBursts(r.Context())
@@ -181,10 +201,35 @@ func (h *adminHandler) listIncidents(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
 		"items":     incidents,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
 		"bursts":    bursts,
-		"window":    "30m",
 		"generated": time.Now().UTC(),
 	})
+}
+
+// transitionIncident 推进事件处置状态机（writer 权限）。
+func (h *adminHandler) transitionIncident(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req struct {
+		Status string `json:"status"`
+		Note   string `json:"note"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	id := r.PathValue("id")
+	inc, err := h.deps.Services.Incident.TransitionIncident(r.Context(), id,
+		domain.IncidentStatus(req.Status), req.Note, p.Username)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "incident.status",
+		id, req.Status+" "+req.Note, httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, inc)
 }
 
 // integrityReport 告警完整性链校验结果。

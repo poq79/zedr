@@ -152,6 +152,11 @@ func (r *alertRepo) List(ctx context.Context, f domain.AlertFilter) ([]domain.Al
 		where = append(where, "agent_id = ?")
 		args = append(args, f.AgentID)
 	}
+	// 超期归档用的时间上界（零值=不限）
+	if !f.CreatedBefore.IsZero() {
+		where = append(where, "created_at < ?")
+		args = append(args, millis(f.CreatedBefore))
+	}
 	if f.Query != "" {
 		where = append(where, `(process_name LIKE ? OR image_path LIKE ? OR cmdline LIKE ? OR hostname LIKE ? OR title LIKE ?)`)
 		like := "%" + f.Query + "%"
@@ -310,6 +315,32 @@ func (r *alertRepo) PurgeBefore(ctx context.Context, before time.Time) (int64, e
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// ListInventoryChanges 返回某终端的资产变更事件（inventory 层信号）。
+// 证据列是 JSON，用层标记做 LIKE 定位：单主机事件量小（个位数/天），
+// LIKE 的代价可接受；上限由服务层钳制后传入。
+func (r *alertRepo) ListInventoryChanges(ctx context.Context, agentID string, limit int) ([]domain.Alert, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := r.s.db.QueryContext(ctx,
+		`SELECT `+alertCols+` FROM alerts
+		 WHERE agent_id = ? AND evidence LIKE '%"layer":"inventory"%'
+		 ORDER BY created_at DESC LIMIT ?`, agentID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("查询资产变更事件失败: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Alert
+	for rows.Next() {
+		a, err := scanAlert(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
 }
 
 

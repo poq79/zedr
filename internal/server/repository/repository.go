@@ -24,6 +24,7 @@ type Repos struct {
 	Commands  CommandRepo
 	Stats     StatsRepo
 	Inventory InventoryRepo
+	Incidents IncidentRepo
 }
 
 // UserRepo 账号数据访问。
@@ -80,6 +81,24 @@ type AlertRepo interface {
 	IntegrityGet(ctx context.Context, day string) (digest string, n int, exists bool, err error)
 	// IntegrityPut 归档某日摘要（幂等：已存在则跳过）。
 	IntegrityPut(ctx context.Context, day, digest string, n int) error
+	// ListInventoryChanges 返回某终端的资产变更事件（inventory 层信号告警）。
+	// 证据列是 JSON，按层标记做 LIKE 定位——主机内事件量小，可接受。
+	ListInventoryChanges(ctx context.Context, agentID string, limit int) ([]domain.Alert, error)
+}
+
+// IncidentRepo 事件（告警聚类 + 处置状态机）数据访问。
+type IncidentRepo interface {
+	// UpsertBatch 同步聚类结果：不存在或仍处 open 的事件整体覆盖，
+	// 已被人工处置的只刷新观测字段（状态/时间戳/备注保留）。
+	UpsertBatch(ctx context.Context, items []domain.Incident) error
+	List(ctx context.Context, status string, page, pageSize int) ([]domain.Incident, int, error)
+	ByID(ctx context.Context, id string) (*domain.Incident, error)
+	// UpdateStatus 推进状态机：首次离开 open 记 first_action_at（MTTA），
+	// 进入 resolved 记 resolved_at。
+	UpdateStatus(ctx context.Context, id string, status domain.IncidentStatus, note string, at time.Time) error
+	CountByStatus(ctx context.Context) (map[string]int, error)
+	// AvgFirstActionMinutes 事件创建→首次人工动作的平均分钟数（MTTA）。
+	AvgFirstActionMinutes(ctx context.Context, since time.Time) (float64, error)
 }
 
 // RuleRepo 规则数据访问。

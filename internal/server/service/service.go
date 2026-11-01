@@ -22,18 +22,22 @@ type Config struct {
 	ScanInterval      time.Duration // 采集间隔（下发给终端）
 	DupWindow         time.Duration // 同指纹告警聚合窗口
 	RetentionDays     int           // 处置完成告警的保留天数
+	// OpenAlertTTL 是超期 open 告警自动归档为 acknowledged 的时限。
+	// 0 = 禁用（默认）：自动替值班人员做"不重要"的决定必须显式打开。
+	OpenAlertTTL time.Duration
 }
 
 // Services 汇总所有业务服务。
 type Services struct {
-	Auth  *AuthService
-	Agent *AgentService
-	Alert *AlertService
-	Rule  *RuleService
-	Audit *AuditService
-	Stats *StatsService
-	Bus   *AlertBus
-	AI    *AIService
+	Auth     *AuthService
+	Agent    *AgentService
+	Alert    *AlertService
+	Rule     *RuleService
+	Audit    *AuditService
+	Stats    *StatsService
+	Incident *IncidentService
+	Bus      *AlertBus
+	AI       *AIService
 }
 
 // New 组装服务集合（依赖注入：仓储 + 令牌管理器 + 配置 + 日志）。
@@ -44,13 +48,14 @@ func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Log
 	bus := NewAlertBus()
 
 	return &Services{
-		Auth:  &AuthService{repos: repos, tokens: tokens, log: log},
-		Agent: &AgentService{repos: repos, cfg: cfg, log: log},
-		Alert: &AlertService{repos: repos, cfg: cfg, log: log, bus: bus},
-		Rule:  &RuleService{repos: repos, log: log},
-		Audit: &AuditService{repos: repos},
-		Stats: &StatsService{repos: repos},
-		Bus:   bus,
-		AI:    &AIService{repos: repos, eng: aiEngine, log: log},
+		Auth:     &AuthService{repos: repos, tokens: tokens, log: log},
+		Agent:    &AgentService{repos: repos, cfg: cfg, log: log},
+		Alert:    &AlertService{repos: repos, cfg: cfg, log: log, bus: bus},
+		Rule:     &RuleService{repos: repos, log: log},
+		Audit:    &AuditService{repos: repos},
+		Stats:    &StatsService{repos: repos},
+		Incident: &IncidentService{repos: repos, cfg: cfg, log: log},
+		Bus:      bus,
+		AI:       &AIService{repos: repos, eng: aiEngine, log: log, cfg: cfg},
 	}
 }

@@ -340,6 +340,8 @@ type AlertFilter struct {
 	MinScore    int
 	// Unsigned 为 true 时只要未签名；false 时只要已签名；nil 表示不限。
 	Unsigned *bool
+	// CreatedBefore 只取该时刻之前创建的告警（超期归档用；零值=不限）。
+	CreatedBefore time.Time
 }
 
 // Normalize 补全默认分页参数并限制上限。
@@ -354,4 +356,62 @@ func (f *AlertFilter) Normalize() {
 		f.PageSize = 200
 	}
 	f.Query = strings.TrimSpace(f.Query)
+}
+
+// IncidentStatus 是事件处置状态机。
+// 迁移只允许前进：open → investigating → contained → resolved
+// （contained 可直接 resolved），禁止回退——回退会让 SLA 计时失真。
+type IncidentStatus string
+
+const (
+	IncidentOpen          IncidentStatus = "open"
+	IncidentInvestigating IncidentStatus = "investigating"
+	IncidentContained     IncidentStatus = "contained"
+	IncidentResolved      IncidentStatus = "resolved"
+)
+
+// Valid 判断状态合法性。
+func (s IncidentStatus) Valid() bool {
+	switch s {
+	case IncidentOpen, IncidentInvestigating, IncidentContained, IncidentResolved:
+		return true
+	}
+	return false
+}
+
+// CanTransTo 判断迁移是否合法（只前进）。
+func (s IncidentStatus) CanTransTo(next IncidentStatus) bool {
+	switch s {
+	case IncidentOpen:
+		return next == IncidentInvestigating || next == IncidentContained || next == IncidentResolved
+	case IncidentInvestigating:
+		return next == IncidentContained || next == IncidentResolved
+	case IncidentContained:
+		return next == IncidentResolved
+	}
+	return false
+}
+
+// Incident 是持久化的事件（同一疑似活动的告警聚类 + 处置状态）。
+// ID 由「主机 + 簇内最老告警 ID」锚定：新告警加入同一簇不换 ID，
+// 簇因 30 分钟间隔断开才产生新 ID——跨同步周期稳定，人工处置不丢。
+type Incident struct {
+	ID            string         `json:"id"`
+	AgentID       string         `json:"agent_id"`
+	Hostname      string         `json:"hostname"`
+	Title         string         `json:"title"`
+	PeakSeverity  string         `json:"peak_severity"`
+	MaxScore      int            `json:"max_score"`
+	AlertCount    int            `json:"alert_count"`
+	OpenCount     int            `json:"open_count"`
+	Status        IncidentStatus `json:"status"`
+	Processes     []string       `json:"processes"`
+	RuleIDs       []string       `json:"rule_ids"`
+	MITRE         []string       `json:"mitre"`
+	FirstSeen     time.Time      `json:"first_seen"`
+	LastSeen      time.Time      `json:"last_seen"`
+	FirstActionAt *time.Time     `json:"first_action_at,omitempty"`
+	ResolvedAt    *time.Time     `json:"resolved_at,omitempty"`
+	Note          string         `json:"note"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
