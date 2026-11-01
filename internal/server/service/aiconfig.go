@@ -7,37 +7,58 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/ai"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/idgen"
-	"hostguard/internal/platform/settingseal"
-	"hostguard/internal/server/domain"
+	"zedr/internal/ai"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/idgen"
+	"zedr/internal/platform/settingseal"
+	"zedr/internal/server/domain"
 )
 
 // settings 表中的 AI 配置键。
 const aiConfigSettingKey = "ai_config"
 
-// AIService 的 AI 配置中心扩展：模型槽位、提示词模板、技能包。
+// AIService 的 AI 配置中心扩展：统一 Provider、任务槽位、提示词模板、技能包。
 //
 // 与告警研判（AIService.Triage）同住一个服务是有意的——配置热更新
 // 直接作用在本服务持有的引擎引用上，不存在"两处各持一份引擎"的漂移。
+//
+// 配置模型（人性化口径）：同一个模型服务只配一次——
+//   Provider（base_url / api_key / 默认模型 / effort / 温度 / 超时）是全局唯一
+//   的"服务商接入"；任务槽位只声明差异（换模型 / 换思考强度 / 开关），
+//   留空一律跟随 Provider 默认。少数"调查走另一家"的场景通过槽位级
+//   高级覆盖表达，UI 默认折叠。
+//   兼容：v1 期间曾按槽位存 base_url/api_key，storedSlot 保留这两个字段
+//   作为覆盖项读旧数据，无需迁移。
 //
 // 敏感字段策略：API Key 以 enc:v1 密文存 settings 表（settingseal），
 // API 出口永远打码；明文只在两个瞬间存在——管理员提交时、引擎构造
 // OpenAICompatible 后端时。其余环节（日志、审计、读接口）只见密文或掩码。
 
+// storedProvider 是统一服务商接入（存密文 Key）。
+type storedProvider struct {
+	BaseURL     string  `json:"base_url,omitempty"`
+	APIKey      string  `json:"api_key,omitempty"` // enc:v1:... 密文；空 = 无密钥
+	Model       string  `json:"model,omitempty"`   // 默认模型：槽位留空时使用
+	Effort      string  `json:"effort,omitempty"`
+	Temperature float64 `json:"temperature,omitempty"`
+	MaxTokens   int     `json:"max_tokens,omitempty"`
+	TimeoutSec  int     `json:"timeout_sec,omitempty"`
+}
+
 // storedAIConfig 是 settings.ai_config 里的 JSON 结构。
 type storedAIConfig struct {
+	Provider     *storedProvider       `json:"provider,omitempty"`
 	Slots        map[string]storedSlot `json:"slots"`
 	HourlyTokens int                   `json:"hourly_tokens,omitempty"`
 	CacheTTLSec  int                   `json:"cache_ttl_sec,omitempty"`
 }
 
+// storedSlot 是任务槽位的差异声明：所有字段留空/零值 = 跟随 Provider 默认。
+// BaseURL/APIKey 是高级覆盖（"调查走另一家服务商"），常规配置不碰。
 type storedSlot struct {
-	Provider    string  `json:"provider"`
-	BaseURL     string  `json:"base_url"`
-	APIKey      string  `json:"api_key"` // enc:v1:... 密文；空 = 无密钥
-	Model       string  `json:"model"`
+	BaseURL     string  `json:"base_url,omitempty"` // 覆盖 Provider
+	APIKey      string  `json:"api_key,omitempty"`  // 覆盖 Provider（enc:v1 密文）
+	Model       string  `json:"model,omitempty"`    // 覆盖默认模型
 	Effort      string  `json:"effort,omitempty"`
 	Temperature float64 `json:"temperature,omitempty"`
 	MaxTokens   int     `json:"max_tokens,omitempty"`
@@ -45,42 +66,72 @@ type storedSlot struct {
 	Enabled     bool    `json:"enabled"`
 }
 
-// SlotView 是配置读接口里单个槽位的展示结构（Key 已打码）。
-type SlotView struct {
-	Provider    string  `json:"provider"`
+// ProviderView 是 GET /ai/config 里的统一服务商展示（Key 已打码）。
+type ProviderView struct {
 	BaseURL     string  `json:"base_url"`
-	Model       string  `json:"model"`
+	Model       string  `json:"model"` // 默认模型（槽位留空时跟随）
 	Effort      string  `json:"effort"`
 	Temperature float64 `json:"temperature"`
 	MaxTokens   int     `json:"max_tokens"`
 	TimeoutSec  int     `json:"timeout_sec"`
-	Enabled     bool    `json:"enabled"`
 	HasKey      bool    `json:"has_key"`
-	KeyHint     string  `json:"key_hint,omitempty"` // 尾 4 位，帮助识别用的是哪把钥匙
-	// Source 标注该槽位配置来自哪里：db（配置中心）/ env（环境变量引导）。
-	// 展示口径问题：管理员需要知道改了 env 但后台没保存时，生效的到底是哪份。
+	KeyHint     string  `json:"key_hint,omitempty"`
+	// Source：db（后台已保存）/ env（环境变量引导）/ none（未配置任何模型服务）
 	Source string `json:"source"`
+}
+
+// SlotView 是单个任务槽位的展示结构：覆盖值 + 实际生效值。
+type SlotView struct {
+	Enabled bool `json:"enabled"`
+	// 覆盖值（空 = 跟随 Provider 默认，前端展示"跟随默认"）
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
+	// 实际生效值（解析 Provider 默认与覆盖后的结果），供界面直接展示
+	EffectiveModel  string `json:"effective_model"`
+	EffectiveEffort string `json:"effective_effort"`
+	// 高级覆盖：仅在设置过时返回（零值字段前端不渲染）
+	OverrideBaseURL     string  `json:"override_base_url,omitempty"`
+	OverrideKeyHint     string  `json:"override_key_hint,omitempty"`
+	OverrideTemperature float64 `json:"override_temperature,omitempty"`
+	OverrideMaxTokens   int     `json:"override_max_tokens,omitempty"`
+	OverrideTimeoutSec  int     `json:"override_timeout_sec,omitempty"`
+	OverrideHasKey      bool    `json:"override_has_key,omitempty"`
 }
 
 // AIConfigView 是 GET /ai/config 的响应体。
 type AIConfigView struct {
-	Slots        map[string]SlotView `json:"slots"`
-	HourlyTokens int                 `json:"hourly_tokens"`
-	CacheTTLSec  int                 `json:"cache_ttl_sec"`
-	Engine       string              `json:"engine"`  // 当前生效引擎（llm/heuristic）
-	EngineModel  string              `json:"engine_model"`
+	Provider      ProviderView        `json:"provider"`
+	Slots         map[string]SlotView `json:"slots"`
+	HourlyTokens  int                 `json:"hourly_tokens"`
+	CacheTTLSec   int                 `json:"cache_ttl_sec"`
+	Engine        string              `json:"engine"` // 当前生效引擎（llm/heuristic）
+	EngineModel   string              `json:"engine_model"`
 	// PromptOverridden 标注哪些任务存在提示词覆盖。
 	PromptOverridden map[string]bool `json:"prompt_overridden"`
 	SkillCount       int             `json:"skill_count"`
 }
 
-// SaveSlotInput 是保存/测试请求里的单个槽位（部分更新语义）。
-// Task 仅测试请求使用：api_key 为空时按该槽位回退到已存密钥。
-type SaveSlotInput struct {
-	Task        string  `json:"task,omitempty"`
-	Provider    string  `json:"provider"`
+// SaveProviderInput 是统一服务商接入的保存请求（部分更新语义；
+// api_key 空 = 保留旧值，clear_key = 显式清除）。
+type SaveProviderInput struct {
 	BaseURL     string  `json:"base_url"`
-	APIKey      string  `json:"api_key"` // 空 = 保留旧值
+	APIKey      string  `json:"api_key"`
+	Model       string  `json:"model"`
+	Effort      string  `json:"effort"`
+	Temperature float64 `json:"temperature"`
+	MaxTokens   int     `json:"max_tokens"`
+	TimeoutSec  int     `json:"timeout_sec"`
+	ClearKey    bool    `json:"clear_key"`
+}
+
+// SaveSlotInput 是保存请求里的单个槽位差异。
+// 语义约定：非敏感字段（model/effort/base_url…）传空 = 清除覆盖（跟随默认）；
+// api_key 是唯一例外——空 = 保留旧值（密钥从不回显，无法"传空清除"，
+// 清除走 clear_key）。
+type SaveSlotInput struct {
+	Task        string  `json:"task,omitempty"` // 仅拨测请求使用
+	BaseURL     string  `json:"base_url"`
+	APIKey      string  `json:"api_key"`
 	Model       string  `json:"model"`
 	Effort      string  `json:"effort"`
 	Temperature float64 `json:"temperature"`
@@ -91,8 +142,9 @@ type SaveSlotInput struct {
 }
 
 // SaveAIConfigInput 是 PUT /ai/config 的请求体。
-// 所有字段都是可选的：只更新出现的部分（nil 槽位不动）。
+// 所有字段都是可选的：只更新出现的部分（nil 段不动）。
 type SaveAIConfigInput struct {
+	Provider     *SaveProviderInput        `json:"provider"`
 	Slots        map[string]*SaveSlotInput `json:"slots"`
 	HourlyTokens *int                      `json:"hourly_tokens"`
 	CacheTTLSec  *int                      `json:"cache_ttl_sec"`
@@ -101,13 +153,123 @@ type SaveAIConfigInput struct {
 // aiSlotTasks 是配置中心管理的槽位清单（narrative 预留、暂不开放编辑）。
 var aiSlotTasks = []string{ai.SlotTriage, ai.SlotHunt, ai.SlotInvestigate}
 
-// GetConfig 读当前配置并打码。
+// ---------------------------------------------------------------- 解析（纯函数，可单测）
+
+// resolveProvider 计算"实际生效"的 Provider 配置：
+// env 引导基线 → DB Provider 覆盖 → 默认值兜底。
+func resolveProvider(bootstrap ai.Config, stored *storedAIConfig) storedProvider {
+	p := storedProvider{
+		Model:       bootstrap.Model,
+		Temperature: 0.1, // 安全研判要稳定，不要创造性
+		MaxTokens:   1400,
+		TimeoutSec:  int(bootstrap.Timeout.Seconds()),
+	}
+	if bootstrap.Provider == "openai" {
+		p.BaseURL = bootstrap.BaseURL
+		p.APIKey = bootstrap.APIKey
+	}
+	if p.TimeoutSec <= 0 {
+		p.TimeoutSec = 45
+	}
+	if stored != nil && stored.Provider != nil {
+		sp := stored.Provider
+		if sp.BaseURL != "" {
+			p.BaseURL = sp.BaseURL
+		}
+		if sp.APIKey != "" {
+			p.APIKey = sp.APIKey
+		}
+		if sp.Model != "" {
+			p.Model = sp.Model
+		}
+		if sp.Effort != "" {
+			p.Effort = sp.Effort
+		}
+		if sp.Temperature > 0 {
+			p.Temperature = sp.Temperature
+		}
+		if sp.MaxTokens > 0 {
+			p.MaxTokens = sp.MaxTokens
+		}
+		if sp.TimeoutSec > 0 {
+			p.TimeoutSec = sp.TimeoutSec
+		}
+	}
+	p.Effort = normalizeEffort(p.Effort)
+	return p
+}
+
+// resolveSlot 计算某任务槽位实际生效的引擎配置。
+// 返回值 ready 表示" enabled 且服务商接入完整（base_url+model 齐备）"。
+func resolveSlot(task string, bootstrap ai.Config, stored *storedAIConfig) (ai.SlotConfig, bool) {
+	p := resolveProvider(bootstrap, stored)
+
+	var sl storedSlot
+	haveSlot := false
+	if stored != nil {
+		sl, haveSlot = stored.Slots[task]
+	}
+
+	eff := p // 起点是 Provider 默认
+	if sl.BaseURL != "" {
+		eff.BaseURL = sl.BaseURL
+	}
+	if sl.APIKey != "" {
+		eff.APIKey = sl.APIKey
+	}
+	if sl.Model != "" {
+		eff.Model = sl.Model
+	}
+	if sl.Effort != "" {
+		eff.Effort = sl.Effort
+	}
+	if sl.Temperature > 0 {
+		eff.Temperature = sl.Temperature
+	}
+	if sl.MaxTokens > 0 {
+		eff.MaxTokens = sl.MaxTokens
+	}
+	if sl.TimeoutSec > 0 {
+		eff.TimeoutSec = sl.TimeoutSec
+	}
+	eff.Effort = normalizeEffort(eff.Effort)
+
+	// 未显式声明过的槽位默认启用（Provider 就绪即生效）——
+	// "填一次 Provider，三个开关全亮"是管理员对这套配置的自然预期。
+	enabled := sl.Enabled
+	if !haveSlot {
+		enabled = eff.BaseURL != "" && eff.Model != ""
+	}
+	ready := enabled && eff.BaseURL != "" && eff.Model != ""
+	return ai.SlotConfig{
+		Provider:    "openai",
+		BaseURL:     eff.BaseURL,
+		APIKey:      eff.APIKey,
+		Model:       eff.Model,
+		Effort:      eff.Effort,
+		Temperature: eff.Temperature,
+		MaxTokens:   eff.MaxTokens,
+		Timeout:     time.Duration(eff.TimeoutSec) * time.Second,
+		Enabled:     enabled,
+	}, ready
+}
+
+// providerSource 判断统一接入的配置来源。
+func providerSource(bootstrap ai.Config, stored *storedAIConfig) string {
+	if stored != nil && stored.Provider != nil {
+		return "db"
+	}
+	if bootstrap.Provider == "openai" {
+		return "env"
+	}
+	return "none"
+}
+
+// ---------------------------------------------------------------- 读接口
+
+// GetConfig 读当前配置并打码（Provider 统一展示 + 槽位覆盖/生效值）。
 func (s *AIService) GetConfig(ctx context.Context) (*AIConfigView, error) {
 	stored := s.loadStored(ctx)
-	if stored == nil {
-		// 首次部署/从未在后台保存过：按空配置展示（各槽位回落 env 引导值）
-		stored = &storedAIConfig{Slots: map[string]storedSlot{}}
-	}
 
 	view := &AIConfigView{
 		Slots:            map[string]SlotView{},
@@ -128,20 +290,42 @@ func (s *AIService) GetConfig(ctx context.Context) (*AIConfigView, error) {
 		}
 	}
 
+	p := resolveProvider(s.bootstrap, stored)
+	view.Provider = ProviderView{
+		BaseURL: p.BaseURL, Model: p.Model, Effort: p.Effort,
+		Temperature: p.Temperature, MaxTokens: p.MaxTokens, TimeoutSec: p.TimeoutSec,
+		HasKey: p.APIKey != "", KeyHint: keyHint(p.APIKey),
+		Source: providerSource(s.bootstrap, stored),
+	}
+
 	for _, task := range aiSlotTasks {
-		var sv SlotView
-		if sc, ok := stored.Slots[task]; ok {
-			sv = slotViewFromStored(sc, "db")
-		} else if task == ai.SlotTriage || task == ai.SlotHunt {
-			// 环境变量引导的单模型配置在这两个槽位生效（engine.buildBackends 同口径）
-			sv = slotViewFromBootstrap(s.bootstrap, "env")
-		} else {
-			// investigate 未单独配置时回落 triage（引擎侧逻辑），展示 triage 的生效值
-			if sc, ok := stored.Slots[ai.SlotTriage]; ok {
-				sv = slotViewFromStored(sc, "db")
-			} else {
-				sv = slotViewFromBootstrap(s.bootstrap, "env")
-			}
+		sc, _ := resolveSlot(task, s.bootstrap, stored)
+		var sl storedSlot
+		if stored != nil {
+			sl = stored.Slots[task]
+		}
+		sv := SlotView{
+			Enabled:         sc.Enabled,
+			Model:           sl.Model,
+			Effort:          normalizeEffort(sl.Effort),
+			EffectiveModel:  sc.Model,
+			EffectiveEffort: sc.Effort,
+		}
+		if sl.BaseURL != "" {
+			sv.OverrideBaseURL = sl.BaseURL
+		}
+		if sl.APIKey != "" {
+			sv.OverrideHasKey = true
+			sv.OverrideKeyHint = keyHint(sl.APIKey)
+		}
+		if sl.Temperature > 0 {
+			sv.OverrideTemperature = sl.Temperature
+		}
+		if sl.MaxTokens > 0 {
+			sv.OverrideMaxTokens = sl.MaxTokens
+		}
+		if sl.TimeoutSec > 0 {
+			sv.OverrideTimeoutSec = sl.TimeoutSec
 		}
 		view.Slots[task] = sv
 	}
@@ -151,54 +335,14 @@ func (s *AIService) GetConfig(ctx context.Context) (*AIConfigView, error) {
 	view.EngineModel = st.Model
 
 	for _, task := range aiSlotTasks {
-		if p, err := s.repos.AIConfig.Prompt(ctx, task); err == nil && p != nil {
-			view.PromptOverridden[task] = p.Content != ""
+		if pr, err := s.repos.AIConfig.Prompt(ctx, task); err == nil && pr != nil {
+			view.PromptOverridden[task] = pr.Content != ""
 		}
 	}
 	if skills, err := s.repos.AIConfig.Skills(ctx); err == nil {
 		view.SkillCount = len(skills)
 	}
 	return view, nil
-}
-
-func slotViewFromStored(sc storedSlot, source string) SlotView {
-	sv := SlotView{
-		Provider: sc.Provider, BaseURL: sc.BaseURL, Model: sc.Model,
-		Effort: sc.Effort, Temperature: sc.Temperature,
-		MaxTokens: sc.MaxTokens, TimeoutSec: sc.TimeoutSec,
-		Enabled: sc.Enabled, Source: source,
-		HasKey: sc.APIKey != "",
-	}
-	sv.Effort = normalizeEffort(sv.Effort)
-	if sv.Temperature <= 0 {
-		sv.Temperature = 0.1
-	}
-	if sv.MaxTokens <= 0 {
-		sv.MaxTokens = 1400
-	}
-	if sv.TimeoutSec <= 0 {
-		sv.TimeoutSec = 45
-	}
-	if sc.APIKey != "" {
-		sv.KeyHint = keyHint(sc.APIKey)
-	}
-	return sv
-}
-
-func slotViewFromBootstrap(cfg ai.Config, source string) SlotView {
-	sv := SlotView{
-		Provider: cfg.Provider, BaseURL: cfg.BaseURL, Model: cfg.Model,
-		Effort: "off", Temperature: 0.1, MaxTokens: 1400,
-		TimeoutSec: int(cfg.Timeout.Seconds()), Source: source,
-		HasKey: cfg.APIKey != "", Enabled: cfg.Provider == "openai",
-	}
-	if sv.TimeoutSec <= 0 {
-		sv.TimeoutSec = 45
-	}
-	if cfg.APIKey != "" {
-		sv.KeyHint = keyHint(cfg.APIKey)
-	}
-	return sv
 }
 
 func normalizeEffort(e string) string {
@@ -210,10 +354,8 @@ func normalizeEffort(e string) string {
 	}
 }
 
-// keyHint 提取密钥尾 4 位。密文本身不可逆出明文（AES-GCM），
-// 所以这里的提示只能基于密文尾部——同值同密文（不同 nonce 会不同），
-// 实际做法：解密后取尾。为了读接口不引入解密依赖，直接取密文尾部
-// 也能满足"区分换了没有"的目的（换 key 必换密文）。
+// keyHint 提取密文尾 4 位。密文不可逆（AES-GCM），但"换 key 必换密文"，
+// 尾部对比足以让管理员识别钥匙有没有换过。
 func keyHint(sealed string) string {
 	if len(sealed) <= 4 {
 		return "****"
@@ -238,6 +380,8 @@ func (s *AIService) loadStored(ctx context.Context) *storedAIConfig {
 	return &c
 }
 
+// ---------------------------------------------------------------- 保存
+
 // SaveConfig 保存配置并热更新引擎（无需重启）。
 func (s *AIService) SaveConfig(ctx context.Context, in *SaveAIConfigInput) (*AIConfigView, error) {
 	if in == nil {
@@ -255,31 +399,15 @@ func (s *AIService) SaveConfig(ctx context.Context, in *SaveAIConfigInput) (*AIC
 		stored = &storedAIConfig{Slots: map[string]storedSlot{}}
 	}
 
-	for task, req := range in.Slots {
-		valid := false
-		for _, t := range aiSlotTasks {
-			if task == t {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return nil, apperr.Invalid("未知的模型槽位: %s", task)
-		}
-		if err := s.validateSlotInput(task, req); err != nil {
+	// ---- Provider 统一接入 ----
+	if in.Provider != nil {
+		req := in.Provider
+		if err := validateProviderInput(req); err != nil {
 			return nil, err
 		}
-
-		// 合并语义：请求里没出现的字段沿用旧值（或 env 引导值）
-		base := storedSlot{}
-		if old, ok := stored.Slots[task]; ok {
-			base = old
-		} else if task == ai.SlotTriage || task == ai.SlotHunt {
-			base = bootstrapSlot(s.bootstrap)
-		}
-
-		if req.Provider != "" {
-			base.Provider = req.Provider
+		base := stored.Provider
+		if base == nil {
+			base = &storedProvider{}
 		}
 		if req.BaseURL != "" {
 			base.BaseURL = strings.TrimRight(req.BaseURL, "/")
@@ -299,6 +427,45 @@ func (s *AIService) SaveConfig(ctx context.Context, in *SaveAIConfigInput) (*AIC
 		if req.TimeoutSec > 0 {
 			base.TimeoutSec = req.TimeoutSec
 		}
+		switch {
+		case req.ClearKey:
+			base.APIKey = ""
+		case req.APIKey != "":
+			sealed, err := settingseal.Seal(s.encKey, req.APIKey)
+			if err != nil {
+				return nil, apperr.Internal(fmt.Errorf("加密 API Key 失败: %w", err))
+			}
+			base.APIKey = sealed
+		default:
+			// 空串 = 保留旧密钥
+		}
+		stored.Provider = base
+	}
+
+	// ---- 槽位差异 ----
+	for task, req := range in.Slots {
+		valid := false
+		for _, t := range aiSlotTasks {
+			if task == t {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return nil, apperr.Invalid("未知的模型槽位: %s", task)
+		}
+		if err := validateSlotInput(task, req); err != nil {
+			return nil, err
+		}
+
+		base := stored.Slots[task]
+		// 非敏感覆盖：空串 = 清除覆盖（跟随 Provider 默认）
+		base.BaseURL = strings.TrimRight(req.BaseURL, "/")
+		base.Model = req.Model
+		base.Effort = req.Effort
+		base.Temperature = req.Temperature
+		base.MaxTokens = req.MaxTokens
+		base.TimeoutSec = req.TimeoutSec
 		if req.Enabled != nil {
 			base.Enabled = *req.Enabled
 		}
@@ -312,7 +479,7 @@ func (s *AIService) SaveConfig(ctx context.Context, in *SaveAIConfigInput) (*AIC
 			}
 			base.APIKey = sealed
 		default:
-			// 空串 = 保留旧密钥
+			// 密钥不回显：空 = 保留旧值
 		}
 		stored.Slots[task] = base
 	}
@@ -344,20 +511,28 @@ func (s *AIService) SaveConfig(ctx context.Context, in *SaveAIConfigInput) (*AIC
 	return s.GetConfig(ctx)
 }
 
-// bootstrapSlot 把 env 引导配置转成槽位存储结构（合并基线）。
-func bootstrapSlot(cfg ai.Config) storedSlot {
-	return storedSlot{
-		Provider: cfg.Provider, BaseURL: cfg.BaseURL, Model: cfg.Model,
-		TimeoutSec: int(cfg.Timeout.Seconds()), Enabled: cfg.Provider == "openai",
+func validateProviderInput(in *SaveProviderInput) error {
+	if in.BaseURL != "" && !strings.HasPrefix(in.BaseURL, "http://") && !strings.HasPrefix(in.BaseURL, "https://") {
+		return apperr.Invalid("base_url 必须以 http:// 或 https:// 开头")
 	}
+	if in.Effort != "" && in.Effort != "off" && in.Effort != "low" && in.Effort != "medium" && in.Effort != "high" {
+		return apperr.Invalid("effort 只能是 off/low/medium/high")
+	}
+	if in.Temperature < 0 || in.Temperature > 2 {
+		return apperr.Invalid("temperature 需在 0-2 之间")
+	}
+	if in.MaxTokens != 0 && (in.MaxTokens < 100 || in.MaxTokens > 32000) {
+		return apperr.Invalid("max_tokens 需在 100-32000 之间")
+	}
+	if in.TimeoutSec != 0 && (in.TimeoutSec < 3 || in.TimeoutSec > 300) {
+		return apperr.Invalid("timeout_sec 需在 3-300 之间")
+	}
+	return nil
 }
 
-func (s *AIService) validateSlotInput(task string, in *SaveSlotInput) error {
-	if in.Provider != "" && in.Provider != "openai" && in.Provider != "none" {
-		return apperr.Invalid("槽位 %s 的 provider 只支持 openai/none", task)
-	}
+func validateSlotInput(task string, in *SaveSlotInput) error {
 	if in.BaseURL != "" && !strings.HasPrefix(in.BaseURL, "http://") && !strings.HasPrefix(in.BaseURL, "https://") {
-		return apperr.Invalid("槽位 %s 的 base_url 必须以 http:// 或 https:// 开头", task)
+		return apperr.Invalid("槽位 %s 的覆盖 base_url 必须以 http:// 或 https:// 开头", task)
 	}
 	if in.Effort != "" && in.Effort != "off" && in.Effort != "low" && in.Effort != "medium" && in.Effort != "high" {
 		return apperr.Invalid("槽位 %s 的 effort 只能是 off/low/medium/high", task)
@@ -375,7 +550,7 @@ func (s *AIService) validateSlotInput(task string, in *SaveSlotInput) error {
 }
 
 // TestConfig 对一套"尚未保存"的接入配置做真实拨测。
-// api_key 为空且给了 task 时，回退到该槽位已存的密钥（或 env 引导密钥）——
+// api_key 为空时回退到当前生效密钥（DB Provider → env 引导）——
 // 管理员验证"换 base_url/模型后还通不通"时不应被迫重输钥匙。
 func (s *AIService) TestConfig(ctx context.Context, in *SaveSlotInput) (*ai.ProbeResult, error) {
 	if in == nil || in.BaseURL == "" {
@@ -385,8 +560,8 @@ func (s *AIService) TestConfig(ctx context.Context, in *SaveSlotInput) (*ai.Prob
 		return nil, apperr.Invalid("base_url 必须以 http:// 或 https:// 开头")
 	}
 	apiKey := in.APIKey
-	if apiKey == "" && in.Task != "" {
-		apiKey = s.storedSlotKey(ctx, in.Task)
+	if apiKey == "" {
+		apiKey = s.effectiveKey(ctx)
 	}
 	timeout := time.Duration(in.TimeoutSec) * time.Second
 	if timeout <= 0 {
@@ -396,19 +571,15 @@ func (s *AIService) TestConfig(ctx context.Context, in *SaveSlotInput) (*ai.Prob
 	return res, nil
 }
 
-// storedSlotKey 解出某槽位当前生效的密钥（DB 优先，回退 env 引导）。
-func (s *AIService) storedSlotKey(ctx context.Context, task string) string {
-	if stored := s.loadStored(ctx); stored != nil {
-		if sc, ok := stored.Slots[task]; ok && sc.APIKey != "" && s.encKey != nil {
-			if pt, err := settingseal.Open(s.encKey, sc.APIKey); err == nil {
-				return pt
-			}
+// effectiveKey 解出当前生效的 API Key（DB Provider 优先，回退 env 引导）。
+func (s *AIService) effectiveKey(ctx context.Context) string {
+	stored := s.loadStored(ctx)
+	if stored != nil && stored.Provider != nil && stored.Provider.APIKey != "" && s.encKey != nil {
+		if pt, err := settingseal.Open(s.encKey, stored.Provider.APIKey); err == nil {
+			return pt
 		}
 	}
-	if task == ai.SlotTriage || task == ai.SlotHunt {
-		return s.bootstrap.APIKey
-	}
-	return ""
+	return s.bootstrap.APIKey
 }
 
 // ---------------------------------------------------------------- 提示词模板
@@ -547,37 +718,22 @@ func (s *AIService) DeleteSkill(ctx context.Context, id string) error {
 func (s *AIService) applyEngineConfig(ctx context.Context) error {
 	stored := s.loadStored(ctx)
 
+	slots := map[string]ai.SlotConfig{}
+	for _, task := range aiSlotTasks {
+		sc, ready := resolveSlot(task, s.bootstrap, stored)
+		if !ready {
+			continue // 未启用或服务商接入不完整 → 引擎侧该槽位走启发式
+		}
+		sc.APIKey = s.decryptKey(sc.APIKey, task)
+		slots[task] = sc
+	}
+
 	cfg := ai.Config{
-		Provider:          s.bootstrap.Provider,
-		BaseURL:           s.bootstrap.BaseURL,
-		APIKey:            s.bootstrap.APIKey,
-		Model:             s.bootstrap.Model,
-		Timeout:           s.bootstrap.Timeout,
+		Slots:             slots,
 		HourlyTokenBudget: s.bootstrap.HourlyTokenBudget,
 		CacheTTL:          s.bootstrap.CacheTTL,
 	}
 	if stored != nil {
-		slots := map[string]ai.SlotConfig{}
-		for task, sc := range stored.Slots {
-			key := sc.APIKey
-			if key != "" && s.encKey != nil {
-				if pt, err := settingseal.Open(s.encKey, sc.APIKey); err == nil {
-					key = pt
-				} else if s.log != nil {
-					// 解密失败（换了加密主密钥）时保留密文形态：
-					// 后端会因认证失败降级并在日志里可见，而不是静默丢配置
-					s.log.Warn("ai_config_key_decrypt_failed", "slot", task, "err", err.Error())
-				}
-			}
-			slots[task] = ai.SlotConfig{
-				Provider: sc.Provider, BaseURL: sc.BaseURL, APIKey: key, Model: sc.Model,
-				Effort: sc.Effort, Temperature: sc.Temperature, MaxTokens: sc.MaxTokens,
-				Timeout: time.Duration(sc.TimeoutSec) * time.Second, Enabled: sc.Enabled,
-			}
-		}
-		if len(slots) > 0 {
-			cfg.Slots = slots
-		}
 		if stored.HourlyTokens > 0 {
 			cfg.HourlyTokenBudget = stored.HourlyTokens
 		}
@@ -599,6 +755,22 @@ func (s *AIService) applyEngineConfig(ctx context.Context) error {
 
 	s.eng.ApplyConfig(cfg, prompts, skills)
 	return nil
+}
+
+// decryptKey 解密 API Key；解密失败（如更换了加密主密钥）时保留密文形态：
+// 后端会因认证失败降级并在日志里可见，而不是静默丢配置。
+func (s *AIService) decryptKey(sealed, task string) string {
+	if sealed == "" || s.encKey == nil {
+		return sealed
+	}
+	pt, err := settingseal.Open(s.encKey, sealed)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("ai_config_key_decrypt_failed", "slot", task, "err", err.Error())
+		}
+		return sealed
+	}
+	return pt
 }
 
 // skillTexts 把技能包清单展开成 task → 文本列表（task=all 摊入所有任务）。
