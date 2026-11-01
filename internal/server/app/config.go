@@ -3,6 +3,7 @@ package app
 
 import (
 	"fmt"
+	"net/mail"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,11 +24,33 @@ type Config struct {
 	RuleSignKey  string // 规则包签名密钥；空则从 JWTSecret 派生
 
 	// Webhook 告警推送：URL 为空表示不启用。
-	WebhookURL        string
-	WebhookSecret     string        // HMAC-SHA256 签名密钥（X-HG-Signature 头）
-	WebhookTimeout    time.Duration
-	WebhookMinSeverity string       // 只推送不低于该严重度的告警（治理通知风暴）
-	SyslogAddr         string       // CEF over UDP；空则不启用
+	WebhookURL     string
+	WebhookSecret  string // HMAC-SHA256 签名密钥（X-HG-Signature 头）
+	WebhookTimeout time.Duration
+	// WebhookMinSeverity 是全部通知渠道（webhook/syslog/飞书/钉钉/Slack/邮件）
+	// 的统一严重度门槛：只推送不低于该严重度的告警（治理通知风暴）。
+	// 刻意不设每渠道阈值——多套阈值会让"这台为什么没收通知"无法排查，
+	// 也会让渠道之间的噪音治理口径漂移。
+	WebhookMinSeverity string
+	SyslogAddr         string // CEF over UDP；空则不启用
+
+	// IM 卡片渠道与邮件通知：全部可选，对应 URL/Host 为空即禁用。
+	FeishuWebhookURL   string // 飞书自定义机器人 webhook
+	DingTalkWebhookURL string // 钉钉自定义机器人 webhook
+	DingTalkSecret     string // 钉钉"加签"安全设置密钥；空=不加签
+	SlackWebhookURL    string // Slack incoming webhook
+	ConsoleURL         string // 管理台对外地址（卡片"前往处理"链接）；空=卡片只带告警 ID 占位
+	SMTPHost           string
+	SMTPPort           int // 默认 25
+	SMTPUser           string
+	SMTPPass           string
+	SMTPFrom           string // 信封发件人（纯邮箱地址或 "Name <addr>"）
+	AlertEmailTo       []string
+	// OpenAlertTTL 超期 open 告警自动归档时限；0=禁用（默认）
+	OpenAlertTTL time.Duration
+	// UpgradeFile/UpgradeVersion 探针自升级包路径与版本；空=升级端点不可用
+	UpgradeFile    string
+	UpgradeVersion string
 
 	// 下发给所有终端的运行策略（随规则包走，零值=不干预终端本地配置）
 	AgentPolicyScanInterval time.Duration
@@ -81,6 +104,22 @@ func LoadConfig() (*Config, error) {
 	c.WebhookMinSeverity = l.Env("HG_SERVER_WEBHOOK_MIN_SEVERITY", "high")
 	c.SyslogAddr = l.Env("HG_SERVER_SYSLOG_ADDR", "")
 
+	// IM 卡片渠道与邮件通知（全部可选；空=禁用）
+	c.FeishuWebhookURL = l.Env("HG_SERVER_FEISHU_WEBHOOK_URL", "")
+	c.DingTalkWebhookURL = l.Env("HG_SERVER_DINGTALK_WEBHOOK_URL", "")
+	c.DingTalkSecret = l.Env("HG_SERVER_DINGTALK_SECRET", "")
+	c.SlackWebhookURL = l.Env("HG_SERVER_SLACK_WEBHOOK_URL", "")
+	c.ConsoleURL = l.Env("HG_SERVER_CONSOLE_URL", "")
+	c.SMTPHost = l.Env("HG_SERVER_SMTP_HOST", "")
+	c.SMTPPort = l.Int("HG_SERVER_SMTP_PORT", 25)
+	c.SMTPUser = l.Env("HG_SERVER_SMTP_USER", "")
+	c.SMTPPass = l.Env("HG_SERVER_SMTP_PASS", "")
+	c.SMTPFrom = l.Env("HG_SERVER_SMTP_FROM", "")
+	c.AlertEmailTo = l.CSV("HG_SERVER_ALERT_EMAIL_TO", nil)
+	c.OpenAlertTTL = l.Duration("HG_SERVER_OPEN_ALERT_TTL", 0)
+	c.UpgradeFile = l.Env("HG_SERVER_UPGRADE_FILE", "")
+	c.UpgradeVersion = l.Env("HG_SERVER_UPGRADE_VERSION", "")
+
 	c.AgentPolicyScanInterval = l.Duration("HG_AGENT_POLICY_SCAN_INTERVAL", 0)
 	c.AgentPolicyCollector = l.Env("HG_AGENT_POLICY_COLLECTOR", "")
 	l.Check(c.AgentPolicyCollector == "" || c.AgentPolicyCollector == "auto" ||
@@ -115,6 +154,35 @@ func LoadConfig() (*Config, error) {
 	l.Check(c.WebhookMinSeverity == "low" || c.WebhookMinSeverity == "medium" ||
 		c.WebhookMinSeverity == "high" || c.WebhookMinSeverity == "critical",
 		"HG_SERVER_WEBHOOK_MIN_SEVERITY 只能是 low/medium/high/critical")
+
+	// IM 卡片与邮件渠道校验
+	l.Check(c.DingTalkSecret == "" || c.DingTalkWebhookURL != "",
+		"HG_SERVER_DINGTALK_SECRET 需与 HG_SERVER_DINGTALK_WEBHOOK_URL 同时配置")
+	l.Check(c.ConsoleURL == "" || strings.HasPrefix(c.ConsoleURL, "http://") ||
+		strings.HasPrefix(c.ConsoleURL, "https://"),
+		"HG_SERVER_CONSOLE_URL 必须以 http:// 或 https:// 开头")
+	l.Check(c.SMTPPort >= 1 && c.SMTPPort <= 65535, "HG_SERVER_SMTP_PORT 需在 1-65535 之间")
+	l.Check((c.SMTPUser == "") == (c.SMTPPass == ""),
+		"HG_SERVER_SMTP_USER 与 HG_SERVER_SMTP_PASS 必须成对配置")
+	l.Check(c.SMTPHost == "" || (len(c.AlertEmailTo) > 0 && c.SMTPFrom != ""),
+		"启用邮件通知需同时配置 HG_SERVER_ALERT_EMAIL_TO 与 HG_SERVER_SMTP_FROM")
+	fromOK := c.SMTPFrom == ""
+	if !fromOK {
+		if addr, perr := mail.ParseAddress(c.SMTPFrom); perr == nil && addr != nil {
+			fromOK = true
+		}
+	}
+	l.Check(fromOK, "HG_SERVER_SMTP_FROM 不是合法邮箱地址")
+	badRcpt := ""
+	for _, rcpt := range c.AlertEmailTo {
+		if badRcpt != "" {
+			continue
+		}
+		if _, err := mail.ParseAddress(rcpt); err != nil {
+			badRcpt = rcpt
+		}
+	}
+	l.Check(badRcpt == "", "HG_SERVER_ALERT_EMAIL_TO 含非法邮箱地址: "+badRcpt)
 	l.Check(c.AIProvider == "none" || c.AIProvider == "openai",
 		"HG_AI_PROVIDER 只能是 none 或 openai")
 	l.Check(c.AITokenBudget >= 1000, "HG_AI_HOURLY_TOKEN_BUDGET 至少 1000")

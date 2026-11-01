@@ -31,8 +31,10 @@ type App struct {
 	Server   *httpx.Server
 	store    *sqlite.Store
 	services *service.Services
-	notifier *notify.Notifier
-	stop     chan struct{}
+	// notifiers 是全部告警通知渠道（webhook/syslog/飞书/钉钉/Slack/邮件），
+	// 统一以 notify.Channel 消费；启停与订阅循环见 New / Close。
+	notifiers []notify.Channel
+	stop      chan struct{}
 
 	// janitorTicks 是 janitor 循环的执行轮数（每轮 60s），用于触发每日备份
 	janitorTicks int
@@ -90,6 +92,7 @@ func New() (*App, error) {
 		ScanInterval:      time.Duration(cfg.ScanSec) * time.Second,
 		RetentionDays:     cfg.RetentionDays,
 		DupWindow:         cfg.DupWindow,
+		OpenAlertTTL:      cfg.OpenAlertTTL,
 	}, log, aiEngine)
 
 	// 终端运行策略：服务端一处配置，随规则包签名下发到所有探针。
@@ -126,11 +129,58 @@ func New() (*App, error) {
 	// 严重度过滤是治理"通知风暴"的关键：告警入库是全量的，但推给
 	// 值班手机/SIEM 的应该只是需要人看的部分——低分告警进系统留档即可，
 	// 推送一条可疑的"接近阈值"事件只会消耗值班注意力（那是最贵的资源）。
+	// 门槛统一取 HG_SERVER_WEBHOOK_MIN_SEVERITY，对全部渠道生效；
+	// 渠道自身不重复实现过滤（见 notify.Channel）。
 	minSev := severityRank(cfg.WebhookMinSeverity)
 
 	notifier := notify.New(cfg.WebhookURL, cfg.WebhookSecret, cfg.WebhookTimeout, log)
 	syslogger := notify.NewSyslog(cfg.SyslogAddr, log)
-	if notifier != nil || syslogger != nil {
+
+	// channels 是启用的渠道清单：每条达到门槛的告警逐渠道 Ingest，
+	// 渠道之间互不影响（各自有独立队列与 worker，失败只记 warn）。
+	channels := []notify.Channel{}
+	if notifier != nil {
+		channels = append(channels, notifier)
+		log.Info("webhook_notifier_enabled", "url", cfg.WebhookURL,
+			"min_severity", cfg.WebhookMinSeverity)
+	}
+	if syslogger != nil {
+		channels = append(channels, syslogger)
+		log.Info("syslog_notifier_enabled", "addr", cfg.SyslogAddr, "format", "CEF/UDP")
+	}
+
+	// IM 卡片渠道：与 webhook/syslog 同一条总线、同一个门槛，只多一路出方向消费
+	feishu := notify.NewFeishu(cfg.FeishuWebhookURL, cfg.ConsoleURL, log)
+	if feishu != nil {
+		channels = append(channels, feishu)
+		log.Info("feishu_notifier_enabled", "min_severity", cfg.WebhookMinSeverity)
+	}
+	dingtalk := notify.NewDingTalk(cfg.DingTalkWebhookURL, cfg.DingTalkSecret, cfg.ConsoleURL, log)
+	if dingtalk != nil {
+		channels = append(channels, dingtalk)
+		log.Info("dingtalk_notifier_enabled", "sign", cfg.DingTalkSecret != "",
+			"min_severity", cfg.WebhookMinSeverity)
+	}
+	slack := notify.NewSlack(cfg.SlackWebhookURL, cfg.ConsoleURL, log)
+	if slack != nil {
+		channels = append(channels, slack)
+		log.Info("slack_notifier_enabled", "min_severity", cfg.WebhookMinSeverity)
+	}
+	mailer := notify.NewEmail(notify.EmailConfig{
+		Host: cfg.SMTPHost,
+		Port: cfg.SMTPPort,
+		User: cfg.SMTPUser,
+		Pass: cfg.SMTPPass,
+		From: cfg.SMTPFrom,
+		To:   cfg.AlertEmailTo,
+	}, log)
+	if mailer != nil {
+		channels = append(channels, mailer)
+		log.Info("email_notifier_enabled", "host", cfg.SMTPHost, "port", cfg.SMTPPort,
+			"recipients", len(cfg.AlertEmailTo), "min_severity", cfg.WebhookMinSeverity)
+	}
+
+	if len(channels) > 0 {
 		if _, ch := svc.Bus.Subscribe(); ch != nil {
 			go func() {
 				for alert := range ch {
@@ -139,18 +189,12 @@ func New() (*App, error) {
 						severityRank(string(alert.Severity)) < minSev {
 						continue
 					}
-					notifier.Ingest(alert)
-					syslogger.Ingest(alert)
+					for _, out := range channels {
+						out.Ingest(alert)
+					}
 				}
 			}()
 		}
-	}
-	if notifier != nil {
-		log.Info("webhook_notifier_enabled", "url", cfg.WebhookURL,
-			"min_severity", cfg.WebhookMinSeverity)
-	}
-	if syslogger != nil {
-		log.Info("syslog_notifier_enabled", "addr", cfg.SyslogAddr, "format", "CEF/UDP")
 	}
 
 	router := api.Router(api.Deps{
@@ -170,6 +214,8 @@ func New() (*App, error) {
 		CookieSecure: cfg.CookieSecure,
 		Bus:          svc.Bus,
 		Notifier:     notifier,
+		UpgradeFile:    cfg.UpgradeFile,
+		UpgradeVersion: cfg.UpgradeVersion,
 	})
 
 	srv := httpx.NewServer(httpx.ServerConfig{
@@ -184,12 +230,13 @@ func New() (*App, error) {
 	}
 
 	return &App{
-		Cfg:      cfg,
-		Log:      log,
-		Server:   srv,
-		store:    store,
-		services: svc,
-		stop:     make(chan struct{}),
+		Cfg:       cfg,
+		Log:       log,
+		Server:    srv,
+		store:     store,
+		services:  svc,
+		notifiers: channels,
+		stop:      make(chan struct{}),
 	}, nil
 }
 
@@ -287,7 +334,11 @@ func (a *App) Close() {
 	default:
 		close(a.stop)
 	}
-	a.notifier.Close()
+	// 逐渠道停止：队列中未发出的通知按渠道语义直接放弃
+	//（告警本身已落库，停机时不再为旁路发送拖延退出）。
+	for _, ch := range a.notifiers {
+		ch.Close()
+	}
 }
 
 // readyCheck 是 /ready 的判定逻辑。
