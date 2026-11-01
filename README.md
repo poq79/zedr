@@ -228,7 +228,18 @@ bash scripts/simulate_detection.sh   # 端到端受控验证（需先启动服�
 ## 8. 已知边界（重要）
 
 1. **采集是用户态轮询**，默认 2s 一轮。存活时间短于一个轮询周期的进程可能漏检（TOCTOU）。
-   生产环境应替换为 ETW `Microsoft-Windows-Kernel-Process` 或 WMI `Win32_ProcessStartTrace` 订阅——这部分已在架构上预留（采集层与检测层通过 `collect.ProcessInfo` 解耦）。
+   生产环境应替换为 ETW `Microsoft-Windows-Kernel-Process` 或 WMI `Win32_ProcessStartTrace` 订阅。
+
+   采集层已做成**可插拔**（`collect.Source`），内置两套实现，可运行时切换：
+
+   | `HG_AGENT_COLLECTOR` | 实现 | 特点 |
+   |---|---|---|
+   | `auto`（默认） | 优先 NtQuery，探测失败自动回退 Toolhelp32 | 推荐 |
+   | `ntquery` | `NtQuerySystemInformation` 一次系统调用 | 快 2.6×，自带创建时间（可识别 PID 复用） |
+   | `toolhelp` | Toolhelp32 快照（旧引擎） | 兼容性最好，作为兜底 |
+
+   切换只需改环境变量、重启探针，无需重新编译——这正是为了应对新老 Windows
+   版本与安全软件干预带来的差异。
 2. **不做内核态阻断**。当前只告警与可选终止（`HG_AGENT_KILL_ENABLED`，默认关闭，且需服务端同时开启）。
 3. **签名校验不含在线吊销检查**，走本地缓存以保证性能。
 4. **默认不检测文件写入行为**，只覆盖进程创建及其上下文。

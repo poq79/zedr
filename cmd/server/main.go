@@ -15,11 +15,15 @@ import (
 	"hostguard/internal/server/app"
 )
 
+// version 由构建脚本通过 -ldflags -X main.version 注入。
+var version = "dev"
+
 func main() {
 	if _, err := config.LoadDotEnv(); err != nil {
 		fmt.Fprintf(os.Stderr, "读取 .env 失败: %v\n", err)
 	}
 
+	app.Version = version // 注入到 app 包，供 /health 与日志使用
 	a, err := app.New()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "启动失败: %v\n", err)

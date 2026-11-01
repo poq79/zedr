@@ -60,7 +60,15 @@ func New(version string) (*Agent, error) {
 	log.Info("agent_starting", "version", version, "data_dir", cfg.DataDir, "server", cfg.ServerURL)
 
 	store := state.New(500)
-	coll := collect.New(cfg.FullRescan)
+
+	// 采集引擎可插拔：默认 auto（NtQuery 优先、失败回退 Toolhelp32）
+	// 之所以保留两套实现，是因为不同 Windows 版本 / 安全软件干预下
+	// 某一种枚举方式可能失效，需要能不改代码就切回去。
+	coll, err := collect.New(cfg.Collector, cfg.FullRescan)
+	if err != nil {
+		return nil, fmt.Errorf("初始化采集引擎失败: %w", err)
+	}
+	log.Info("collector_selected", "source", coll.SourceName(), "note", coll.SourceNote())
 	enr := enrich.New(cfg.MaxHashMB)
 	base := baseline.Load(cfg.Path("baseline.json"))
 	alw := allow.New(cfg.Path("allowlist.json"))
@@ -101,6 +109,7 @@ func New(version string) (*Agent, error) {
 		ri.AgentVersion = version
 		ri.ServerURL = cfg.ServerURL
 		ri.ScanInterval = cfg.ScanInterval.String()
+		ri.Collector = coll.SourceName()
 		ri.WarmupUntil = time.Now().Add(cfg.Warmup)
 		ri.AgentID = up.AgentID()
 		ri.Enrolled = up.Enrolled()
@@ -320,7 +329,7 @@ func (a *Agent) scan(deep bool) {
 
 	stats := a.eng.Stats()
 	a.store.SetRuntime(func(ri *state.RuntimeInfo) {
-		ri.ProcCount = snap.ProcCount
+		ri.ProcCount = snap.Count
 		ri.CPUPercent = cpu
 		ri.MemMB = float64(mem.Sys) / 1024 / 1024
 		ri.Stats = stats

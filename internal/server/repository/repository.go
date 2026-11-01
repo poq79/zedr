@@ -66,6 +66,8 @@ type AlertRepo interface {
 	List(ctx context.Context, f domain.AlertFilter) ([]domain.Alert, int, error)
 	UpdateStatus(ctx context.Context, id string, status domain.AlertStatus, by, note string, at time.Time) error
 	CountOpenByAgent(ctx context.Context) (map[string]int, error)
+	// RecycleForAllow 把命中某条白名单的未处置告警批量标记为误报（加白闭环）。
+	RecycleForAllow(ctx context.Context, typ, value, by string, at time.Time) (int64, error)
 	PurgeBefore(ctx context.Context, before time.Time) (int64, error)
 }
 

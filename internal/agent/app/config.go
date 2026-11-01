@@ -23,6 +23,8 @@ type Config struct {
 	Tags        []string
 	Version     string
 
+	// Collector 选择进程采集引擎：auto / ntquery / toolhelp
+	Collector     string
 	ScanInterval  time.Duration
 	FullRescan    time.Duration
 	MaxHashMB     int64
@@ -48,6 +50,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.LocalAddr = l.Env("HG_AGENT_LOCAL_ADDR", "127.0.0.1:8843")
 	c.Tags = l.CSV("HG_AGENT_TAGS", nil)
 
+	c.Collector = l.Env("HG_AGENT_COLLECTOR", "auto")
 	c.ScanInterval = l.Duration("HG_AGENT_SCAN_INTERVAL", 2*time.Second)
 	c.FullRescan = l.Duration("HG_AGENT_FULL_RESCAN", 15*time.Minute)
 	c.MaxHashMB = int64(l.Int("HG_AGENT_MAX_HASH_MB", 64))
@@ -61,6 +64,8 @@ func LoadConfig(version string) (*Config, error) {
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
 	l.Check(strings.HasPrefix(c.ServerURL, "http://") || strings.HasPrefix(c.ServerURL, "https://"),
 		"HG_AGENT_SERVER_URL 必须以 http:// 或 https:// 开头")
+	l.Check(c.Collector == "auto" || c.Collector == "ntquery" || c.Collector == "toolhelp",
+		"HG_AGENT_COLLECTOR 只能是 auto / ntquery / toolhelp")
 	l.Check(c.ScanInterval >= 500*time.Millisecond, "HG_AGENT_SCAN_INTERVAL 不能小于 500ms（避免采集拖垮主机）")
 	l.Check(c.ScanInterval <= 60*time.Second, "HG_AGENT_SCAN_INTERVAL 不建议大于 60s（会漏掉短命进程）")
 	l.Check(c.FullRescan >= 1*time.Minute, "HG_AGENT_FULL_RESCAN 建议 >= 1m")

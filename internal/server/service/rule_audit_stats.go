@@ -200,34 +200,38 @@ func (s *RuleService) ListAllowlist(ctx context.Context) ([]domain.AllowlistEntr
 }
 
 // AddAllowlist 添加白名单项，并校验类型与取值。
-func (s *RuleService) AddAllowlist(ctx context.Context, typ, value, note, by string) (*domain.AllowlistEntry, error) {
+//
+// 同时执行"加白回收"：把已经触发过、且与这条白名单匹配的未处置告警
+// 标记为误报，返回回收条数。这是降噪闭环里最容易漏掉的一环——
+// 只加白不回收，历史告警仍会堆在队列里等人处理。
+func (s *RuleService) AddAllowlist(ctx context.Context, typ, value, note, by string) (*domain.AllowlistEntry, int64, error) {
 	switch typ {
 	case "hash":
 		if len(value) != 64 || !isHex(value) {
-			return nil, apperr.Invalid("hash 类型需要 64 位十六进制 SHA256")
+			return nil, 0, apperr.Invalid("hash 类型需要 64 位十六进制 SHA256")
 		}
 		value = strings.ToLower(value)
 	case "path":
 		if value == "" {
-			return nil, apperr.Invalid("path 不能为空")
+			return nil, 0, apperr.Invalid("path 不能为空")
 		}
 		value = strings.ToLower(value)
 	case "signer":
 		if value == "" {
-			return nil, apperr.Invalid("signer 不能为空")
+			return nil, 0, apperr.Invalid("signer 不能为空")
 		}
 	case "pair":
 		// 父子进程对，格式 parent.exe>child.exe
 		if !strings.Contains(string(value), ">") {
-			return nil, apperr.Invalid("pair 格式应为 parent.exe>child.exe")
+			return nil, 0, apperr.Invalid("pair 格式应为 parent.exe>child.exe")
 		}
 		value = strings.ToLower(value)
 	case "cmdline":
 		if value == "" {
-			return nil, apperr.Invalid("cmdline 不能为空")
+			return nil, 0, apperr.Invalid("cmdline 不能为空")
 		}
 	default:
-		return nil, apperr.Invalid("白名单类型非法，可选 hash/path/signer/pair/cmdline")
+		return nil, 0, apperr.Invalid("白名单类型非法，可选 hash/path/signer/pair/cmdline")
 	}
 
 	e := &domain.AllowlistEntry{
@@ -239,10 +243,19 @@ func (s *RuleService) AddAllowlist(ctx context.Context, typ, value, note, by str
 		CreatedAt: time.Now(),
 	}
 	if err := s.repos.Allowlist.Add(ctx, e); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	s.log.InfoContext(ctx, "allowlist_added", "type", typ, "value", truncate(value, 120), "by", by)
-	return e, nil
+
+	recycled, err := s.repos.Alerts.RecycleForAllow(ctx, typ, value, by, time.Now())
+	if err != nil {
+		// 回收失败不影响加白本身，只记录
+		s.log.WarnContext(ctx, "allowlist_recycle_failed", "err", err)
+		recycled = 0
+	}
+
+	s.log.InfoContext(ctx, "allowlist_added",
+		"type", typ, "value", truncate(value, 120), "by", by, "recycled", recycled)
+	return e, recycled, nil
 }
 
 // DeleteAllowlist 删除白名单项。

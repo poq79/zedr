@@ -463,3 +463,59 @@ func (e *testEnv) doAgentJSON(method, path string, body any, wantStatus int) age
 	_ = json.Unmarshal(respBody, &wrap)
 	return agentResponse{status: res.StatusCode, data: wrap.Data}
 }
+
+// TestAllowlistRecyclesOpenAlerts 验证"加白即回收"闭环：
+// 已存在的未处置告警，在加入匹配的白名单后应自动变成误报。
+func TestAllowlistRecyclesOpenAlerts(t *testing.T) {
+	env := newTestEnv(t)
+	agent := env.enrollAgent()
+	env.agent = agent
+
+	const badHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	batch := model.AlertBatchRequest{Alerts: []model.AlertEnvelope{{
+		Fingerprint: "fp-recycle", Title: "待回收告警", Summary: "测试",
+		Verdict: model.VerdictSuspicious, Severity: model.SeverityMedium, Score: 45,
+		PID: 500, PPID: 4, ProcessName: "tool.exe",
+		ImagePath: `C://Tools//tool.exe`, HashSHA256: badHash,
+		OccurredAt: time.Now(),
+	}}}
+	env.doAgentJSON(http.MethodPost, "/api/v1/agent/alerts", batch, http.StatusOK)
+
+	var list struct {
+		Items []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	env.doJSON(http.MethodGet, "/api/v1/alerts", nil, http.StatusOK, env.token, &list)
+	if len(list.Items) != 1 {
+		t.Fatalf("期望 1 条告警，实际 %d", len(list.Items))
+	}
+	if list.Items[0].Status != "open" {
+		t.Fatalf("初始状态应为 open，实际 %s", list.Items[0].Status)
+	}
+
+	// 加白 → 应自动回收
+	var res struct {
+		Recycled int `json:"recycled_alerts"`
+		Entry    struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		} `json:"entry"`
+	}
+	env.doJSON(http.MethodPost, "/api/v1/allowlist",
+		map[string]string{"type": "hash", "value": badHash, "note": "测试回收"},
+		http.StatusOK, env.token, &res)
+	if res.Recycled != 1 {
+		t.Fatalf("期望回收 1 条告警，实际 %d", res.Recycled)
+	}
+	if res.Entry.Value != badHash {
+		t.Fatalf("白名单条目返回异常: %+v", res.Entry)
+	}
+
+	env.doJSON(http.MethodGet, "/api/v1/alerts", nil, http.StatusOK, env.token, &list)
+	if list.Items[0].Status != "false_positive" {
+		t.Fatalf("告警应被回收为误报，实际 %s", list.Items[0].Status)
+	}
+}

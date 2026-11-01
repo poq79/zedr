@@ -232,6 +232,38 @@ func (r *alertRepo) CountOpenByAgent(ctx context.Context) (map[string]int, error
 	return out, rows.Err()
 }
 
+// RecycleForAllow 实现"加白即回收"：把与白名单对象匹配的未处置告警
+// 直接标记为误报，避免运维加白后还要逐条手工作废。
+func (r *alertRepo) RecycleForAllow(ctx context.Context, typ, value, by string, at time.Time) (int64, error) {
+	var where string
+	var arg any
+
+	switch typ {
+	case "hash":
+		where = "hash_sha256 = ?"
+		arg = value
+	case "path":
+		// 路径白名单是"包含"语义，这里保持一致
+		where = "image_path LIKE ?"
+		arg = "%" + value + "%"
+	case "signer":
+		where = "signer = ?"
+		arg = value
+	default:
+		return 0, nil // pair / cmdline 无法用 SQL 精确表达，跳过
+	}
+
+	res, err := r.s.db.ExecContext(ctx,
+		`UPDATE alerts SET status = 'false_positive', handled_by = ?, handled_at = ?,
+		        note = CASE WHEN note = '' THEN '白名单自动回收' ELSE note || ' / 白名单自动回收' END
+		 WHERE status IN ('open','acknowledged') AND `+where,
+		by, millis(at), arg)
+	if err != nil {
+		return 0, fmt.Errorf("回收历史告警失败: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 func (r *alertRepo) PurgeBefore(ctx context.Context, before time.Time) (int64, error) {
 	res, err := r.s.db.ExecContext(ctx,
 		`DELETE FROM alerts WHERE created_at < ? AND status IN ('resolved','false_positive')`, millis(before))

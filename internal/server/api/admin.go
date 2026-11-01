@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -297,14 +298,17 @@ func (h *adminHandler) addAllowlist(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
-	e, err := h.deps.Services.Rule.AddAllowlist(r.Context(), req.Type, req.Value, req.Note, p.Username)
+	e, recycled, err := h.deps.Services.Rule.AddAllowlist(r.Context(), req.Type, req.Value, req.Note, p.Username)
 	if err != nil {
 		httpx.WriteError(w, r, err)
 		return
 	}
 	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "allowlist.add", e.ID,
-		req.Type+"="+req.Value, httpx.ClientIP(r))
-	httpx.WriteJSON(w, r, http.StatusOK, e)
+		fmt.Sprintf("%s=%s（自动回收告警 %d 条）", req.Type, req.Value, recycled), httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+		"entry":           e,
+		"recycled_alerts": recycled,
+	})
 }
 
 func (h *adminHandler) deleteAllowlist(w http.ResponseWriter, r *http.Request) {

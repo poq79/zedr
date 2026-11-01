@@ -75,6 +75,7 @@ type RuntimeInfo struct {
 	PendingAlerts int      `json:"pending_alerts"`
 	DroppedAlerts int64    `json:"dropped_alerts"`
 	ScanInterval string    `json:"scan_interval"`
+	Collector    string    `json:"collector"`
 	LastScanAt   time.Time `json:"last_scan_at"`
 	Warmup       bool      `json:"warmup"`
 	WarmupUntil  time.Time `json:"warmup_until"`

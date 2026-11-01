@@ -26,6 +26,7 @@ func main() {
 	// 避免因进程过快退出导致漏检（这是用户态轮询采集固有的 TOCTOU 特性）。
 	hold := flag.Duration("hold", 0, "输出结果后保持存活的时长，例如 15s")
 	spawn := flag.String("spawn", "", "拉起一个子进程（空格分隔的命令行），用于模拟父子链攻击场景")
+	compare := flag.Bool("compare", false, "对比两种进程枚举引擎的耗时与结果差异")
 	flag.Parse()
 
 	fmt.Println("=== HostGuard 采集层自检 ===")
@@ -141,6 +142,10 @@ func main() {
 		}
 	}
 
+	if *compare {
+		compareCollectors()
+	}
+
 	fmt.Println("\n自检完成。")
 
 	if *hold > 0 {
@@ -168,4 +173,47 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// compareCollectors 对比 Toolhelp32 与 NtQuerySystemInformation 两种枚举方式。
+// 用途：在目标 Windows 版本上评估新引擎能否替换旧引擎。
+func compareCollectors() {
+	fmt.Println("\n--- 采集引擎对比（各 20 次）---")
+
+	// 预热，避免首次调用的加载开销污染数据
+	_, _ = winapi.SnapshotProcesses()
+	_ = winapi.ProbeNT()
+
+	const rounds = 20
+
+	t0 := time.Now()
+	var toolhelpCount int
+	for i := 0; i < rounds; i++ {
+		list, err := winapi.SnapshotProcesses()
+		if err != nil {
+			fmt.Printf("Toolhelp32 失败: %v\n", err)
+			return
+		}
+		toolhelpCount = len(list)
+	}
+	toolAvg := time.Since(t0) / rounds
+
+	t1 := time.Now()
+	var ntCount int
+	for i := 0; i < rounds; i++ {
+		list, err := winapi.SnapshotProcessesNT()
+		if err != nil {
+			fmt.Printf("NtQuerySystemInformation 失败: %v\n", err)
+			fmt.Println("  => 该环境应使用 HG_AGENT_COLLECTOR=toolhelp")
+			return
+		}
+		ntCount = len(list)
+	}
+	ntAvg := time.Since(t1) / rounds
+
+	fmt.Printf("Toolhelp32             : %-8v  %d 个进程\n", toolAvg, toolhelpCount)
+	fmt.Printf("NtQuerySystemInformation: %-8v  %d 个进程\n", ntAvg, ntCount)
+	if ntAvg > 0 {
+		fmt.Printf("加速比                  : %.1fx\n", float64(toolAvg)/float64(ntAvg))
+	}
 }

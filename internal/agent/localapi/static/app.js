@@ -126,6 +126,49 @@ function renderAlerts() {
   });
 }
 
+// 渲染"接近阈值"观察列表：评分未达告警线、但已经有信号的进程。
+// 这段信息对调参和误报分析很有价值——能看出"差一点就报警"的到底是什么。
+function renderWatchlist() {
+  const box = $('#watchList');
+  if (!box) return;
+  const watch = procs
+    .filter((p) => (p.score || 0) >= 20 && (p.score || 0) < 38)
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, 12);
+
+  if (!watch.length) {
+    box.innerHTML = '<div class="empty">暂无接近阈值的进程</div>';
+    return;
+  }
+  $('#watchMeta').textContent = `评分 20–37，未达告警线 · 共 ${watch.length} 个`;
+
+  box.innerHTML = watch.map((p) => `
+    <div class="alert-row" style="cursor:default">
+      <span class="badge medium">${p.score || 0}</span>
+      <span class="main-col">
+        <div class="t">${esc(p.name)}</div>
+        <div class="d">${esc(p.title || '—')} · ${esc(p.path || '')}</div>
+      </span>
+      <button class="btn sm" data-allow-path="${esc(p.path || '')}" data-allow-name="${esc(p.name)}">信任此路径</button>
+    </div>`).join('');
+
+  $$('[data-allow-path]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const path = btn.dataset.allowPath;
+      if (!path) return toast('该进程没有可用的镜像路径', 'err');
+      if (!confirm(`确认信任该路径？\n\n${path}`)) return;
+      try {
+        await api('/api/local/allowlist', {
+          method: 'POST',
+          body: { type: 'path', value: path, note: `观察列表加白：${btn.dataset.allowName}` },
+        });
+        toast('已加入本地白名单');
+        refresh();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  });
+}
+
 function renderProcs() {
   const q = $('#procFilter').value.trim().toLowerCase();
   const sortBy = $('#procSort').value;
@@ -348,6 +391,7 @@ async function refresh() {
 
     renderCards(s);
     renderAlerts();
+    renderWatchlist();
     renderProcs();
     renderAllow(aw.items || []);
   } catch (e) {
