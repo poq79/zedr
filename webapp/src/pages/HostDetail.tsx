@@ -10,6 +10,7 @@ import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
 import { LiveFilesTab } from './HostLiveFiles';
 import { LiveProcsTab, LiveProbeInfo } from './HostLiveProcs';
+import { HostReconTab } from './HostReconTab';
 
 /* 主机详情（整页，/hosts/:id）。
    资产清单 7 节各有明确 schema（服务/任务/自启动动辄数百行），
@@ -133,6 +134,7 @@ export function HostDetailPage({ user }: { user: User }) {
               { key: 'network', label: '网络', count: rowsOf('adapters').length + rowsOf('listeners').length },
               { key: 'liveprocs', label: '实时进程' },
               { key: 'live', label: '实时文件' },
+              { key: 'recon', label: '资产侦查' },
               { key: 'changes', label: '变更', count: changes?.length },
               { key: 'ops', label: '处置与历史', count: cmds?.length },
             ]}
@@ -227,6 +229,7 @@ export function HostDetailPage({ user }: { user: User }) {
               <LiveFilesTab agentId={id} user={user}
                 openPath={liveFileTarget} onOpenPathDone={() => setLiveFileTarget(null)} />
             )}
+            {tab === 'recon' && <HostReconTab agentId={id} />}
             {tab === 'changes' && (
               <Card className="p-4">
                 <div className="mb-2.5 flex flex-wrap items-center gap-2.5">

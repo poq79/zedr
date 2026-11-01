@@ -232,6 +232,16 @@ export const live = {
   /** 探针实时运行时（主机详情探针状态行轮询用） */
   info: (agentId: string) =>
     liveJSON<import('./types').LiveInfo>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/info`),
+  /** 资产侦查（LIVE-TUNNEL §12）：六类资产 + 暴露面；probe=false 仅被动采集 */
+  recon: (agentId: string, opts: { categories?: string[]; probe?: boolean } = {}) => {
+    const q: string[] = [];
+    // categories 来自固定白名单（web/ai/db/remote/dev/virt），无需额外编码
+    if (opts.categories && opts.categories.length) q.push(`categories=${opts.categories.join(',')}`);
+    if (opts.probe !== undefined) q.push(`probe=${opts.probe ? '1' : '0'}`);
+    return liveJSON<import('./types').ReconResult>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/recon${q.length ? `?${q.join('&')}` : ''}`,
+    );
+  },
 };
 
 /** 隧道错误分类：供 UI 层映射专用状态（状态条/Toast/内联说明） */

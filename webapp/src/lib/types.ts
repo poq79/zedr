@@ -348,3 +348,89 @@ export interface LiveInfo {
   scan_interval?: number;
   collector?: string;
 }
+
+/* ---- 资产侦查（docs/LIVE-TUNNEL.md §12.2 契约镜像，第三轮 F4）----
+   后端 recon 并行实现中：Finding 的对象字段按契约全部可空，且允许
+   `findings: ["人话描述 + 建议"]` 的纯字符串形态——前端两种都要渲染。 */
+
+export type ReconExposureLevel = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+/** 监听端点（addr 可能是 0.0.0.0 / :: / 127.0.0.1） */
+export interface ReconListen {
+  proto?: string;
+  addr?: string;
+  port?: number;
+}
+
+/** 有进程归属时的进程上下文（字段可能缺省） */
+export interface ReconProcess {
+  pid?: number;
+  name?: string;
+  path?: string;
+  user?: string;
+  cmdline?: string;
+  started_at?: string;
+}
+
+/** 暴露面判定：level + 证据（证据前端折叠展示，不丢判定依据） */
+export interface ReconExposure {
+  level?: ReconExposureLevel | string;
+  evidence?: string[];
+}
+
+/** Finding 的对象形态：字段名以最终实现为准，这里只列常见键并保留索引签名 */
+export interface ReconFinding {
+  id?: string;
+  severity?: ReconExposureLevel | string;
+  title?: string;
+  message?: string;
+  description?: string;
+  detail?: string;
+  advice?: string;
+  recommendation?: string;
+  suggestion?: string;
+  solution?: string;
+  asset_id?: string;
+  category?: string;
+  evidence?: string[];
+  [key: string]: unknown;
+}
+
+export type ReconFindingLike = string | ReconFinding;
+
+/** 单个资产（应用 / 服务 / 监听面） */
+export interface ReconAssetItem {
+  id?: string;
+  category?: string;
+  /** iis/ollama/redis/rdp/jupyter/wsl…（前端渲染为中性 kind 徽标） */
+  kind?: string;
+  title?: string;
+  process?: ReconProcess;
+  listens?: ReconListen[];
+  /** 可 HTTP 访问时的地址（如 http://127.0.0.1:11434） */
+  endpoint?: string;
+  exposure?: ReconExposure;
+  /** 类目特有键值；前端按 category/kind 定制渲染，禁止裸 JSON */
+  details?: Record<string, unknown>;
+  findings?: ReconFindingLike[];
+}
+
+export interface ReconCategory {
+  key?: string;
+  title?: string;
+  items?: ReconAssetItem[];
+  findings?: ReconFindingLike[];
+  /** 单类失败不影响其他类 */
+  error?: string;
+}
+
+/** GET /hosts/{id}/live/recon 的统一结果（§12.2） */
+export interface ReconResult {
+  generated_at?: string;
+  duration_ms?: number;
+  /** false = 仅被动采集（未做主动探测） */
+  probed?: boolean;
+  /** true = 入口预算用尽，结果不完整 */
+  truncated?: boolean;
+  categories?: ReconCategory[];
+}
