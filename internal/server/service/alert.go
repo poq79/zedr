@@ -102,7 +102,9 @@ func (s *AlertService) Ingest(ctx context.Context, agent *domain.Agent, req mode
 			resp.Rejected++
 			continue
 		}
-		if strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.ProcessName) == "" {
+		// 进程告警必有 ProcessName；资产变更事件（inventory 层）是主机级
+		// 事实，没有进程上下文——只强制标题，进程名允许为空。
+		if strings.TrimSpace(in.Title) == "" {
 			resp.Rejected++
 			continue
 		}

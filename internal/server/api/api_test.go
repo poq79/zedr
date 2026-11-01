@@ -389,6 +389,56 @@ func TestRBACAndValidation(t *testing.T) {
 		http.StatusBadRequest, env.token, nil)
 }
 
+// TestIngestAcceptsHostLevelAlert 回归：资产变更等主机级事件没有进程上下文，
+// 空 ProcessName 必须被接受（此前被进程告警的强校验误拒，见 ROADMAP 大方向实测）。
+func TestIngestAcceptsHostLevelAlert(t *testing.T) {
+	env := newTestEnv(t)
+	agent := env.enrollAgent()
+	env.agent = agent
+	env.doAgentJSON(http.MethodPost, "/api/v1/agent/heartbeat",
+		map[string]any{"hostname": "TEST-HOST"}, http.StatusOK)
+
+	res := env.doAgentJSON(http.MethodPost, "/api/v1/agent/alerts", model.AlertBatchRequest{
+		Alerts: []model.AlertEnvelope{{
+			Fingerprint: "fp-host-level",
+			Title:       "资产变更：新增计划任务 \\HostGuardE2E",
+			Summary:     "计划任务 \\HostGuardE2E 新增（cmd /c echo）",
+			Verdict:     model.VerdictSuspicious,
+			Severity:    model.SeverityMedium,
+			Score:       45,
+			OccurredAt:  time.Now(),
+			Evidence: model.Evidence{Signals: []model.Signal{{
+				Layer: "inventory", ID: "INV-TASKS", Score: 45, MITRE: "T1053.005",
+			}}},
+		}},
+	}, http.StatusOK)
+	var resp model.AlertBatchResponse
+	if err := json.Unmarshal(res.data, &resp); err != nil {
+		t.Fatalf("解析上报结果失败: %v", err)
+	}
+	if resp.Accepted != 1 || resp.Rejected != 0 {
+		t.Fatalf("主机级告警应被接受，实际 %+v", resp)
+	}
+
+	// 管理台能查到，且证据层完整
+	var list struct {
+		Items []struct {
+			Title    string `json:"title"`
+			Severity string `json:"severity"`
+			Evidence struct {
+				Signals []struct {
+					Layer string `json:"layer"`
+					ID    string `json:"id"`
+				} `json:"signals"`
+			} `json:"evidence"`
+		} `json:"items"`
+	}
+	env.doJSON(http.MethodGet, "/api/v1/alerts?q=HostGuardE2E", nil, http.StatusOK, env.token, &list)
+	if len(list.Items) != 1 || list.Items[0].Evidence.Signals[0].Layer != "inventory" {
+		t.Fatalf("主机级告警未落库或证据层丢失: %+v", list.Items)
+	}
+}
+
 func TestKillCommandRequiresServerOptIn(t *testing.T) {
 	env := newTestEnv(t)
 	agent := env.enrollAgent()
