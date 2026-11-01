@@ -84,11 +84,9 @@ export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, c
     <div className="flex h-screen overflow-hidden">
       <aside className="flex w-[220px] shrink-0 flex-col border-r border-border bg-sidebar px-3 py-4 text-sidebar-foreground">
         <div className="flex items-center gap-2.5 px-2 pb-4">
-          <div className="grid h-[30px] w-[30px] place-items-center rounded-lg bg-gradient-to-br from-primary to-[var(--ok)] text-[15px] font-bold text-[#04101f]">H</div>
-          <div className="leading-tight">
-            <b className="text-[15px] tracking-[.2px] text-foreground">HostGuard</b>
-            <span className="block text-[10.5px] tracking-[.6px] text-ghost">PROCESS SECURITY</span>
-          </div>
+          {/* 纯色徽标：渐变块+英文装饰字是 slop 清单典型项；方块只承载品牌识别 */}
+          <div className="grid h-[30px] w-[30px] place-items-center rounded-md bg-primary text-[15px] font-bold text-primary-foreground">H</div>
+          <b className="text-[15px] tracking-[.2px] text-foreground">HostGuard</b>
         </div>
 
         <nav className="mt-1.5 flex flex-col gap-0.5">
@@ -131,7 +129,8 @@ export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, c
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center gap-3.5 border-b border-border-soft bg-[rgba(13,20,32,.82)] px-5 backdrop-blur-xl light:bg-white/85">
+        {/* 顶栏纯平：毛玻璃（backdrop-blur）在反模式清单里，发丝线就够 */}
+        <header className="flex h-14 shrink-0 items-center gap-3.5 border-b border-border-soft bg-background px-5">
           <h1 className="m-0 text-[15px] font-semibold tracking-[.2px]">{title}</h1>
           <div className="flex-1" />
           <span className={cn('flex items-center gap-1.5 text-[11.5px] text-faint', !live && 'opacity-80')}>
@@ -140,7 +139,7 @@ export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, c
           </span>
           <span className="inline-flex items-center gap-1 text-[11px] text-ghost" title="数据最后更新时间">
             <RefreshCw size={12} className="hidden" />
-            更新于 {freshness}
+            更新于 <span className="font-mono">{freshness}</span>
           </span>
           <Button variant="ghost" size="sm" onClick={onRefresh} title="重新拉取数据（R）">
             <RefreshCw size={13} strokeWidth={1.8} /> 刷新

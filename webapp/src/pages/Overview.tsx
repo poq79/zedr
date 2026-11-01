@@ -40,7 +40,9 @@ export function OverviewPage() {
 
   return (
     <div>
-      <div className="mb-3.5 grid grid-cols-2 gap-3.5 xl:grid-cols-4">
+      {/* KPI 数据带：一格面板 + 内部发丝线分隔，替代四张浮动卡片。
+          数字一律 mono——仪表读数是本系统的记忆锚点（UI-DESIGN §3） */}
+      <div className="mb-3.5 grid grid-cols-2 divide-border-soft border border-border-soft rounded-md bg-card xl:grid-cols-4 xl:divide-x">
         <Kpi loading={loading} label="受管主机" tone={hostRate < 60 ? 'warn' : 'ok'} value={d?.online_hosts ?? 0} suffix={d ? `/${d.total_hosts}` : ''} sub={`在线率 ${hostRate}%`} />
         <Kpi loading={loading} label="近 24 小时告警" value={d?.alerts_24h ?? 0} sub={d ? `全部告警 ${d.open_alerts + (d.alerts_24h || 0)} 条量级` : ''} />
         <Kpi loading={loading} label="待处置告警" tone="warn" value={d?.open_alerts ?? 0} sub="需人工确认" />
@@ -48,11 +50,10 @@ export function OverviewPage() {
       </div>
 
       {(d?.avg_response_min || 0) > 0 && (
-        <Card className="mb-3.5 flex items-center gap-3 px-4 py-3">
-          <span className="rounded-full border border-ok/25 bg-ok-soft px-2 py-0.5 text-[11.5px] font-semibold text-ok">MTTR</span>
-          <span>过去 7 天平均处置时长 <b className="text-[16px]">{d!.avg_response_min!.toFixed(0)}</b> 分钟</span>
-          <span className="text-xs text-faint">响应快慢从此有数可依，不再靠感觉</span>
-        </Card>
+        <div className="mb-3.5 flex items-center gap-3 rounded-md border border-border-soft bg-card px-4 py-2.5">
+          <span className="rounded-[5px] border border-ok/25 bg-ok-soft px-1.5 py-0.5 font-mono text-[11px] font-semibold tracking-[.4px] text-ok">MTTR</span>
+          <span className="text-[12.5px] text-muted-foreground">过去 7 天平均处置时长 <b className="font-mono text-[15px] tabular-nums text-foreground">{d!.avg_response_min!.toFixed(0)}</b> 分钟</span>
+        </div>
       )}
 
       <div className="mb-3.5 grid gap-3.5 lg:grid-cols-3">
@@ -64,7 +65,7 @@ export function OverviewPage() {
           <CardTitle className="mb-3.5">严重度分布</CardTitle>
           <SeverityDonut dist={d?.severity_dist} loading={loading} />
           <div className="mt-3.5 text-xs text-faint">
-            平均置信分 <b className="text-foreground">{(d?.avg_score || 0).toFixed(1)}</b>
+            平均置信分 <b className="font-mono tabular-nums text-foreground">{(d?.avg_score || 0).toFixed(1)}</b>
           </div>
         </Card>
       </div>
@@ -95,16 +96,14 @@ function Kpi({ loading, label, value, suffix, sub, tone }: {
   loading?: boolean; label: string; value: number | string; suffix?: string; sub?: string; tone?: 'warn' | 'crit' | 'ok';
 }) {
   const toneCls = tone === 'crit' ? 'text-crit' : tone === 'warn' ? 'text-warn' : tone === 'ok' ? 'text-ok' : '';
-  const barCls = tone === 'crit' ? 'from-crit' : tone === 'warn' ? 'from-warn' : tone === 'ok' ? 'from-ok' : 'from-primary';
   return (
-    <Card className="relative overflow-hidden p-4 transition-transform duration-150 hover:-translate-y-px">
-      <span className={`absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r ${barCls} to-transparent opacity-55`} />
-      <div className="text-xs tracking-[.3px] text-faint">{label}</div>
-      <div className={`anim-digit mt-2 text-[30px] leading-none font-[650] tabular-nums ${toneCls}`}>
-        {loading ? <Skeleton className="h-7 w-16" /> : <>{value}{suffix && <span className="text-[15px] text-faint">{suffix}</span>}</>}
+    <div className="px-4 py-3.5">
+      <div className="text-[11px] tracking-[.5px] text-faint">{label}</div>
+      <div className={`anim-digit mt-1.5 font-mono text-[26px] leading-none font-semibold tabular-nums ${toneCls}`}>
+        {loading ? <Skeleton className="h-6 w-16" /> : <>{value}{suffix && <span className="text-[14px] text-faint">{suffix}</span>}</>}
       </div>
-      <div className="mt-2 text-[11.5px] text-faint">{sub}</div>
-    </Card>
+      <div className="mt-1.5 text-[11.5px] text-faint">{sub}</div>
+    </div>
   );
 }
 

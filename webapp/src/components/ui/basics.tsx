@@ -71,8 +71,8 @@ export function Badge({ tone = 'neutral', className, children, title }: { tone?:
 export function Card({ className, children, style }: { className?: string; children: ReactNode; style?: React.CSSProperties }) {
   return (
     <div style={style} className={cn(
-      'rounded-md border border-border-soft bg-card shadow-sm',
-      'bg-gradient-to-b from-white/[.018] to-transparent [background-clip:padding-box]',
+      // 纯平面板：发丝线定边界，不叠阴影/渐变层——层次靠面层色阶，不靠投影
+      'rounded-md border border-border-soft bg-card',
       className,
     )}>
       {children}

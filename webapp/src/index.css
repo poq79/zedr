@@ -13,7 +13,8 @@
 @custom-variant light (&:is(.light *));
 
 :root {
-  --radius: 0.625rem;
+  /* 8px：仪器感的圆角上限，再大就开始像消费级卡片 */
+  --radius: 0.5rem;
 
   /* 暗色（默认）：背景不用纯黑，面层逐级抬升 */
   --background: #070b14;
@@ -146,19 +147,15 @@ html.light {
 html, body { height: 100%; }
 body {
   margin: 0;
-  background:
-    radial-gradient(1100px 520px at 8% -8%, var(--brand-soft), transparent 62%),
-    var(--background);
-  background-attachment: fixed;
+  /* 纯平背景：径向光斑/氛围渐变都在反模式清单里（UI-DESIGN §6），
+     仪器的底色必须是平的，层次交给发丝线而不是光晕 */
+  background: var(--background);
   color: var(--foreground);
-  font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  /* 双声部字体：界面 Segoe UI × 数据 Cascadia/Consolas（--font-mono）。
+     刻意不用 Inter——slop 特征清单第一名，且系统自带字体离线零依赖 */
+  font-family: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
-}
-html.light body {
-  background:
-    radial-gradient(1100px 520px at 8% -8%, rgba(47, 111, 224, .06), transparent 62%),
-    var(--background);
 }
 
 ::selection { background: rgba(61, 139, 253, .35); }

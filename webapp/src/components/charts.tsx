@@ -24,7 +24,8 @@ export function TimelineChart({ points, loading }: { points?: HourPoint[]; loadi
     const v = Math.round((max / 3) * i);
     const y = padT + innerH - (i / 3) * innerH;
     grid.push(<line key={`g${i}`} x1={padL} y1={y} x2={W - 8} y2={y} stroke="var(--border-strong)" strokeWidth={1} />);
-    grid.push(<text key={`t${i}`} x={padL - 6} y={y + 3.5} fontSize={9} fill="var(--faint)" textAnchor="end">{v}</text>);
+    // 坐标轴读数用 mono——仪表刻度感是本设计系统的记忆锚点
+    grid.push(<text key={`t${i}`} x={padL - 6} y={y + 3.5} fontSize={9} fill="var(--faint)" textAnchor="end" style={{ fontFamily: 'var(--font-mono)' }}>{v}</text>);
   }
 
   const step = Math.max(1, Math.ceil(points.length / 6));
@@ -33,7 +34,7 @@ export function TimelineChart({ points, loading }: { points?: HourPoint[]; loadi
     const d = new Date(p.bucket);
     const hh = String(d.getHours()).padStart(2, '0');
     const x = padL + i * bw + bw / 2;
-    return <text key={`x${i}`} x={x} y={H - 5} fontSize={9} fill="var(--faint)" textAnchor="middle">{hh}:00</text>;
+    return <text key={`x${i}`} x={x} y={H - 5} fontSize={9} fill="var(--faint)" textAnchor="middle" style={{ fontFamily: 'var(--font-mono)' }}>{hh}:00</text>;
   });
 
   const rects = points.map((p, i) => {
@@ -98,7 +99,7 @@ export function SeverityDonut({ dist, loading }: { dist?: Record<string, number>
     <div key={k} className="mb-1.5 flex items-center gap-2 text-xs">
       <i className="h-2 w-2 rounded-[2px]" style={{ background: SEV_COLOR[k] }} />
       <span className="flex-1 text-muted-foreground">{SEV_LABEL[k]}</span>
-      <b className="tabular-nums">{dist![k]}</b>
+      <b className="font-mono tabular-nums">{dist![k]}</b>
     </div>
   ));
 
@@ -107,7 +108,7 @@ export function SeverityDonut({ dist, loading }: { dist?: Record<string, number>
       <svg viewBox="0 0 120 120" width={120} height={120} className="shrink-0">
         <circle cx={60} cy={60} r={R} fill="none" stroke="var(--border)" strokeWidth={14} />
         {arcs}
-        <text x={60} y={58} textAnchor="middle" fontSize={20} fontWeight={700} fill="var(--foreground)">{total}</text>
+        <text x={60} y={58} textAnchor="middle" fontSize={20} fontWeight={700} fill="var(--foreground)" style={{ fontFamily: 'var(--font-mono)' }}>{total}</text>
         <text x={60} y={74} textAnchor="middle" fontSize={9} fill="var(--faint)">总告警</text>
       </svg>
       <div className="flex-1">{rows}</div>
@@ -125,10 +126,11 @@ export function BarList({ items, emptyText = '暂无数据可供排行' }: {
       {items.map((it) => (
         <div key={it.name} className="mb-2 flex items-center gap-2.5 text-[12.5px]">
           <span className="w-[150px] truncate text-muted-foreground" title={it.name}>{it.name}</span>
-          <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-border-soft">
-            <i className="block h-full rounded-full bg-gradient-to-r from-primary to-[var(--chart-crit)] transition-[width] duration-500" style={{ width: `${Math.max(2, (it.value / max) * 100)}%` }} />
+          {/* 实色条：蓝→粉渐变是 slop 清单典型项；仪器读数不需要装饰 */}
+          <span className="h-1.5 flex-1 overflow-hidden rounded-[3px] bg-border-soft">
+            <i className="block h-full rounded-[3px] transition-[width] duration-500" style={{ width: `${Math.max(2, (it.value / max) * 100)}%`, background: 'var(--chart-bar)' }} />
           </span>
-          <span className="w-9 text-right tabular-nums text-faint">{it.value}</span>
+          <span className="w-10 text-right font-mono tabular-nums text-faint">{it.value}</span>
         </div>
       ))}
     </div>

@@ -33,14 +33,15 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
   };
 
   return (
-    <div className="fixed inset-0 z-100 grid place-items-center bg-[radial-gradient(ellipse_at_50%_-10%,#14213a_0%,var(--background)_55%)] light:bg-[radial-gradient(ellipse_at_50%_-10%,#dbe7f7_0%,var(--background)_55%)]">
+    // 纯平背景：登录页不放氛围光斑（反模式清单），安静本身就是安全产品的姿态
+    <div className="fixed inset-0 z-100 grid place-items-center bg-background">
       <form
         onSubmit={submit} autoComplete="on"
-        className="w-[380px] rounded-lg border border-border bg-card p-7 shadow-2xl"
+        className="w-[380px] rounded-lg border border-border bg-card p-7"
         style={{ animation: 'page-in 400ms cubic-bezier(.22,1,.36,1)' }}
       >
         <div className="mb-5.5 flex items-center gap-3.5">
-          <div className="grid h-11.5 w-11.5 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary to-[var(--ok)] text-[22px] font-extrabold text-[#06101f] shadow-[0_8px_24px_rgba(75,147,255,.28)]">
+          <div className="grid h-11.5 w-11.5 shrink-0 place-items-center rounded-xl bg-primary text-[22px] font-extrabold text-primary-foreground">
             <ShieldCheck size={24} strokeWidth={2} />
           </div>
           <div>
