@@ -168,9 +168,12 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/allowlist", viewer(adminH.listAllowlist))
 	mux.Handle("POST /api/v1/allowlist", writer(adminH.addAllowlist))
 	mux.Handle("DELETE /api/v1/allowlist/{id}", writer(adminH.deleteAllowlist))
+	mux.Handle("GET /api/v1/allowlist/export", adminOnly(adminH.exportAllowlist))
+	mux.Handle("POST /api/v1/allowlist/import", adminOnly(adminH.importAllowlist))
 
 	mux.Handle("GET /api/v1/incidents", viewer(adminH.listIncidents))
 	mux.Handle("GET /api/v1/report/weekly", viewer(adminH.weeklyReport))
+	mux.Handle("GET /api/v1/integrity", viewer(adminH.integrityReport))
 	mux.Handle("GET /api/v1/alerts/export", viewer(adminH.exportCSV))
 	mux.HandleFunc("GET /metrics", adminH.metrics)
 

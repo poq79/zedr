@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"context"
 	"log/slog"
 	"strings"
@@ -19,6 +20,16 @@ type AuthService struct {
 	tokens *auth.Manager
 	log    *slog.Logger
 	guard  loginGuard
+}
+
+// audit 写审计（登录失败/锁定等安全事件）。尽力而为：审计写失败
+// 不应放大成登录不可用。
+func (s *AuthService) audit(ctx context.Context, userID, username, action, target, detail, ip string) {
+	_ = s.repos.Audit.Add(ctx, &domain.AuditLog{
+		UserID: userID, Username: username, Action: action,
+		Target: target, Detail: truncate(detail, 2000),
+		IP: ip, CreatedAt: time.Now(),
+	})
 }
 
 // ---------------------------------------------------------------- 登录失败锁定
@@ -133,6 +144,8 @@ func (s *AuthService) Login(ctx context.Context, username, password, ip, ua stri
 	}
 
 	if locked, remain := s.guard.checkLocked(username); locked {
+		s.audit(ctx, "", username, "auth.login_locked", username,
+			fmt.Sprintf("锁定剩余 %d 秒", int(remain.Seconds())), ip)
 		s.log.WarnContext(ctx, "login_locked", "username", username, "ip", ip,
 			"remain_sec", int(remain.Seconds()))
 		return nil, apperr.Invalid("该账号已临时锁定（连续登录失败），请 %d 分钟后重试",
@@ -146,11 +159,16 @@ func (s *AuthService) Login(ctx context.Context, username, password, ip, ua stri
 	// 用户名不存在与密码错误返回同一文案，避免账号枚举
 	if u == nil || u.Disabled || !auth.ComparePassword(u.PasswordHash, password) {
 		if locked, remain := s.guard.recordFail(username); locked {
+			s.audit(ctx, "", username, "auth.login_locked", username,
+				fmt.Sprintf("连续失败触发锁定（剩余 %d 秒）", int(remain.Seconds())), ip)
 			s.log.WarnContext(ctx, "login_locked", "username", username, "ip", ip,
 				"remain_sec", int(remain.Seconds()))
 			return nil, apperr.Invalid("该账号已临时锁定（连续登录失败），请 %d 分钟后重试",
 				int(remain.Minutes())+1)
 		}
+		// 失败也进审计：暴力破解在 SIEM 侧的表现就是"同用户名大量
+		// auth.login_failed"，只写日志不入库的话，运营在管理台看不到
+		s.audit(ctx, "", username, "auth.login_failed", username, "", ip)
 		s.log.WarnContext(ctx, "login_failed", "username", username, "ip", ip)
 		return nil, apperr.Unauthenticated("用户名或密码错误")
 	}

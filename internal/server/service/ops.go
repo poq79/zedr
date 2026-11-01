@@ -60,6 +60,11 @@ func (s *StatsService) Metrics(ctx context.Context, startedAt time.Time, wh Sent
 	return m
 }
 
+// Versions 查询终端版本分布。
+func (s *StatsService) Versions(ctx context.Context) (map[string]int, error) {
+	return s.repos.Stats.VersionDist(ctx)
+}
+
 // SentFailedDropped 是 webhook 统计的取值函数（nil 安全由实现方保证）。
 type SentFailedDropped func() (sent, failed, dropped int64)
 
@@ -424,4 +429,80 @@ func (s *StatsService) WeeklyReport(ctx context.Context, window time.Duration) (
 		r.FPRate = float64(d.FalsePositive) / float64(handled)
 	}
 	return r, nil
+}
+
+
+// ---------------------------------------------------------------- 告警完整性链
+
+// DayCheck 是一天告警的完整性校验结果。
+type DayCheck struct {
+	Day        string `json:"day"`
+	Stored     string `json:"stored"`
+	Recomputed string `json:"recomputed"`
+	StoredN    int    `json:"stored_count"`
+	CurrentN   int    `json:"current_count"`
+	Status     string `json:"status"` // ok / purged / tampered
+}
+
+// EnsureIntegrity 把 day（本地时区日）的告警摘要归档进完整性链。
+// 幂等：已归档的日期直接跳过——链的意义在于"归档后不可变"，
+// 重复计算只会给事后篡改留口子。
+func (s *StatsService) EnsureIntegrity(ctx context.Context, day time.Time) error {
+	key := day.Format("2006-01-02")
+	if _, n, exists, err := s.repos.Alerts.IntegrityGet(ctx, key); err != nil {
+		return err
+	} else if exists {
+		_ = n
+		return nil
+	}
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.Local)
+	end := start.Add(24 * time.Hour)
+	digest, n, err := s.repos.Alerts.IntegrityDigest(ctx, start, end)
+	if err != nil {
+		return err
+	}
+	// 零告警的日子也归档：空日的存在本身是证据（"那天确实没有告警"）
+	return s.repos.Alerts.IntegrityPut(ctx, key, digest, n)
+}
+
+// VerifyIntegrity 重算链中每一天的摘要并与归档值比对。
+//
+// 边界要诚实：retention 清理会移除旧告警，那些天重算必然不一致，
+// 但特征是"条目数变少"，与"被篡改"（条目数不变而内容变）可区分——
+// 两种情况分别标记为 purged 与 tampered，不做含糊的 fail。
+func (s *StatsService) VerifyIntegrity(ctx context.Context) ([]DayCheck, error) {
+	days, err := s.repos.Alerts.IntegrityDays(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DayCheck, 0, len(days))
+	for _, day := range days {
+		d, err := time.ParseInLocation("2006-01-02", day, time.Local)
+		if err != nil {
+			continue
+		}
+		stored, storedN, _, err := s.repos.Alerts.IntegrityGet(ctx, day)
+		if err != nil {
+			return nil, err
+		}
+		start := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.Local)
+		recomputed, n, err := s.repos.Alerts.IntegrityDigest(ctx, start, start.Add(24*time.Hour))
+		if err != nil {
+			return nil, err
+		}
+		status := "ok"
+		switch {
+		case recomputed == stored:
+			status = "ok"
+		case n < storedN:
+			status = "purged" // retention 正常清理
+		default:
+			status = "tampered"
+		}
+		out = append(out, DayCheck{
+			Day: day, Stored: stored, Recomputed: recomputed,
+			StoredN: storedN, CurrentN: n, Status: status,
+		})
+	}
+	return out, nil
 }

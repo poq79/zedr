@@ -1,6 +1,7 @@
 package api
 
 import (
+	"hostguard/internal/platform/apperr"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -164,11 +165,15 @@ func (h *adminHandler) listHosts(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
-	// 时钟偏移是运行时值（不落库），在这里合入响应
+	// 时钟偏移与队列丢弃都是运行时值（不落库），在这里合入响应
 	skews := h.deps.Services.Agent.SkewMap()
+	drops := h.deps.Services.Agent.DroppedMap()
 	for i := range agents {
 		if v, ok := skews[agents[i].ID]; ok {
 			agents[i].ClockSkewMS = v
+		}
+		if v, ok := drops[agents[i].ID]; ok && v > 0 {
+			agents[i].QueueDropped = v
 		}
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"items": agents, "total": len(agents)})
@@ -317,6 +322,71 @@ func (h *adminHandler) deleteRule(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------- 白名单
+
+// exportAllowlist 白名单整表导出（灾备/迁移）。
+// 白名单是降噪闭环的资产：重建服务端或迁移环境时，丢白名单
+// 等于把误报治理推倒重来。
+func (h *adminHandler) exportAllowlist(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	items, err := h.deps.Services.Rule.ListAllowlist(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username,
+		"allowlist.export", "", fmt.Sprintf("%d 条", len(items)), httpx.ClientIP(r))
+	w.Header().Set("Content-Disposition", `attachment; filename="hostguard-allowlist.json"`)
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+		"exported_at": time.Now().UTC(), "items": items,
+	})
+}
+
+// importAllowlistReq 导入载荷：与导出格式对称，便于"导出→导入"直通。
+type importAllowlistReq struct {
+	Entries []struct {
+		Type string `json:"type"`
+		Value string `json:"value"`
+		Note  string `json:"note"`
+	} `json:"entries"`
+}
+
+// importAllowlist 批量导入白名单。
+// 已存在的条目跳过（幂等）——导入应当可以安全地重复执行。
+func (h *adminHandler) importAllowlist(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req importAllowlistReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	if len(req.Entries) > 500 {
+		httpx.WriteError(w, r, apperr.Invalid("单次导入不能超过 500 条"))
+		return
+	}
+
+	added, skipped, failed := 0, 0, 0
+	for _, e := range req.Entries {
+		if _, _, err := h.deps.Services.Rule.AddAllowlist(r.Context(),
+			e.Type, e.Value, e.Note, p.Username); err != nil {
+			// 唯一键冲突 = 已存在 = 跳过；其他错误计失败
+			if strings.Contains(err.Error(), "已存在") || strings.Contains(err.Error(), "duplicate") ||
+				strings.Contains(err.Error(), "UNIQUE") {
+				skipped++
+			} else {
+				failed++
+			}
+			continue
+		}
+		added++
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username,
+		"allowlist.import", "",
+		fmt.Sprintf("added=%d skipped=%d failed=%d", added, skipped, failed),
+		httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+		"added": added, "skipped": skipped, "failed": failed,
+	})
+}
 
 func (h *adminHandler) listAllowlist(w http.ResponseWriter, r *http.Request) {
 	items, err := h.deps.Services.Rule.ListAllowlist(r.Context())

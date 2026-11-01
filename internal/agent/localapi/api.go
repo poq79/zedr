@@ -110,6 +110,28 @@ func (s *Server) routes() http.Handler {
 		httpx.WriteJSON(w, r, http.StatusOK, s.deps.Backend.Runtime())
 	})
 
+	// 隐私透明端点：被装机器的用户有权一键知道"这个软件采集我什么、
+	// 不采集什么、怎么脱敏"。知情权是安全产品与间谍软件的分界线。
+	api("GET /api/local/privacy", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+			"collected": []map[string]string{
+				{"item": "进程清单", "detail": "进程名、路径、命令行、启动账号、PID/PPID 血缘"},
+				{"item": "文件指纹", "detail": "可执行文件的 SHA256 哈希与数字签名状态（不上传文件内容）"},
+				{"item": "网络连接", "detail": "进程的 TCP 连接远端地址（不抓包、不记录流量内容）"},
+				{"item": "加载模块", "detail": "进程加载的 DLL 列表（仅路径）"},
+				{"item": "自启动项", "detail": "注册表 Run/计划任务/服务等配置项的名称与命令"},
+			},
+			"not_collected": []string{
+				"屏幕内容 / 键盘输入 / 剪贴板",
+				"文档、图片等个人文件的内容",
+				"浏览器历史、Cookie、密码",
+				"网络流量的具体内容（仅记录连接元数据）",
+			},
+			"redaction": "命令行中的密码/令牌类参数（--password= 等 8 类）在离开本机前会被替换为占位符",
+			"storage":   "告警与证据仅存于本机数据目录与你的总控服务端，无任何第三方上传通道",
+		})
+	})
+
 	api("GET /api/local/processes", func(w http.ResponseWriter, r *http.Request) {
 		limit := intParam(r, "limit", 300)
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{

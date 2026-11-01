@@ -226,6 +226,10 @@ type HeartbeatRequest struct {
 	// 偏移过大时，告警时间线、事件聚类的窗口判定都会失真，
 	// 这是企业内网 NTP 漂移最常见的隐性故障，必须在界面上可见。
 	AgentTime time.Time `json:"agent_time"`
+	// QueueDropped 是探针离线队列因满而丢弃的告警数。
+	// 它是"数据完整性"的一部分：管理经理需要知道每台终端
+	// 有多少告警没能送达——丢得多的终端等于检测存在黑洞。
+	QueueDropped int64 `json:"queue_dropped,omitempty"`
 }
 
 // DetectorStats 是本地检测器计数，便于观察去噪效果。

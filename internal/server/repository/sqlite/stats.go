@@ -203,3 +203,29 @@ func sortMITREStats(s []domain.MITREStat, limit int) []domain.MITREStat {
 	}
 	return s
 }
+
+
+// VersionDist 统计各终端探针版本分布。
+// 版本碎片化是企业部署最现实的问题：旧版本终端的检测能力矩阵
+// 与新版本不同，管理经理需要一眼看到"还有多少台在旧版本"。
+func (r *statsRepo) VersionDist(ctx context.Context) (map[string]int, error) {
+	rows, err := r.s.db.QueryContext(ctx,
+		`SELECT COALESCE(version,''), COUNT(1) FROM agents GROUP BY version`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var v string
+		var n int
+		if err := rows.Scan(&v, &n); err != nil {
+			return nil, err
+		}
+		if v == "" {
+			v = "unknown"
+		}
+		out[v] = n
+	}
+	return out, rows.Err()
+}

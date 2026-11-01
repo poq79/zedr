@@ -69,6 +69,15 @@ type AlertRepo interface {
 	// RecycleForAllow 把命中某条白名单的未处置告警批量标记为误报（加白闭环）。
 	RecycleForAllow(ctx context.Context, typ, value, by string, at time.Time) (int64, error)
 	PurgeBefore(ctx context.Context, before time.Time) (int64, error)
+	// IntegrityDigest 计算某时间区间内告警的完整性摘要（按 id 排序拼接后哈希）。
+	// n 为参与计算的告警数；供"告警防篡改链"每日归档与校验使用。
+	IntegrityDigest(ctx context.Context, start, end time.Time) (digest string, n int, err error)
+	// IntegrityDays 返回完整性链中已归档的日期列表（升序）。
+	IntegrityDays(ctx context.Context) ([]string, error)
+	// IntegrityGet 读取某日归档；exists=false 表示未归档。
+	IntegrityGet(ctx context.Context, day string) (digest string, n int, exists bool, err error)
+	// IntegrityPut 归档某日摘要（幂等：已存在则跳过）。
+	IntegrityPut(ctx context.Context, day, digest string, n int) error
 }
 
 // RuleRepo 规则数据访问。
@@ -108,4 +117,5 @@ type CommandRepo interface {
 // StatsRepo 聚合统计。
 type StatsRepo interface {
 	Dashboard(ctx context.Context, since time.Time, bucketMinutes int) (*domain.DashboardSummary, error)
+	VersionDist(ctx context.Context) (map[string]int, error)
 }

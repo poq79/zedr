@@ -19,6 +19,8 @@ import (
 type AgentService struct {
 	skewMu   sync.RWMutex
 	skewData map[string]time.Duration
+	dropMu   sync.RWMutex
+	dropData map[string]int64
 	repos repository.Repos
 	cfg   Config
 	log   *slog.Logger
@@ -131,6 +133,17 @@ func (s *AgentService) recordSkew(agentID string, d time.Duration) {
 
 // SkewMap 返回各终端时钟偏移（毫秒）。终端 24h 无心跳后由 hosts 接口
 // 自然不再展示（离线主机本就不参与时间线分析）。
+// DroppedMap 返回各终端的告警队列丢弃计数。
+func (s *AgentService) DroppedMap() map[string]int64 {
+	s.dropMu.RLock()
+	defer s.dropMu.RUnlock()
+	out := make(map[string]int64, len(s.dropData))
+	for id, n := range s.dropData {
+		out[id] = n
+	}
+	return out
+}
+
 func (s *AgentService) SkewMap() map[string]int64 {
 	s.skewMu.RLock()
 	defer s.skewMu.RUnlock()
@@ -147,6 +160,17 @@ func (s *AgentService) Heartbeat(ctx context.Context, agentID string, req model.
 
 	// 时钟偏移 = 服务端收到时刻 - 探针发出时刻（含网络单程延迟，量级在毫秒，
 	// 对"偏移几十秒"级别的判定完全够用）。只在内存记录，心跳即刷新。
+	// 队列丢弃数随心跳上报：>0 的终端说明存在告警黑洞，
+	// 通常意味着离线时间过长或队列太小，运营要能看到
+	if req.QueueDropped > 0 {
+		s.dropMu.Lock()
+		if s.dropData == nil {
+			s.dropData = make(map[string]int64, 16)
+		}
+		s.dropData[agentID] = req.QueueDropped
+		s.dropMu.Unlock()
+	}
+
 	if !req.AgentTime.IsZero() {
 		skew := now.Sub(req.AgentTime)
 		if skew < -time.Hour || skew > time.Hour {

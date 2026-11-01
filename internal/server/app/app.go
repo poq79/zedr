@@ -261,6 +261,12 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 			// SQLite 单文件架构下"没有备份"等于"数据随时归零"：
 			// 磁盘损坏、误删、迁移手滑，任何一样都会让全部告警与审计凭空消失。
 			// VACUUM INTO 生成紧凑的一致性快照，在线执行不阻塞业务。
+			// 告警完整性链：每天归档昨日摘要（幂等）。放 janitor 而不是
+			// 独立协程——它必须与备份/清理同序执行，避免与 retention 竞态。
+			if err := a.services.Stats.EnsureIntegrity(ctx, time.Now().Add(-24*time.Hour)); err != nil {
+				a.Log.Warn("integrity_ensure_failed", "err", err)
+			}
+
 			a.janitorTicks++
 			if a.janitorTicks%24 == 0 {
 				if n, err := a.backupDB(ctx); err != nil {

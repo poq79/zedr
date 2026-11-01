@@ -101,6 +101,10 @@ type Agent struct {
 	// ClockSkewMS 是终端与服务端的时钟偏移（毫秒，进程内存值不落库）。
 	// >10s 时告警时间线与事件窗口判定会失真，管理台据此提示检查 NTP。
 	ClockSkewMS int64 `json:"clock_skew_ms,omitempty"`
+
+	// QueueDropped 是终端告警队列的丢弃计数（运行时值，不落库）。
+	// >0 说明该终端存在"告警黑洞"，需要在容量或网络上排查。
+	QueueDropped int64 `json:"queue_dropped,omitempty"`
 	RuleVersion int         `json:"rule_version"`
 	OpenAlerts  int         `json:"open_alerts"`
 }

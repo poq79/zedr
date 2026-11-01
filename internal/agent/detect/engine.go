@@ -314,7 +314,7 @@ func (e *Engine) Analyze(in Input) *Result {
 			Notes:        notes,
 		},
 	}
-	res.Summary = buildSummary(p, res, parentName(in))
+	res.Summary = buildSummary(p, res, parentName(in)) + composeUserGuidance(res)
 	res.Fingerprint = fingerprint(p, res)
 	for _, s := range signals {
 		if s.MITRE != "" {

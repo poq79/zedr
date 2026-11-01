@@ -705,6 +705,7 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 					AvgLatencyMs:  ri.Stats.AvgLatencyMs,
 				},
 				Samples: ri.Stats.Scanned,
+				QueueDropped: a.up.Dropped(),
 			}
 			hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			resp, err := a.up.Heartbeat(hctx, req)

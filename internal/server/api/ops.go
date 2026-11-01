@@ -50,6 +50,14 @@ func (h *adminHandler) metrics(w http.ResponseWriter, r *http.Request) {
 	gauge("hg_webhook_failed_total", "webhook 通知失败数", failed)
 	gauge("hg_webhook_dropped_total", "webhook 队列满丢弃数", dropped)
 
+	// 版本分布：每个版本一条样本行。版本碎片化是升级管理的日常，
+	// SIEM/看板据此画"还有多少台没升上来"的趋势
+	if vd, err := h.deps.Services.Stats.Versions(r.Context()); err == nil {
+		for v, n := range vd {
+			fmt.Fprintf(&b, "hg_agent_versions{version=%q} %d\n", v, n)
+		}
+	}
+
 	gauge("hg_go_goroutines", "当前 goroutine 数", m.Goroutines)
 	gauge("hg_go_heap_alloc_bytes", "Go 堆已分配字节", m.HeapAlloc)
 	gauge("hg_uptime_seconds", "服务运行秒数", fmt.Sprintf("%.0f", m.UptimeSec))
@@ -176,6 +184,30 @@ func (h *adminHandler) listIncidents(w http.ResponseWriter, r *http.Request) {
 		"bursts":    bursts,
 		"window":    "30m",
 		"generated": time.Now().UTC(),
+	})
+}
+
+// integrityReport 告警完整性链校验结果。
+// 面向合规审计："日志防篡改"从口号变成一个可导出的证据页面。
+func (h *adminHandler) integrityReport(w http.ResponseWriter, r *http.Request) {
+	checks, err := h.deps.Services.Stats.VerifyIntegrity(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, apperr.Internal(err))
+		return
+	}
+	ok, purged, tampered := 0, 0, 0
+	for _, c := range checks {
+		switch c.Status {
+		case "ok":
+			ok++
+		case "purged":
+			purged++
+		case "tampered":
+			tampered++
+		}
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+		"days": checks, "ok": ok, "purged": purged, "tampered": tampered,
 	})
 }
 

@@ -62,3 +62,29 @@ func setServiceRecovery(h windows.Handle) error {
 	}
 	return nil
 }
+
+
+// SERVICE_CONFIG_DELAYED_AUTO_START_INFO = 3（Win32 文档值）。
+type delayedAutoStartInfo struct {
+	FDelayedAutostart uint32 // BOOL
+}
+
+// setDelayedAutostart 把服务设为「自动（延迟启动）」。
+//
+// 对办公机用户这是体验问题：安全探针通常不需要在开机争分夺秒的那几秒里
+// 抢 IO 与 CPU（晚 1~2 分钟启动完全可接受），设为延迟启动可以显著
+// 缩短开机到可用的时间——而服务器场景同样受益（重启窗口更短）。
+func setDelayedAutostart(h windows.Handle) error {
+	info := delayedAutoStartInfo{FDelayedAutostart: 1}
+	r, _, e := procChangeServiceConfig2W.Call(
+		uintptr(h), 3, uintptr(unsafe.Pointer(&info)))
+	if r == 0 {
+		// 与 setServiceRecovery 相同的惯例：errno==0 表示调用实际成功，
+		// 只是 Windows 把 lastError 置非零（LazyProc 的 lazy error 语义）
+		if ee, ok := e.(windows.Errno); ok && ee != 0 {
+			return ee
+		}
+		return fmt.Errorf("ChangeServiceConfig2W 返回 0")
+	}
+	return nil
+}

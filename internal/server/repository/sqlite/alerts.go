@@ -1,6 +1,8 @@
 package sqlite
 
 import (
+	"encoding/hex"
+	"crypto/sha256"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -303,4 +305,74 @@ func (r *alertRepo) PurgeBefore(ctx context.Context, before time.Time) (int64, e
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+
+// IntegrityDigest 计算区间内告警的完整性摘要。
+// 摘要覆盖 id/fingerprint/score/hash 四个"事后最难抵赖"的字段，
+// 按 id 排序保证同一天数据得出同一摘要；流式扫描不设内存上界。
+func (r *alertRepo) IntegrityDigest(ctx context.Context, start, end time.Time) (string, int, error) {
+	rows, err := r.s.db.QueryContext(ctx,
+		`SELECT id, fingerprint, score, hash_sha256 FROM alerts
+		 WHERE created_at >= ? AND created_at < ? ORDER BY id`,
+		millis(start), millis(end))
+	if err != nil {
+		return "", 0, err
+	}
+	defer rows.Close()
+
+	h := sha256.New()
+	n := 0
+	for rows.Next() {
+		var id, fp, hash string
+		var score int
+		if err := rows.Scan(&id, &fp, &score, &hash); err != nil {
+			return "", 0, err
+		}
+		fmt.Fprintf(h, "%s|%s|%d|%s\n", id, fp, score, hash)
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+func (r *alertRepo) IntegrityDays(ctx context.Context) ([]string, error) {
+	rows, err := r.s.db.QueryContext(ctx, `SELECT day FROM integrity_chain ORDER BY day`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (r *alertRepo) IntegrityGet(ctx context.Context, day string) (string, int, bool, error) {
+	var digest string
+	var n int
+	err := r.s.db.QueryRowContext(ctx,
+		`SELECT digest, alert_count FROM integrity_chain WHERE day = ?`, day).
+		Scan(&digest, &n)
+	if err == sql.ErrNoRows {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, err
+	}
+	return digest, n, true, nil
+}
+
+func (r *alertRepo) IntegrityPut(ctx context.Context, day, digest string, n int) error {
+	_, err := r.s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO integrity_chain (day, digest, alert_count, created_at)
+		 VALUES (?, ?, ?, ?)`, day, digest, n, time.Now().UnixMilli())
+	return err
 }

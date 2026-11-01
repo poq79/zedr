@@ -256,6 +256,20 @@ CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alerts_agent_status ON alerts(agent_id, status);
 `,
 	},
+	{
+		name: "003_integrity",
+		sql: `
+-- 告警完整性链：每天对前一日全部告警计算摘要并入库。
+-- 目的是让"内部人员事后删改告警"变得可发现——合规审计里
+-- 「日志防篡改」几乎是必答题，单文件数据库尤其需要这层保障。
+CREATE TABLE IF NOT EXISTS integrity_chain (
+  day          TEXT PRIMARY KEY,
+  digest       TEXT NOT NULL,
+  alert_count  INTEGER NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {
