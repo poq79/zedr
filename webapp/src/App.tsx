@@ -15,6 +15,7 @@ import { HuntPage } from './pages/Hunt';
 import { HostDetailPage } from './pages/HostDetail';
 import { IntelPage } from './pages/Intel';
 import { IncidentsPage, ReportPage, HostsPage, RulesPage, AllowlistPage, AuditPage, UsersPage } from './pages/Misc';
+import { AISettingsPage } from './pages/AISettings';
 
 function AppInner() {
   const [user, setUser] = useState<User | null>(null);
@@ -152,6 +153,7 @@ function AppInner() {
                 <Route path="/allowlist" element={<AllowlistPage key={`w${refreshTick}`} user={user} />} />
                 <Route path="/audit" element={<AuditPage key={`l${refreshTick}`} />} />
                 <Route path="/users" element={<UsersPage key={`u${refreshTick}`} self={user} />} />
+                <Route path="/ai" element={<AISettingsPage key={`ai${refreshTick}`} user={user} />} />
                 <Route path="*" element={<Navigate to="/overview" replace />} />
               </Routes>
             </AppShell>

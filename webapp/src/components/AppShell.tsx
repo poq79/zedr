@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, TriangleAlert, GitBranch, BarChart3, Monitor,
   ShieldCheck, ShieldBan, ScrollText, Users, LogOut, RefreshCw, Settings,
-  Moon, Sun, Rows3, Keyboard, CircleDot, Crosshair, Fingerprint, ScanSearch,
+  Moon, Sun, Rows3, Keyboard, CircleDot, Crosshair, Fingerprint, ScanSearch, Bot,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Button } from './ui/basics';
@@ -27,6 +27,7 @@ export const ROUTES = [
   { to: '/allowlist', label: '白名单', icon: ShieldBan },
   { to: '/audit', label: '审计日志', icon: ScrollText, adminOnly: true },
   { to: '/users', label: '账号管理', icon: Users, adminOnly: true },
+  { to: '/ai', label: 'AI 平台', icon: Bot, adminOnly: true },
 ];
 
 /* 导航 IA 分组（DESIGN.md §4.2）：组标签是信息架构，不是装饰 */
@@ -34,13 +35,13 @@ const NAV_GROUPS: Array<{ label: string; tos: string[] }> = [
   { label: '总览', tos: ['/overview'] },
   { label: '运营', tos: ['/alerts', '/hunt', '/incidents', '/attack', '/report', '/hosts'] },
   { label: '策略', tos: ['/rules', '/intel', '/allowlist'] },
-  { label: '治理', tos: ['/audit', '/users'] },
+  { label: '治理', tos: ['/audit', '/users', '/ai'] },
 ];
 
 const TITLES: Record<string, string> = {
   overview: '概览', alerts: '告警中心', hunt: 'AI 狩猎', incidents: '事件（攻击链聚类）', attack: 'ATT&CK 矩阵',
   report: '运营周报', hosts: '主机终端', rules: '检测规则', intel: '威胁情报',
-  allowlist: '白名单与降噪', audit: '审计日志', users: '账号管理',
+  allowlist: '白名单与降噪', audit: '审计日志', users: '账号管理', ai: 'AI 平台',
 };
 
 /* 页头副行：一句话说明本页职责——真实信息，不是口号 */
@@ -57,6 +58,7 @@ const SUBTITLES: Record<string, string> = {
   allowlist: '加白降噪 · 误报回收',
   audit: '全部管理操作留痕',
   users: '账号 · 角色 · 密码策略',
+  ai: '模型接入 · 提示词 · 技能包 · 成本上限',
 };
 
 export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, children }: {
