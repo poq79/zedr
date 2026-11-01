@@ -1,0 +1,262 @@
+// Package api 是 HTTP 控制器层：解析请求、调用服务层、格式化响应。
+//
+// 本层严格不写业务逻辑：所有分支判断都下沉到 service，控制器只做
+// 参数绑定 → 调用 → 序列化，保证业务规则可被直接单测。
+package api
+
+import (
+	"io"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"hostguard/internal/platform/apperr"
+	"hostguard/internal/platform/httpx"
+	"hostguard/internal/server/auth"
+	"hostguard/internal/server/service"
+)
+
+// Deps 是控制器的依赖集合。
+type Deps struct {
+	Services     *service.Services
+	Tokens       *auth.Manager
+	Log          *slog.Logger
+	WebFS        fs.FS       // 管理台静态资源（go:embed）
+	AllowOrigins []string
+	RateRPS      float64
+	RateBurst    float64
+	Ready        func() error // /ready 探针
+	Version      string
+	StartedAt    time.Time
+	CookieSecure bool // 生产环境走 HTTPS 时必须为 true
+	Bus          *service.AlertBus
+	Tickets      *ticketStore
+}
+
+// Router 构建完整路由。
+func Router(d Deps) http.Handler {
+	mux := http.NewServeMux()
+	d.Tickets = newTicketStore(60 * time.Second)
+
+	// ---------------- 健康检查（无鉴权、无日志噪音） ----------------
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteRaw(w, r, http.StatusOK, map[string]any{
+			"status":  "ok",
+			"version": d.Version,
+			"uptime":  int64(time.Since(d.StartedAt).Seconds()),
+		})
+	})
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
+		if d.Ready != nil {
+			if err := d.Ready(); err != nil {
+				httpx.WriteRaw(w, r, http.StatusServiceUnavailable, map[string]any{
+					"status": "not_ready", "error": "依赖未就绪",
+				})
+				return
+			}
+		}
+		httpx.WriteRaw(w, r, http.StatusOK, map[string]any{"status": "ready"})
+	})
+
+	// ---------------- 公开认证接口 ----------------
+	authH := &authHandler{deps: d}
+	mux.HandleFunc("POST /api/v1/auth/login", authH.login)
+	mux.HandleFunc("POST /api/v1/auth/refresh", authH.refresh)
+	mux.HandleFunc("POST /api/v1/auth/logout", authH.logout)
+
+	// ---------------- 终端注册（预共享令牌） ----------------
+	agentH := &agentHandler{deps: d}
+	mux.HandleFunc("POST /api/v1/agents/enroll", agentH.enroll)
+
+	// ---------------- 终端带凭证接口 ----------------
+	agentAuth := func(h http.HandlerFunc) http.Handler {
+		return agentAuthMiddleware(d, h)
+	}
+	mux.Handle("POST /api/v1/agent/heartbeat", agentAuth(agentH.heartbeat))
+	mux.Handle("POST /api/v1/agent/alerts", agentAuth(agentH.reportAlerts))
+	mux.Handle("GET /api/v1/agent/rules", agentAuth(agentH.rules))
+	mux.Handle("POST /api/v1/agent/commands/result", agentAuth(agentH.commandResult))
+
+	// ---------------- 管理台接口（JWT + RBAC） ----------------
+	adminH := &adminHandler{deps: d}
+	viewer := func(h http.HandlerFunc) http.Handler {
+		return jwtMiddleware(d, nil, h)
+	}
+	writer := func(h http.HandlerFunc) http.Handler {
+		return jwtMiddleware(d, []string{"admin", "analyst"}, h)
+	}
+	adminOnly := func(h http.HandlerFunc) http.Handler {
+		return jwtMiddleware(d, []string{"admin"}, h)
+	}
+
+	mux.Handle("GET /api/v1/me", viewer(adminH.me))
+	mux.Handle("GET /api/v1/dashboard", viewer(adminH.dashboard))
+
+	mux.Handle("GET /api/v1/alerts", viewer(adminH.listAlerts))
+	mux.Handle("GET /api/v1/alerts/{id}", viewer(adminH.getAlert))
+	mux.Handle("POST /api/v1/alerts/{id}/status", writer(adminH.updateAlertStatus))
+
+	mux.Handle("GET /api/v1/hosts", viewer(adminH.listHosts))
+	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))
+	mux.Handle("DELETE /api/v1/hosts/{id}", adminOnly(adminH.deleteHost))
+	mux.Handle("POST /api/v1/hosts/{id}/commands", writer(adminH.sendCommand))
+	mux.Handle("GET /api/v1/commands", viewer(adminH.listCommands))
+
+	mux.Handle("GET /api/v1/rules", viewer(adminH.listRules))
+	mux.Handle("POST /api/v1/rules", writer(adminH.upsertRule))
+	mux.Handle("POST /api/v1/rules/{id}/toggle", writer(adminH.toggleRule))
+	mux.Handle("DELETE /api/v1/rules/{id}", adminOnly(adminH.deleteRule))
+
+	mux.Handle("GET /api/v1/allowlist", viewer(adminH.listAllowlist))
+	mux.Handle("POST /api/v1/allowlist", writer(adminH.addAllowlist))
+	mux.Handle("DELETE /api/v1/allowlist/{id}", writer(adminH.deleteAllowlist))
+
+	mux.Handle("GET /api/v1/audit", viewer(adminH.listAudit))
+	mux.Handle("GET /api/v1/users", adminOnly(adminH.listUsers))
+	mux.Handle("POST /api/v1/users", adminOnly(adminH.createUser))
+
+	// SSE：EventSource 无法带 Authorization 头，改用一次性短时效票据
+	mux.Handle("POST /api/v1/stream/ticket", viewer(adminH.issueStreamTicket))
+	mux.HandleFunc("GET /api/v1/stream/alerts", adminH.streamAlerts)
+
+	// ---------------- 管理台静态资源 ----------------
+	if d.WebFS != nil {
+		mux.Handle("GET /", spaHandler(d.WebFS))
+	}
+
+	// 中间件顺序（由外到内）：
+	// request-id → 安全头 → 恢复 → 访问日志 → CORS → 限流 → 路由
+	limiter := httpx.NewTokenBucket(d.RateRPS, d.RateBurst)
+	skipLog := func(r *http.Request) bool {
+		return r.URL.Path == "/health" || r.URL.Path == "/ready"
+	}
+
+	h := httpx.Chain(mux,
+		httpx.RequestIDMiddleware,
+		httpx.SecurityHeaders,
+		httpx.RecoverMiddleware(d.Log),
+		httpx.AccessLogMiddleware(d.Log, skipLog),
+		httpx.CORS(d.AllowOrigins, true),
+		httpx.RateLimitMiddleware(limiter, func(r *http.Request) string {
+			return httpx.ClientIP(r)
+		}),
+	)
+	return h
+}
+
+// spaHandler 提供单页应用：找不到具体文件时回落到 index.html。
+func spaHandler(webFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(webFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clean := strings.TrimPrefix(r.URL.Path, "/")
+		if clean == "" {
+			clean = "index.html"
+		}
+		if f, err := webFS.Open(clean); err == nil {
+			_ = f.Close()
+			// 静态资源缓存：index.html 不缓存，带 hash 的资源长缓存
+			if clean == "index.html" {
+				w.Header().Set("Cache-Control", "no-cache")
+			} else {
+				w.Header().Set("Cache-Control", "public, max-age=3600")
+			}
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		// 未知路径统一返回 index.html（前端路由接管）
+		idx, err := webFS.Open("index.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer idx.Close()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = io.Copy(w, idx)
+	})
+}
+
+// ---------------------------------------------------------------- 鉴权中间件
+
+// agentAuthMiddleware 校验终端凭证。
+//
+// 采用 API-Key 模式：数据库只保存密钥的 SHA-256 摘要，终端每次请求携带
+// `X-Agent-Id` + `Authorization: Bearer <agent_secret>`。这样即便数据库泄露，
+// 也无法直接冒用终端身份（对比 HMAC 方案需要服务端持有明文密钥）。
+func agentAuthMiddleware(d Deps, next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentID := r.Header.Get("X-Agent-Id")
+		secret := bearerToken(r)
+		if agentID == "" || secret == "" {
+			httpx.WriteError(w, r, apperr.Unauthenticated("缺少终端身份凭证"))
+			return
+		}
+
+		agent, err := d.Services.Agent.Authenticate(r.Context(), agentID)
+		if err != nil {
+			httpx.WriteError(w, r, err)
+			return
+		}
+		if err := d.Services.Agent.CheckSecret(agent, secret); err != nil {
+			d.Log.WarnContext(r.Context(), "agent_auth_rejected",
+				"agent_id", agentID, "ip", httpx.ClientIP(r))
+			httpx.WriteError(w, r, err)
+			return
+		}
+
+		ctx := withAgent(r.Context(), agent)
+		next(w, r.WithContext(ctx))
+	})
+}
+
+// jwtMiddleware 校验访问令牌并做角色检查。
+func jwtMiddleware(d Deps, roles []string, next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := bearerToken(r)
+		if raw == "" {
+			httpx.WriteError(w, r, apperr.Unauthenticated("缺少访问令牌"))
+			return
+		}
+		claims, err := d.Tokens.ParseAccess(raw)
+		if err != nil {
+			httpx.WriteError(w, r, err)
+			return
+		}
+		// 令牌有效不代表账号可用：禁用/删除要立刻生效
+		u, err := d.Services.Auth.Me(r.Context(), claims.UserID)
+		if err != nil || u == nil || u.Disabled {
+			httpx.WriteError(w, r, apperr.Unauthenticated("账号不可用，请重新登录"))
+			return
+		}
+
+		p := &auth.Principal{UserID: u.ID, Username: u.Username, Role: u.Role}
+		if len(roles) > 0 {
+			allowed := false
+			for _, role := range roles {
+				if string(u.Role) == role {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				httpx.WriteError(w, r, apperr.Forbidden(""))
+				return
+			}
+		}
+		next(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+	})
+}
+
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if h == "" {
+		return ""
+	}
+	parts := strings.SplitN(h, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}

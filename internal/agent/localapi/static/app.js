@@ -1,0 +1,376 @@
+/* HostGuard 桌面端（本机防护）· 前端应用 */
+'use strict';
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[c]));
+
+const SEV = { critical: '严重', high: '高危', medium: '中危', low: '低危', info: '提示' };
+const VERDICT = { malicious: '恶意', suspicious: '可疑', safe: '安全' };
+const LAYER = { static: '静态', keyword: '关键词', rule: '规则', lineage: '血缘', behavior: '行为' };
+
+let procs = [];
+let alerts = [];
+let status = null;
+let timer = null;
+
+function toast(msg, kind = 'ok') {
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; }, 2800);
+  setTimeout(() => el.remove(), 3200);
+}
+
+function rel(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (isNaN(d)) return '-';
+  const s = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (s < 60) return `${s} 秒前`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return `${Math.floor(s / 86400)} 天前`;
+}
+
+function fullTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (isNaN(d)) return '-';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    method: opts.method || 'GET',
+    headers: { Accept: 'application/json', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (res.status === 204) return null;
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const msg = (data && data.error && data.error.message) || `请求失败 (${res.status})`;
+    throw new Error(msg);
+  }
+  return data && Object.prototype.hasOwnProperty.call(data, 'data') ? data.data : data;
+}
+
+/* ------------------------------------------------------------ 渲染 */
+
+function renderCards(s) {
+  const critCount = alerts.filter((a) => a.severity === 'critical').length;
+  const susCount = alerts.filter((a) => a.verdict === 'suspicious').length;
+  const stat = s.stats || {};
+
+  const cards = [
+    {
+      cls: s.online ? 'ok' : (s.enrolled ? 'warn' : ''),
+      label: '防护状态',
+      value: s.warmup ? '基线学习中' : (s.online ? '运行中' : (s.enrolled ? '离线' : '仅本地')),
+      sub: s.warmup
+        ? `静默至 ${fullTime(s.warmup_until)}（仅上报恶意级）`
+        : (s.enrolled ? `已注册 · ${s.agent_id}` : '未配置总控服务端'),
+    },
+    {
+      cls: critCount > 0 ? 'crit' : '',
+      label: '严重告警',
+      value: String(critCount),
+      sub: `可疑 ${susCount} · 本地共 ${alerts.length} 条`,
+    },
+    {
+      cls: '',
+      label: '监控进程',
+      value: String(s.proc_count || 0),
+      sub: `规则 ${s.rule_count || 0} 条 · 基线 ${s.baseline_size || 0} 样本`,
+    },
+    {
+      cls: (s.cpu_percent || 0) > 5 ? 'warn' : 'ok',
+      label: '资源占用',
+      value: `${(s.cpu_percent || 0).toFixed(1)}%`,
+      sub: `${(s.mem_mb || 0).toFixed(0)} MB · 平均检测 ${stat.avg_latency_ms || 0} ms`,
+    },
+  ];
+
+  $('#cards').innerHTML = cards.map((c) => `
+    <div class="card ${c.cls}">
+      <div class="label">${esc(c.label)}</div>
+      <div class="value">${esc(c.value)}</div>
+      <div class="sub">${esc(c.sub)}</div>
+    </div>`).join('');
+}
+
+function renderAlerts() {
+  const box = $('#alertList');
+  if (!alerts.length) {
+    box.innerHTML = '<div class="empty">暂无告警。探针正在持续监控进程创建事件。</div>';
+    $('#alertMeta').textContent = '';
+    return;
+  }
+  $('#alertMeta').textContent = `共 ${alerts.length} 条 · 检测 ${status ? status.stats.scanned : 0} 次`;
+  box.innerHTML = alerts.slice(0, 60).map((a) => `
+    <div class="alert-row" data-id="${esc(a.id)}">
+      <span class="badge ${esc(a.severity)}">${esc(SEV[a.severity] || a.severity)}</span>
+      <span class="main-col">
+        <div class="t">${esc(a.title)}</div>
+        <div class="d">${esc(a.process_name)} · ${esc(a.image_path || '-')}</div>
+      </span>
+      <span class="when">${rel(a.occurred_at)}</span>
+    </div>`).join('');
+
+  $$('#alertList .alert-row').forEach((row) => {
+    row.addEventListener('click', () => openAlert(row.dataset.id));
+  });
+}
+
+function renderProcs() {
+  const q = $('#procFilter').value.trim().toLowerCase();
+  const sortBy = $('#procSort').value;
+
+  let list = procs.filter((p) => {
+    if (!q) return true;
+    return (p.name || '').toLowerCase().includes(q) || (p.path || '').toLowerCase().includes(q);
+  });
+
+  if (sortBy === 'name') list = list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  else if (sortBy === 'pid') list = list.slice().sort((a, b) => a.pid - b.pid);
+
+  const body = $('#procBody');
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">没有匹配的进程</td></tr>';
+    return;
+  }
+
+  body.innerHTML = list.slice(0, 300).map((p) => {
+    const cls = p.score >= 60 ? 's2' : p.score >= 30 ? 's1' : 's0';
+    return `<tr>
+      <td><span class="score ${cls}">${p.score || 0}</span></td>
+      <td class="mono muted">${p.pid}</td>
+      <td>
+        <div>${esc(p.name)}</div>
+        ${p.title ? `<div class="small muted">${esc(p.title)}</div>` : ''}
+      </td>
+      <td>
+        <div class="path">${esc(p.path || '-')}</div>
+        ${p.cmdline ? `<div class="cmd">${esc(p.cmdline.length > 180 ? p.cmdline.slice(0, 180) + '…' : p.cmdline)}</div>` : ''}
+      </td>
+      <td class="small muted">${esc(p.user || '-')}</td>
+      <td class="small">${p.conn_count || 0}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderAllow(entries) {
+  const box = $('#allowList');
+  if (!entries.length) {
+    box.innerHTML = '<div class="empty">本地白名单为空。可在告警详情里一键加白。</div>';
+    $('#allowMeta').textContent = '';
+    return;
+  }
+  $('#allowMeta').textContent = `共 ${entries.length} 条`;
+  box.innerHTML = entries.map((e) => `
+    <div class="alert-row" style="cursor:default">
+      <span class="badge type">${esc(e.type)}</span>
+      <span class="main-col">
+        <div class="mono" style="word-break:break-all">${esc(e.value)}</div>
+        <div class="d">${esc(e.note || '无备注')}</div>
+      </span>
+      <button class="btn sm danger" data-del-type="${esc(e.type)}" data-del-value="${esc(e.value)}">移除</button>
+    </div>`).join('');
+
+  $$('[data-del-type]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const type = btn.dataset.delType;
+      const value = btn.dataset.delValue;
+      if (!confirm('确认移除该白名单？移除后相关检测会重新生效。')) return;
+      try {
+        await api(`/api/local/allowlist?type=${encodeURIComponent(type)}&value=${encodeURIComponent(value)}`, { method: 'DELETE' });
+        toast('已移除');
+        refresh();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  });
+}
+
+/* ------------------------------------------------------------ 告警详情 */
+
+async function openAlert(id) {
+  $('#mask').classList.add('show');
+  $('#drawer').classList.add('show');
+  $('#dTitle').textContent = '加载中…';
+  $('#dBody').innerHTML = '';
+  $('#dFoot').innerHTML = '';
+
+  let a;
+  try { a = await api(`/api/local/alerts/${encodeURIComponent(id)}`); }
+  catch (e) { $('#dBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+
+  const ev = a.evidence || {};
+  const p = ev.process || {};
+
+  $('#dTitle').textContent = a.title;
+  $('#dSub').innerHTML = `<span class="badge ${esc(a.severity)}">${esc(SEV[a.severity] || a.severity)}</span>
+    <span class="badge ${esc(a.verdict)}">${esc(VERDICT[a.verdict] || a.verdict)}</span>
+    <span class="muted small">${fullTime(a.occurred_at)}${a.sent ? ' · 已上报' : ' · 待上报'}</span>`;
+
+  const kv = (k, v, mono) => `<dt>${esc(k)}</dt><dd class="${mono ? 'mono' : ''}">${esc(v || '-')}</dd>`;
+
+  const total = Math.max(1, (ev.static_score || 0) + (ev.keyword_score || 0) + (ev.rule_score || 0) + (ev.lineage_score || 0));
+  const parts = [
+    ['静态', ev.static_score || 0, '#3d8bfd'],
+    ['关键词', ev.keyword_score || 0, '#22d3ee'],
+    ['规则', ev.rule_score || 0, '#a78bfa'],
+    ['血缘', ev.lineage_score || 0, '#fbbf24'],
+  ];
+
+  const signals = (ev.signals || []).map((s) => `
+    <div class="sig">
+      <span class="layer">${esc(LAYER[s.layer] || s.layer)}</span>
+      <span style="flex:1;min-width:0">
+        <b>${esc(s.name)}</b>
+        ${s.note ? `<div class="small muted" style="margin-top:2px">${esc(s.note)}</div>` : ''}
+      </span>
+      <span class="pts">+${s.score}</span>
+    </div>`).join('') || '<div class="empty small">无独立信号</div>';
+
+  const ancestry = (ev.ancestry || []).map((n, i) => `
+    <div style="padding-left:${i * 14}px">
+      <span class="muted">${i === 0 ? '●' : '└─'}</span>
+      <b>${esc(n.name)}</b> <span class="muted">PID ${n.pid}</span>
+      ${n.path ? `<div class="muted small" style="padding-left:20px;word-break:break-all">${esc(n.path)}</div>` : ''}
+    </div>`).join('') || '<div class="empty small">无祖先记录</div>';
+
+  const net = (ev.network || []).map((c) => `
+    <tr><td class="mono">${esc(c.proto)}</td><td class="mono">${esc(c.local_ip)}:${c.local_port}</td>
+    <td class="mono">${esc(c.remote_ip)}:${c.remote_port}</td><td class="small muted">${esc(c.state)}</td></tr>`).join('');
+
+  $('#dBody').innerHTML = `
+    <section class="blk">
+      <h4>置信分构成</h4>
+      <div class="bar">${parts.map(([, v, c]) => `<i style="width:${(v / total) * 100}%;background:${c}"></i>`).join('')}</div>
+      <div class="legend">
+        ${parts.map(([n, v, c]) => `<span><i style="background:${c}"></i>${n} ${v.toFixed(0)}</span>`).join('')}
+        <span style="margin-left:auto;color:var(--text)">综合 <b>${a.score}</b> / 100</span>
+      </div>
+    </section>
+
+    <section class="blk">
+      <h4>结论</h4>
+      <div class="small" style="line-height:1.8">${esc(a.summary || '-')}</div>
+      ${(ev.notes || []).length ? `<ul class="small muted" style="margin:8px 0 0;padding-left:18px;line-height:1.8">
+        ${ev.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+    </section>
+
+    <section class="blk">
+      <h4>进程</h4>
+      <dl class="kv">
+        ${kv('进程名', p.name || a.process_name, true)}
+        ${kv('PID / PPID', `${p.pid || a.pid} / ${p.ppid || a.ppid}`, true)}
+        ${kv('镜像路径', p.path || a.image_path, true)}
+        ${kv('运行账号', p.user || a.user)}
+        ${kv('SHA256', p.hash_sha256 || a.hash_sha256, true)}
+        ${kv('数字签名', p.signature_ok ? '校验通过' : p.signed ? '存在但不可信' : '无签名')}
+        ${kv('签名主体', p.signer || a.signer)}
+        ${kv('高权限', p.elevated ? '是' : '否')}
+        ${kv('启动时间', fullTime(p.start_time))}
+      </dl>
+      ${(p.cmdline || a.cmdline) ? `<pre class="code" style="margin-top:10px">${esc(p.cmdline || a.cmdline)}</pre>` : ''}
+    </section>
+
+    <section class="blk"><h4>命中信号</h4>${signals}</section>
+    <section class="blk"><h4>血缘链</h4><div class="tree">${ancestry}</div></section>
+    ${net ? `<section class="blk"><h4>网络连接</h4><table>
+      <thead><tr><th>协议</th><th>本地</th><th>远端</th><th>状态</th></tr></thead>
+      <tbody>${net}</tbody></table></section>` : ''}
+  `;
+
+  const canAllow = !!(a.hash_sha256 || p.hash_sha256);
+  $('#dFoot').innerHTML = canAllow
+    ? `<button class="btn primary" id="allowHash">信任此文件（按哈希加白）</button>
+       <button class="btn" id="allowPath">信任此路径</button>
+       <span class="small muted" style="align-self:center">加白后该对象在本机不再告警</span>`
+    : `<button class="btn" id="allowPath">信任此路径</button>`;
+
+  const ah = $('#allowHash');
+  if (ah) {
+    ah.addEventListener('click', async () => {
+      const hash = a.hash_sha256 || p.hash_sha256;
+      if (!confirm(`确认信任该文件？\n\n${hash}`)) return;
+      try {
+        await api('/api/local/allowlist', { method: 'POST', body: { type: 'hash', value: hash, note: `来自告警：${a.title}` } });
+        toast('已加入本地白名单');
+        closeDrawer();
+        refresh();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  }
+  const ap = $('#allowPath');
+  if (ap) {
+    ap.addEventListener('click', async () => {
+      const path = a.image_path || p.path;
+      if (!path) return toast('缺少镜像路径', 'err');
+      if (!confirm(`确认信任该路径下的程序？\n\n${path}`)) return;
+      try {
+        await api('/api/local/allowlist', { method: 'POST', body: { type: 'path', value: path, note: `来自告警：${a.title}` } });
+        toast('已加入本地白名单');
+        closeDrawer();
+        refresh();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  }
+}
+
+function closeDrawer() {
+  $('#mask').classList.remove('show');
+  $('#drawer').classList.remove('show');
+}
+
+/* ------------------------------------------------------------ 刷新 */
+
+async function refresh() {
+  try {
+    const [s, pl, al, aw] = await Promise.all([
+      api('/api/local/status'),
+      api('/api/local/processes?limit=600'),
+      api('/api/local/alerts?limit=200'),
+      api('/api/local/allowlist'),
+    ]);
+    status = s;
+    procs = pl.items || [];
+    alerts = al.items || [];
+
+    $('#connState').className = 'conn ' + (s.online ? 'on' : 'off');
+    $('#connText').textContent = s.online ? '已连接总控' : (s.enrolled ? '总控离线' : '仅本地模式');
+    $('#hostLine').textContent = `${s.hostname} · ${s.os_version}`;
+
+    renderCards(s);
+    renderAlerts();
+    renderProcs();
+    renderAllow(aw.items || []);
+  } catch (e) {
+    $('#connText').textContent = '探针未响应';
+    $('#connState').className = 'conn off';
+  }
+}
+
+function boot() {
+  $('#rescanBtn').addEventListener('click', async () => {
+    try {
+      await api('/api/local/rescan', { method: 'POST' });
+      toast('已触发全量重扫');
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  $('#procFilter').addEventListener('input', renderProcs);
+  $('#procSort').addEventListener('change', renderProcs);
+  $('#dClose').addEventListener('click', closeDrawer);
+  $('#mask').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+  refresh();
+  timer = setInterval(refresh, 3000);
+}
+
+document.addEventListener('DOMContentLoaded', boot);

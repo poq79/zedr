@@ -1,0 +1,19 @@
+# 统一换行：仓库内一律 LF，避免跨平台协作时整文件 diff
+* text=auto eol=lf
+
+*.go    text eol=lf
+*.md    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.sh    text eol=lf
+*.py    text eol=lf
+*.mod   text eol=lf
+*.sum   text eol=lf
+
+# 二进制
+*.exe   binary
+*.db    binary
+*.png   binary
+*.ico   binary

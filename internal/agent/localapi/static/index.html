@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>HostGuard · 本机防护</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">H</div>
+    <div>
+      <div class="brand-title">HostGuard</div>
+      <div class="brand-sub" id="hostLine">本机进程防护</div>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <div class="conn" id="connState"><span class="dot"></span><span id="connText">连接中…</span></div>
+  <button class="btn sm" id="rescanBtn">立即扫描</button>
+</header>
+
+<main>
+  <section class="cards" id="cards"></section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>最近告警</h2>
+      <span class="muted small" id="alertMeta"></span>
+    </div>
+    <div id="alertList" class="list"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>进程实时视图</h2>
+      <div class="filters">
+        <input type="search" id="procFilter" placeholder="按进程名 / 路径过滤" />
+        <select id="procSort">
+          <option value="score">按风险分排序</option>
+          <option value="name">按名称排序</option>
+          <option value="pid">按 PID 排序</option>
+        </select>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="procTable">
+        <thead>
+          <tr>
+            <th style="width:70px">风险</th>
+            <th style="width:64px">PID</th>
+            <th style="width:170px">进程</th>
+            <th>路径 / 命令行</th>
+            <th style="width:130px">账号</th>
+            <th style="width:70px">连接</th>
+          </tr>
+        </thead>
+        <tbody id="procBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>本地白名单</h2><span class="muted small" id="allowMeta"></span></div>
+    <div id="allowList" class="list"></div>
+  </section>
+
+  <footer class="foot">
+    本地接口仅绑定 127.0.0.1，拒绝跨站调用；数据不出本机，除非已配置总控服务端。
+  </footer>
+</main>
+
+<div class="mask" id="mask"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div style="flex:1;min-width:0">
+      <h3 id="dTitle">告警详情</h3>
+      <div class="small muted" id="dSub"></div>
+    </div>
+    <button class="icon-btn" id="dClose">✕</button>
+  </div>
+  <div class="drawer-body" id="dBody"></div>
+  <div class="drawer-foot" id="dFoot"></div>
+</aside>
+
+<div id="toasts"></div>
+<script src="/app.js"></script>
+</body>
+</html>

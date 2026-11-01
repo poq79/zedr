@@ -1,0 +1,278 @@
+package service
+
+import (
+	"context"
+	"crypto/subtle"
+	"log/slog"
+	"strings"
+	"time"
+
+	"hostguard/internal/model"
+	"hostguard/internal/platform/apperr"
+	"hostguard/internal/platform/idgen"
+	"hostguard/internal/server/domain"
+	"hostguard/internal/server/repository"
+)
+
+// AgentService 负责终端注册、心跳、指令下发。
+type AgentService struct {
+	repos repository.Repos
+	cfg   Config
+	log   *slog.Logger
+}
+
+// Enroll 处理终端注册。同一 machine_id 重复注册会轮转凭证（重装/迁移场景）。
+func (s *AgentService) Enroll(ctx context.Context, req model.EnrollRequest, ip string) (*model.EnrollResponse, error) {
+	if s.cfg.EnrollToken == "" {
+		return nil, apperr.Unavailable("服务端未配置注册令牌，已拒绝注册")
+	}
+	if req.EnrollToken != s.cfg.EnrollToken {
+		s.log.WarnContext(ctx, "enroll_rejected", "reason", "bad_token", "ip", ip, "host", req.Hostname)
+		return nil, apperr.Unauthenticated("注册令牌无效")
+	}
+	if strings.TrimSpace(req.Hostname) == "" || strings.TrimSpace(req.MachineID) == "" {
+		return nil, apperr.Invalid("hostname 与 machine_id 不能为空")
+	}
+
+	now := time.Now()
+	secret := idgen.URLSafe(32)
+	secretHash := hashSecret(secret)
+
+	var agentID string
+	existing, err := s.repos.Agents.ByMachineID(ctx, req.MachineID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		agentID = existing.ID
+	} else {
+		agentID = idgen.Hex(10)
+	}
+
+	a := &domain.Agent{
+		ID:          agentID,
+		Hostname:    truncate(req.Hostname, 128),
+		OSVersion:   truncate(req.OSVersion, 128),
+		Arch:        truncate(req.Arch, 32),
+		Username:    truncate(req.Username, 96),
+		IP:          ip,
+		Tags:        sanitizeTags(req.Tags),
+		Version:     truncate(req.Version, 32),
+		MachineID:   truncate(req.MachineID, 64),
+		SecretHash:  secretHash,
+		Status:      domain.AgentOnline,
+		EnrolledAt:  now,
+		LastSeenAt:  now,
+		RuleVersion: 0,
+	}
+	if err := s.repos.Agents.Upsert(ctx, a); err != nil {
+		return nil, err
+	}
+
+	maxVer, err := s.repos.Rules.MaxVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.log.InfoContext(ctx, "agent_enrolled",
+		"agent_id", agentID, "host", a.Hostname, "ip", ip, "new", existing == nil)
+
+	return &model.EnrollResponse{
+		AgentID:              agentID,
+		AgentSecret:          secret,
+		ServerTime:           now.Unix(),
+		HeartbeatIntervalSec: int(s.cfg.HeartbeatInterval.Seconds()),
+		RuleVersion:          maxVer,
+		ScanIntervalSec:      int(s.cfg.ScanInterval.Seconds()),
+		KillEnabled:          s.cfg.KillEnabled,
+	}, nil
+}
+
+// Authenticate 校验终端凭证，返回终端实体。
+func (s *AgentService) Authenticate(ctx context.Context, agentID string) (*domain.Agent, error) {
+	if agentID == "" {
+		return nil, apperr.Unauthenticated("缺少终端标识")
+	}
+	a, err := s.repos.Agents.ByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		return nil, apperr.Unauthenticated("终端未注册或已被删除")
+	}
+	return a, nil
+}
+
+// CheckSecret 校验终端密钥。
+func (s *AgentService) CheckSecret(a *domain.Agent, secret string) error {
+	if secret == "" || a.SecretHash == "" {
+		return apperr.Unauthenticated("终端密钥校验失败")
+	}
+	got := hashSecret(secret)
+	// 恒定时间比较：避免通过响应时间差推断密钥前缀
+	if subtle.ConstantTimeCompare([]byte(got), []byte(a.SecretHash)) != 1 {
+		return apperr.Unauthenticated("终端密钥校验失败")
+	}
+	return nil
+}
+
+// Heartbeat 处理心跳并返回待下发指令。
+func (s *AgentService) Heartbeat(ctx context.Context, agentID string, req model.HeartbeatRequest, ip string) (*model.HeartbeatResponse, error) {
+	now := time.Now()
+	if err := s.repos.Agents.UpdateHeartbeat(ctx, agentID, now,
+		req.ProcCount, req.CPUPercent, req.MemMB, req.RuleVersion, ip, req.Version); err != nil {
+		return nil, err
+	}
+
+	cmds, err := s.repos.Commands.PendingForAgent(ctx, agentID, 10)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(cmds))
+	out := make([]model.Command, 0, len(cmds))
+	for _, c := range cmds {
+		ids = append(ids, c.ID)
+		out = append(out, model.Command{ID: c.ID, Type: c.Type, Payload: c.Payload})
+	}
+	if len(ids) > 0 {
+		if err := s.repos.Commands.MarkDelivered(ctx, ids, now); err != nil {
+			return nil, err
+		}
+	}
+
+	maxVer, err := s.repos.Rules.MaxVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &model.HeartbeatResponse{
+		ServerTime:  now.Unix(),
+		RuleVersion: maxVer,
+		AckCommand:  ids,
+		Commands:    out,
+		ScanSeconds: int(s.cfg.ScanInterval.Seconds()),
+	}, nil
+}
+
+// List 列出所有终端，并附加未处置告警数。
+func (s *AgentService) List(ctx context.Context) ([]domain.Agent, error) {
+	agents, err := s.repos.Agents.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	counts, err := s.repos.Alerts.CountOpenByAgent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for i := range agents {
+		agents[i].OpenAlerts = counts[agents[i].ID]
+		// 90 秒无心跳视为离线（前端展示用，落库状态由维护任务刷新）
+		if now.Sub(agents[i].LastSeenAt) > 90*time.Second && agents[i].Status == domain.AgentOnline {
+			agents[i].Status = domain.AgentOffline
+		}
+	}
+	return agents, nil
+}
+
+// Get 查询单个终端。
+func (s *AgentService) Get(ctx context.Context, id string) (*domain.Agent, error) {
+	a, err := s.repos.Agents.ByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		return nil, apperr.NotFound("终端")
+	}
+	counts, err := s.repos.Alerts.CountOpenByAgent(ctx)
+	if err == nil {
+		a.OpenAlerts = counts[a.ID]
+	}
+	return a, nil
+}
+
+// Delete 删除终端。
+func (s *AgentService) Delete(ctx context.Context, id string) error {
+	return s.repos.Agents.Delete(ctx, id)
+}
+
+// EnqueueCommand 下发指令（terminate/rescan/sync_rules/collect）。
+func (s *AgentService) EnqueueCommand(ctx context.Context, agentID, typ, payload, by string) (*domain.AgentCommand, error) {
+	a, err := s.repos.Agents.ByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		return nil, apperr.NotFound("终端")
+	}
+	switch typ {
+	case "terminate":
+		if !s.cfg.KillEnabled {
+			return nil, apperr.Forbidden("服务端未启用主动处置能力（HG_AGENT_KILL_ENABLED / 服务端配置）")
+		}
+	case "rescan", "sync_rules", "collect":
+		// 只读类动作始终允许
+	default:
+		return nil, apperr.Invalid("不支持的指令类型: %s", typ)
+	}
+
+	c := &domain.AgentCommand{
+		ID:        idgen.Hex(10),
+		AgentID:   agentID,
+		Type:      typ,
+		Payload:   payload,
+		Status:    "pending",
+		CreatedBy: by,
+		CreatedAt: time.Now(),
+	}
+	if err := s.repos.Commands.Create(ctx, c); err != nil {
+		return nil, err
+	}
+	s.log.InfoContext(ctx, "command_enqueued", "agent_id", agentID, "type", typ, "by", by)
+	return c, nil
+}
+
+// CompleteCommand 处理终端回执。
+func (s *AgentService) CompleteCommand(ctx context.Context, agentID string, results []model.CommandResult) error {
+	now := time.Now()
+	for _, r := range results {
+		status := "done"
+		if r.Status == "failed" {
+			status = "failed"
+		}
+		if err := s.repos.Commands.Complete(ctx, r.CommandID, status, truncate(r.Result, 500), now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// MarkOffline 供维护任务调用：把长时间无心跳的终端标记为离线。
+func (s *AgentService) MarkOffline(ctx context.Context, threshold time.Duration) (int64, error) {
+	return s.repos.Agents.MarkOfflineBefore(ctx, time.Now().Add(-threshold))
+}
+
+// ListCommands 查询最近的指令下发记录。
+func (s *AgentService) ListCommands(ctx context.Context, limit int) ([]domain.AgentCommand, error) {
+	return s.repos.Commands.ListRecent(ctx, limit)
+}
+
+func hashSecret(s string) string {
+	// 终端密钥与刷新令牌使用同一套 SHA-256 摘要策略（密钥本身是高熵随机串）
+	return sha256Hex(s)
+}
+
+func sanitizeTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" || len(t) > 32 {
+			continue
+		}
+		out = append(out, t)
+		if len(out) >= 10 {
+			break
+		}
+	}
+	return out
+}

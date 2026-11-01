@@ -1,0 +1,106 @@
+// Package app 组装服务端运行时：配置 → 存储 → 服务 → 路由 → 后台任务。
+package app
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"hostguard/internal/platform/config"
+)
+
+// Config 是服务端全部运行时配置（只来自环境变量）。
+type Config struct {
+	Env       string
+	LogLevel  string
+	LogFormat string
+
+	Addr            string
+	DBPath          string
+	CORSOrigins     []string
+	JWTSecret       string
+	AccessTTL       time.Duration
+	RefreshTTL      time.Duration
+	CookieSecure    bool
+	BootstrapUser   string
+	BootstrapPass   string
+	EnrollToken     string
+	RateRPS         float64
+	RateBurst       float64
+	KillEnabled     bool
+	RetentionDays   int
+	HeartbeatSec    int
+	ScanSec         int
+	ShutdownTimeout time.Duration
+}
+
+// LoadConfig 读取并集中校验配置；任何非法项都会让进程启动即失败。
+func LoadConfig() (*Config, error) {
+	var l config.Loader
+	c := &Config{}
+
+	c.Env = l.Env("HG_ENV", "development")
+	c.LogLevel = l.Env("HG_LOG_LEVEL", "info")
+	c.LogFormat = l.Env("HG_LOG_FORMAT", "json")
+
+	c.Addr = l.Env("HG_SERVER_ADDR", "0.0.0.0:8080")
+	c.DBPath = l.Env("HG_SERVER_DB_PATH", "./data/secserver.db")
+	c.CORSOrigins = l.CSV("HG_SERVER_CORS_ORIGINS", []string{"http://localhost:8080", "http://127.0.0.1:8080"})
+	c.JWTSecret = l.Required("HG_SERVER_JWT_SECRET")
+	c.AccessTTL = l.Duration("HG_SERVER_ACCESS_TTL", 15*time.Minute)
+	c.RefreshTTL = l.Duration("HG_SERVER_REFRESH_TTL", 168*time.Hour)
+	c.CookieSecure = l.Bool("HG_SERVER_COOKIE_SECURE", false)
+	c.BootstrapUser = l.Env("HG_SERVER_BOOTSTRAP_USER", "admin")
+	c.BootstrapPass = l.Env("HG_SERVER_BOOTSTRAP_PASSWORD", "")
+	c.EnrollToken = l.Env("HG_SERVER_ENROLL_TOKEN", "")
+	c.RateRPS = l.Float("HG_SERVER_RATE_LIMIT_RPS", 20)
+	c.RateBurst = l.Float("HG_SERVER_RATE_LIMIT_BURST", 60)
+	c.KillEnabled = l.Bool("HG_SERVER_KILL_ENABLED", false)
+	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 30)
+	c.HeartbeatSec = l.Int("HG_SERVER_HEARTBEAT_SEC", 30)
+	c.ScanSec = l.Int("HG_SERVER_SCAN_SEC", 2)
+	c.ShutdownTimeout = l.Duration("HG_SERVER_SHUTDOWN_TIMEOUT", 20*time.Second)
+
+	// 校验
+	l.Check(len(c.JWTSecret) >= 32, "HG_SERVER_JWT_SECRET 长度必须 >= 32 字节（可用 openssl rand -hex 32 生成）")
+	l.Check(c.RefreshTTL > c.AccessTTL, "HG_SERVER_REFRESH_TTL 必须大于 HG_SERVER_ACCESS_TTL")
+	l.Check(c.AccessTTL <= 30*time.Minute, "HG_SERVER_ACCESS_TTL 建议不超过 30 分钟（短时效访问令牌）")
+	l.Check(c.HeartbeatSec >= 5 && c.HeartbeatSec <= 600, "HG_SERVER_HEARTBEAT_SEC 需在 5-600 之间")
+	l.Check(c.ScanSec >= 1 && c.ScanSec <= 300, "HG_SERVER_SCAN_SEC 需在 1-300 之间")
+	l.Check(c.RetentionDays >= 1, "HG_SERVER_RETENTION_DAYS 至少为 1")
+	l.Check(c.Addr != "", "HG_SERVER_ADDR 不能为空")
+
+	isProd := strings.EqualFold(c.Env, "production")
+	if isProd {
+		l.Check(c.CookieSecure, "生产环境必须开启 HG_SERVER_COOKIE_SECURE=true（需配合 HTTPS）")
+		l.Check(len(c.CORSOrigins) > 0 && !containsWildcard(c.CORSOrigins),
+			"生产环境 CORS 必须使用显式来源，禁止通配符 *")
+		l.SecurityWarning(c.JWTSecret != "change-me-to-a-long-random-secret-at-least-32-bytes",
+			"JWT 密钥仍是示例默认值，请更换为随机密钥")
+		l.SecurityWarning(c.EnrollToken != "" && c.EnrollToken != "change-me-enroll-token",
+			"终端注册令牌仍是示例默认值，请更换")
+	}
+
+	if err := l.Err(); err != nil {
+		return nil, err
+	}
+
+	// 数据目录准备
+	if dir := filepath.Dir(c.DBPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return nil, fmt.Errorf("创建数据目录 %s 失败: %w", dir, err)
+		}
+	}
+	return c, nil
+}
+
+func containsWildcard(list []string) bool {
+	for _, s := range list {
+		if strings.TrimSpace(s) == "*" {
+			return true
+		}
+	}
+	return false
+}
