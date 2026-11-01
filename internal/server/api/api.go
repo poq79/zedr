@@ -128,6 +128,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/agent/rules", agentAuth(agentH.rules))
 	mux.Handle("GET /api/v1/agent/iocs", agentAuth(agentH.agentIOCs))
 	mux.Handle("POST /api/v1/agent/commands/result", agentAuth(agentH.commandResult))
+	mux.Handle("POST /api/v1/agent/inventory", agentAuth(agentH.saveInventory))
 
 	// ---------------- 管理台接口（JWT + RBAC） ----------------
 	adminH := &adminHandler{deps: d}
@@ -159,6 +160,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))
 	mux.Handle("DELETE /api/v1/hosts/{id}", adminOnly(adminH.deleteHost))
 	mux.Handle("POST /api/v1/hosts/{id}/commands", writer(adminH.sendCommand))
+	mux.Handle("GET /api/v1/hosts/{id}/inventory", viewer(adminH.getHostInventory))
 	mux.Handle("GET /api/v1/commands", viewer(adminH.listCommands))
 
 	mux.Handle("GET /api/v1/rules", viewer(adminH.listRules))

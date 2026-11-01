@@ -257,6 +257,11 @@ func (s *AgentService) Get(ctx context.Context, id string) (*domain.Agent, error
 
 // Delete 删除终端。
 func (s *AgentService) Delete(ctx context.Context, id string) error {
+	// 先清资产清单（孤儿数据）。清理失败只记日志不阻断：主机删除本身
+	// 必须成功，残留的清单行不该反过来卡住主流程
+	if err := s.repos.Inventory.DeleteByAgent(ctx, id); err != nil {
+		s.log.WarnContext(ctx, "inventory_cleanup_failed", "agent_id", id, "err", err)
+	}
 	return s.repos.Agents.Delete(ctx, id)
 }
 

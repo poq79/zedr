@@ -30,6 +30,7 @@ type Store struct {
 	audit     auditRepo
 	commands  commandRepo
 	stats     statsRepo
+	inventory inventoryRepo
 }
 
 var _ = (*Store)(nil)
@@ -81,6 +82,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 	s.audit = auditRepo{s}
 	s.commands = commandRepo{s}
 	s.stats = statsRepo{s}
+	s.inventory = inventoryRepo{s}
 
 	repos := repository.Repos{
 		Users:     &s.users,
@@ -93,6 +95,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 		Audit:     &s.audit,
 		Commands:  &s.commands,
 		Stats:     &s.stats,
+		Inventory: &s.inventory,
 	}
 	return s, repos, nil
 }
@@ -285,6 +288,20 @@ CREATE TABLE IF NOT EXISTS iocs (
   created_by TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
+`,
+	},
+	{
+		name: "005_inventory",
+		sql: `
+-- 主机资产清单：探针分节上报（system/adapters/listeners/services/tasks/startup/agent），
+-- 服务端不解析 payload 内容（JSON 进 JSON 出），hash 用于幂等去重——
+-- 探针按心跳周期重发全量是常态，内容不变就不落库，避免写放大。
+-- (agent_id, section) 主键保证同一节只保留最新一份。
+CREATE TABLE IF NOT EXISTS host_inventory (
+  agent_id   TEXT NOT NULL, section TEXT NOT NULL, hash TEXT NOT NULL,
+  payload    TEXT NOT NULL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, section));
+CREATE INDEX IF NOT EXISTS idx_inventory_agent ON host_inventory(agent_id);
 `,
 	},
 }

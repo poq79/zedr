@@ -23,6 +23,7 @@ type Repos struct {
 	Audit     AuditRepo
 	Commands  CommandRepo
 	Stats     StatsRepo
+	Inventory InventoryRepo
 }
 
 // UserRepo 账号数据访问。
@@ -126,6 +127,15 @@ type CommandRepo interface {
 	MarkDelivered(ctx context.Context, ids []string, at time.Time) error
 	Complete(ctx context.Context, id, status, result string, at time.Time) error
 	ListRecent(ctx context.Context, limit int) ([]domain.AgentCommand, error)
+}
+
+// InventoryRepo 主机资产清单数据访问。
+// 探针按节上报（节名白名单见服务层），服务端不解析 payload 内容；
+// hash 幂等去重在服务层做（读现值比对），仓储只负责存取。
+type InventoryRepo interface {
+	Upsert(ctx context.Context, agentID string, s domain.HostInventorySection) error
+	ListByAgent(ctx context.Context, agentID string) ([]domain.HostInventorySection, error)
+	DeleteByAgent(ctx context.Context, agentID string) error
 }
 
 // StatsRepo 聚合统计。

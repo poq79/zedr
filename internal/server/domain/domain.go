@@ -203,6 +203,16 @@ type AgentCommand struct {
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 }
 
+// HostInventorySection 是主机资产清单的一个节（探针分节上报）。
+// 服务端不解析 payload 内容（JSON 进 JSON 出），hash 是 payload 的
+// SHA-256 十六进制摘要，用于幂等去重：内容没变就不重复落库。
+type HostInventorySection struct {
+	Name      string    `json:"name"`
+	Hash      string    `json:"hash"`
+	Payload   string    `json:"payload"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // ---------------------------------------------------------------- 统计
 
 // DashboardSummary 是后台首页聚合数据。
