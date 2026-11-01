@@ -1,4 +1,5 @@
-/* HostGuard 桌面端（本机防护）样式 */
+/* HostGuard 桌面端（本机防护）样式
+   v0.7：与管理台同一套设计系统——动效 token / 灰阶 / 语义色 / reduced-motion */
 :root {
   --bg: #0a0f1a;
   --bg-elev: #0f1726;
@@ -6,8 +7,8 @@
   --line: #1f2b45;
   --line-soft: #182238;
   --text: #e6edf7;
-  --dim: #9aa9c2;
-  --faint: #6b7c99;
+  --dim: #a3b2ca;
+  --faint: #7d90ae;
   --accent: #3d8bfd;
   --cyan: #22d3ee;
   --ok: #34d399;
@@ -15,6 +16,25 @@
   --danger: #f87171;
   --crit: #fb7185;
   --mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+
+  /* 动效 token（transitions.dev 体系）：进慢出快 */
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --duration-medium: 350ms;
+  --duration-slow: 400ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-linear: linear;
+  --distance-base: 8px;
+  --blur-small: 2px;
+}
+
+/* 系统级"减少动态效果"时全部动画降级（无障碍硬性要求） */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 * { box-sizing: border-box; }
 html, body {
@@ -71,10 +91,8 @@ main { padding: 18px 22px 40px; max-width: 1280px; margin: 0 auto; }
 .card.crit .value { color: var(--crit); }
 .card.warn .value { color: var(--warn); }
 .card.ok .value { color: var(--ok); }
-.card::after {
-  content: ""; position: absolute; right: -26px; top: -26px; width: 80px; height: 80px;
-  border-radius: 50%; background: radial-gradient(circle, rgba(61,139,253,.16), transparent 70%);
-}
+/* v0.7：右上角径向光球移除——语义色靠顶部渐变线表达（见 v0.5 层 ::before），
+   装饰光斑没有信息量，只会稀释语义 */
 
 .panel {
   background: var(--panel); border: 1px solid var(--line);
@@ -141,6 +159,23 @@ tbody tr:hover { background: #16213a; }
 .score.s2 { color: var(--crit); }
 
 .empty { padding: 30px 12px; text-align: center; color: var(--faint); font-size: 12.5px; }
+
+/* 页面级空状态：图标 + 结论 + 引导（与管理台同款） */
+.empty-state { padding: 40px 20px; text-align: center; }
+.empty-state .e-ico {
+  width: 38px; height: 38px; margin: 0 auto 12px;
+  display: grid; place-items: center; border-radius: 11px;
+  background: rgba(52, 211, 153, .12); color: var(--ok);
+}
+.empty-state .e-ico.info { background: rgba(61, 139, 253, .13); color: var(--accent); }
+.empty-state .e-ico.warn { background: rgba(251, 191, 36, .12); color: var(--warn); }
+.empty-state .e-ico svg { width: 19px; height: 19px; }
+.empty-state .e-title { font-size: 13px; font-weight: 600; color: var(--dim); margin-bottom: 5px; }
+.empty-state .e-sub { font-size: 12px; color: var(--faint); line-height: 1.8; max-width: 420px; margin: 0 auto; }
+.empty-state .e-sub code {
+  font-family: var(--mono); font-size: 11px; color: #7fb4f2;
+  background: rgba(61, 139, 253, .13); border-radius: 4px; padding: 1px 5px;
+}
 .foot { text-align: center; color: var(--faint); font-size: 11px; margin-top: 22px; line-height: 1.7; }
 
 .mask { position: fixed; inset: 0; background: rgba(4,8,16,.62); z-index: 50; display: none; }
@@ -156,8 +191,14 @@ tbody tr:hover { background: #16213a; }
 .drawer-head h3 { margin: 0 0 5px; font-size: 14.5px; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 16px 18px 26px; }
 .drawer-foot { padding: 11px 18px; border-top: 1px solid var(--line); display: flex; gap: 8px; flex-wrap: wrap; }
-.icon-btn { background: none; border: none; color: var(--faint); font-size: 17px; cursor: pointer; padding: 2px 6px; }
-.icon-btn:hover { color: var(--text); }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 27px; height: 27px; border-radius: 7px;
+  background: none; border: none; color: var(--faint); cursor: pointer;
+  transition: color var(--duration-quick) var(--ease-smooth-out), background var(--duration-quick) var(--ease-smooth-out);
+}
+.icon-btn:hover { color: var(--text); background: #16213a; }
+.icon-btn svg { width: 15px; height: 15px; display: block; }
 
 .kv { display: grid; grid-template-columns: 110px 1fr; gap: 7px 12px; font-size: 12.5px; }
 .kv dt { color: var(--faint); }
@@ -289,3 +330,40 @@ tbody tr { transition: background .1s ease; }
 /* 观察列表（接近阈值）行内按钮默认弱化，悬浮才强调 */
 .alert-row .btn.sm { opacity: .75; }
 .alert-row:hover .btn.sm { opacity: 1; }
+
+/* ==========================================================
+   v0.7 设计系统层：图标 / 动效统一 / toast 升级
+   ========================================================== */
+
+/* 按钮内 SVG 图标 */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.btn svg { width: 14px; height: 14px; display: block; flex: 0 0 auto; }
+.btn.sm svg { width: 13px; height: 13px; }
+
+/* 抽屉：进慢出快 + 阴影加深（开合节奏与管理台一致） */
+.drawer {
+  transition: transform var(--duration-slow) var(--ease-smooth-out);
+}
+.drawer.show { box-shadow: -18px 0 48px rgba(0, 0, 0, .5); }
+.drawer:not(.show) { transition-duration: var(--duration-fast); }
+
+/* toast：图标位 + blur 溶入溶出 */
+.toast {
+  display: flex; align-items: flex-start; gap: 9px;
+  transition: opacity var(--duration-fast) var(--ease-smooth-out),
+              transform var(--duration-fast) var(--ease-smooth-out),
+              filter var(--duration-fast) var(--ease-smooth-out);
+}
+.toast .t-ico { flex: 0 0 14px; width: 14px; height: 14px; margin-top: 1px; }
+.toast .t-ico svg { width: 14px; height: 14px; display: block; }
+.toast.ok .t-ico { color: var(--ok); }
+.toast.err .t-ico { color: var(--danger); }
+.toast.warn .t-ico { color: var(--warn); }
+.toast.out { opacity: 0; transform: translateY(var(--distance-base)); filter: blur(var(--blur-small)); }
+
+/* 数据刷新时内容的轻揭示（配合 JS 渲染） */
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(5px); filter: blur(var(--blur-small)); }
+  to   { opacity: 1; transform: none; filter: none; }
+}
+.page-in { animation: page-in var(--duration-slow) var(--ease-smooth-out); }

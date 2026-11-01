@@ -270,7 +270,7 @@ function setActiveNav() {
 
 /* ------------------------------------------------------------------ 图表（纯 SVG） */
 function timelineChart(points) {
-  if (!points || !points.length) return '<div class="empty">暂无数据</div>';
+  if (!points || !points.length) return '<div class="empty">所选时间范围内没有告警——环境安静</div>';
   const W = 680, H = 150, padL = 34, padB = 20, padT = 8;
   const innerW = W - padL - 8;
   const innerH = H - padB - padT;
@@ -318,7 +318,7 @@ function severityDonut(dist) {
   const order = ['critical', 'high', 'medium', 'low', 'info'];
   const colors = { critical: '#fb7185', high: '#f87171', medium: '#fbbf24', low: '#64748b', info: '#475569' };
   const total = order.reduce((a, k) => a + (dist[k] || 0), 0);
-  if (!total) return '<div class="empty">暂无数据</div>';
+  if (!total) return '<div class="empty">暂无告警分布——环境安静</div>';
 
   const R = 46, C = 2 * Math.PI * R;
   let offset = 0, arcs = '';
@@ -353,7 +353,7 @@ function severityDonut(dist) {
 }
 
 function barList(items, valueKey, labelKey) {
-  if (!items || !items.length) return '<div class="empty">暂无数据</div>';
+  if (!items || !items.length) return '<div class="empty">暂无数据可供排行</div>';
   const max = Math.max(1, ...items.map((i) => i[valueKey] || 0));
   return items.map((i) => `<div class="bar-row">
       <span class="name" title="${esc(i[labelKey])}">${esc(i[labelKey])}</span>
@@ -490,7 +490,9 @@ async function loadAlertTable() {
   state.alerts.total = res.total || 0;
 
   if (!state.alerts.items.length) {
-    box.innerHTML = '<div class="empty">没有符合条件的告警。试试放宽筛选条件。</div>';
+    box.innerHTML = emptyState(EMPTY_ICONS.shield,
+      '没有符合条件的告警',
+      '当前筛选下没有命中记录。这可能意味着环境确实安静，也可以试试放宽时间范围或严重度筛选。');
   } else {
     box.innerHTML = `<table>
       <thead><tr>
@@ -771,11 +773,10 @@ async function viewHosts() {
   state.hosts = res.items || [];
 
   if (!state.hosts.length) {
-    c.innerHTML = `<div class="card"><div class="empty">
-      还没有终端注册。<br /><br />
-      <span class="small">在目标机器上启动 <b>secagent.exe</b>，并配置正确的
-      <code>HG_AGENT_SERVER_URL</code> 与 <code>HG_AGENT_ENROLL_TOKEN</code>。</span>
-    </div></div>`;
+    c.innerHTML = `<div class="card">${emptyState(EMPTY_ICONS.hosts || EMPTY_ICONS.inbox,
+      '还没有终端注册',
+      `在目标机器上启动 <b>secagent.exe</b>，并配置正确的<br /><code>HG_AGENT_SERVER_URL</code> 与 <code>HG_AGENT_ENROLL_TOKEN</code>。<br />终端注册后约 30 秒内会出现在这里。`,
+      'info')}</div>`;
     return;
   }
 
@@ -964,7 +965,8 @@ async function viewAllowlist() {
             <td class="small muted">${relTime(e.created_at)}</td>
             <td>${canWrite ? `<button class="btn sm danger" data-del="${esc(e.id)}">删除</button>` : ''}</td>
           </tr>`).join('')}
-        </tbody></table>` : '<div class="empty">白名单为空</div>'}
+        </tbody></table>` : emptyState(EMPTY_ICONS.check, '白名单为空',
+          '加白名单能让确认安全的对象不再告警。可在告警详情里一键添加，或点击右上角“新增”。')}
     </div>`;
 
   if (!canWrite) return;
@@ -1011,7 +1013,8 @@ async function viewAudit() {
           <td class="small">${esc(l.detail || '-')}</td>
           <td class="mono small muted">${esc(l.ip || '-')}</td>
         </tr>`).join('')}
-      </tbody></table>` : '<div class="empty">暂无审计记录</div>'}
+      </tbody></table>` : emptyState(EMPTY_ICONS.clock, '暂无审计记录',
+        '登录、处置、规则变更等关键操作都会留痕在这里，方便回溯与合规检查。')}
   </div>`;
 }
 
@@ -1171,17 +1174,18 @@ async function renderRoute() {
   updateUnreadBadge();
 
   switch (route) {
-    case 'overview': return viewOverview();
-    case 'alerts': return viewAlerts();
-    case 'incidents': return viewIncidents();
-    case 'report': return viewReport();
-    case 'hosts': return viewHosts();
-    case 'rules': return viewRules();
-    case 'allowlist': return viewAllowlist();
-    case 'audit': return viewAudit();
-    case 'users': return viewUsers();
-    default: return viewOverview();
+    case 'overview': await viewOverview(); break;
+    case 'alerts': await viewAlerts(); break;
+    case 'incidents': await viewIncidents(); break;
+    case 'report': await viewReport(); break;
+    case 'hosts': await viewHosts(); break;
+    case 'rules': await viewRules(); break;
+    case 'allowlist': await viewAllowlist(); break;
+    case 'audit': await viewAudit(); break;
+    case 'users': await viewUsers(); break;
+    default: await viewOverview();
   }
+  revealContent();
 }
 
 function showLogin(msg) {
@@ -1245,7 +1249,11 @@ async function boot() {
     showLogin('已退出登录');
   });
 
-  $('#refreshBtn').addEventListener('click', () => renderRoute());
+  $('#refreshBtn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.classList.add('spinning');
+    try { await renderRoute(); } finally { btn.classList.remove('spinning'); }
+  });
   $('#drawerClose').addEventListener('click', closeDrawer);
   $('#drawerMask').addEventListener('click', closeDrawer);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
@@ -1839,7 +1847,9 @@ async function viewIncidents() {
     </div>`;
 
   if (!items.length) {
-    c.innerHTML = head + `<div class="card"><div class="empty">当前没有未处置的告警聚合成事件——<br />这是好事，说明各终端都在安静运行。</div></div>`;
+    c.innerHTML = head + `<div class="card">${emptyState(EMPTY_ICONS.shield,
+      '当前没有告警聚合成事件',
+      '这是好事——说明各终端都在安静运行，没有形成攻击链的行为序列。事件会在多条相关告警出现时自动聚类。')}</div>`;
     const b = $('#incRefresh');
     if (b) b.addEventListener('click', viewIncidents);
     return;

@@ -19,7 +19,10 @@
   </div>
   <div class="spacer"></div>
   <div class="conn" id="connState"><span class="dot"></span><span id="connText">连接中…</span></div>
-  <button class="btn sm" id="rescanBtn">立即扫描</button>
+  <button class="btn sm primary" id="rescanBtn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    立即扫描
+  </button>
 </header>
 
 <main>
@@ -87,7 +90,9 @@
       <h3 id="dTitle">告警详情</h3>
       <div class="small muted" id="dSub"></div>
     </div>
-    <button class="icon-btn" id="dClose">✕</button>
+    <button class="icon-btn" id="dClose" title="关闭（Esc）" aria-label="关闭详情">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
   </div>
   <div class="drawer-body" id="dBody"></div>
   <div class="drawer-foot" id="dFoot"></div>

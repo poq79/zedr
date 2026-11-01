@@ -16,13 +16,34 @@ let alerts = [];
 let status = null;
 let timer = null;
 
+/* 页面级空状态：图标 + 结论 + 引导（与管理台同款） */
+function emptyState(icon, title, sub, tone = '') {
+  return `<div class="empty-state">
+    <div class="e-ico ${tone}">${icon}</div>
+    <div class="e-title">${title}</div>
+    <div class="e-sub">${sub}</div>
+  </div>`;
+}
+const EMPTY_ICONS = {
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+};
+
+/* toast 图标（内联 SVG，语义色由 CSS 控制） */
+const TOAST_ICONS = {
+  ok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  err: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></svg>',
+};
+
 function toast(msg, kind = 'ok') {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
-  el.textContent = msg;
+  el.innerHTML = `<span class="t-ico">${TOAST_ICONS[kind] || TOAST_ICONS.ok}</span><span>${esc(msg)}</span>`;
   $('#toasts').appendChild(el);
-  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; }, 2800);
-  setTimeout(() => el.remove(), 3200);
+  setTimeout(() => el.classList.add('out'), 2800);
+  setTimeout(() => el.remove(), 3250);
 }
 
 function rel(iso) {
@@ -185,7 +206,9 @@ function renderCards(s) {
 function renderAlerts() {
   const box = $('#alertList');
   if (!alerts.length) {
-    box.innerHTML = '<div class="empty">暂无告警。探针正在持续监控进程创建事件。</div>';
+    box.innerHTML = emptyState(EMPTY_ICONS.shield,
+      '暂无告警',
+      '探针正在持续监控进程创建事件。有可疑行为时，告警会实时出现在这里。');
     $('#alertMeta').textContent = '';
     return;
   }
@@ -216,7 +239,8 @@ function renderWatchlist() {
     .slice(0, 12);
 
   if (!watch.length) {
-    box.innerHTML = '<div class="empty">暂无进程接近告警线（评分 20–37）——这是好事，说明当前环境没有擦边行为</div>';
+    box.innerHTML = emptyState(EMPTY_ICONS.check, '没有进程接近告警线（评分 20–37）',
+      '这是好事——说明当前环境没有擦边行为。');
     return;
   }
   $('#watchMeta').textContent = `评分 20–37，未达告警线 · 共 ${watch.length} 个`;
@@ -262,7 +286,7 @@ function renderProcs() {
 
   const body = $('#procBody');
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="6" class="empty">没有匹配的进程</td></tr>';
+    body.innerHTML = `<tr><td colspan="6" class="empty">没有匹配的进程——试试更短的关键词，或按名称排序浏览全部</td></tr>`;
     return;
   }
 
@@ -288,7 +312,8 @@ function renderProcs() {
 function renderAllow(entries) {
   const box = $('#allowList');
   if (!entries.length) {
-    box.innerHTML = '<div class="empty">本地白名单为空。可在告警详情里一键加白。</div>';
+    box.innerHTML = emptyState(EMPTY_ICONS.check, '本地白名单为空',
+      '加白后，确认安全的文件或路径不再告警。可在告警详情里一键添加。');
     $('#allowMeta').textContent = '';
     return;
   }
