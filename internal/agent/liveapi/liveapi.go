@@ -100,6 +100,11 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /ads", s.handleADS)
 	mux.HandleFunc("GET /procinfo", s.handleProcInfo)
 	mux.HandleFunc("GET /info", s.handleInfo)
+	// 资产侦查（§12）：六类资产 + 回环探测
+	mux.HandleFunc("GET /recon", s.handleRecon)
+	// 主机详情深化（§13）：安全基线 / 账户与会话（handler 不依赖 Deps）
+	mux.HandleFunc("GET /baseline", HandleBaseline())
+	mux.HandleFunc("GET /accounts", HandleAccounts())
 	return recoverWrap(mux)
 }
 

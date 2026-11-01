@@ -46,6 +46,11 @@ var liveEndpoints = map[string]liveEndpoint{
 	"fs/search": {timeout: 35 * time.Second},
 	"procinfo":  {timeout: 10 * time.Second},
 	"info":      {timeout: 5 * time.Second},
+	// recon 含回环探测（40 次 × 2s 上限 + 30s 内部预算），代理给 40s：
+	// 比探针内部预算宽，保证探针的 truncated 语义能送达而不是被代理先掐
+	"recon":    {timeout: 40 * time.Second},
+	"baseline": {timeout: 10 * time.Second},
+	"accounts": {timeout: 10 * time.Second},
 }
 
 // errTunnelNotConnected 是前端据以渲染"隧道未连接"状态条的错误码。

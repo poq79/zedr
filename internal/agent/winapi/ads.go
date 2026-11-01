@@ -54,9 +54,11 @@ const invalidFindStreamHandle = ^uintptr(0)
 
 // Stream 是一个命名数据流：Name 为去装饰的流名（如 "zone.identifier"，
 // 不含首尾的冒号与 :$DATA 后缀），Size 为流字节数。
+// JSON tag 必须显式给出：前端按小写 name/size 读取，缺省会按 Go 字段名
+// 序列化成 Name/Size，导致 v2 文件抽屉显示 undefined（本轮修复）。
 type Stream struct {
-	Name string
-	Size int64
+	Name string `json:"name"`
+	Size int64  `json:"size"`
 }
 
 // EnumerateStreams 枚举文件的命名数据流（排除主流 ::$DATA）。
