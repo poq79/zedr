@@ -137,7 +137,7 @@ function renderWatchlist() {
     .slice(0, 12);
 
   if (!watch.length) {
-    box.innerHTML = '<div class="empty">暂无接近阈值的进程</div>';
+    box.innerHTML = '<div class="empty">暂无进程接近告警线（评分 20–37）——这是好事，说明当前环境没有擦边行为</div>';
     return;
   }
   $('#watchMeta').textContent = `评分 20–37，未达告警线 · 共 ${watch.length} 个`;
