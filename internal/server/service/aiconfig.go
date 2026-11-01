@@ -710,13 +710,15 @@ func (s *AIService) DeleteSkill(ctx context.Context, id string) error {
 
 // ---------------------------------------------------------------- 引擎热更新
 
-// applyEngineConfig 把 DB 里的配置 + 提示词 + 技能包组装成引擎配置并热更新。
+// assembleEngineConfig 把 DB 里的配置 + 提示词 + 技能包组装成引擎配置。
 //
-// 这是配置中心的"最后一公里"：所有写路径（改配置/改提示词/改技能）
-// 汇合到这里，保证引擎状态永远等于 DB 状态，不存在第二份真值。
-// 启动时也会调用一次（LoadStoredConfig）。
-func (s *AIService) applyEngineConfig(ctx context.Context) error {
+// 生产热更新与评测引擎共用这一处组装逻辑：评测必须测"当前生效的生产配置"
+// （同提示词/同技能包/同槽位），否则评测结果没有代表性。
+func (s *AIService) assembleEngineConfig(ctx context.Context) (ai.Config, map[string]string, map[string][]string, error) {
 	stored := s.loadStored(ctx)
+	if stored == nil {
+		stored = &storedAIConfig{Slots: map[string]storedSlot{}}
+	}
 
 	slots := map[string]ai.SlotConfig{}
 	for _, task := range aiSlotTasks {
@@ -733,13 +735,11 @@ func (s *AIService) applyEngineConfig(ctx context.Context) error {
 		HourlyTokenBudget: s.bootstrap.HourlyTokenBudget,
 		CacheTTL:          s.bootstrap.CacheTTL,
 	}
-	if stored != nil {
-		if stored.HourlyTokens > 0 {
-			cfg.HourlyTokenBudget = stored.HourlyTokens
-		}
-		if stored.CacheTTLSec > 0 {
-			cfg.CacheTTL = time.Duration(stored.CacheTTLSec) * time.Second
-		}
+	if stored.HourlyTokens > 0 {
+		cfg.HourlyTokenBudget = stored.HourlyTokens
+	}
+	if stored.CacheTTLSec > 0 {
+		cfg.CacheTTL = time.Duration(stored.CacheTTLSec) * time.Second
 	}
 
 	prompts := map[string]string{}
@@ -750,9 +750,21 @@ func (s *AIService) applyEngineConfig(ctx context.Context) error {
 	}
 	skills, err := s.skillTexts(ctx)
 	if err != nil {
+		return cfg, nil, nil, err
+	}
+	return cfg, prompts, skills, nil
+}
+
+// applyEngineConfig 把配置热更新到生产引擎。
+//
+// 这是配置中心的"最后一公里"：所有写路径（改配置/改提示词/改技能）
+// 汇合到这里，保证引擎状态永远等于 DB 状态，不存在第二份真值。
+// 启动时也会调用一次（LoadStoredConfig）。
+func (s *AIService) applyEngineConfig(ctx context.Context) error {
+	cfg, prompts, skills, err := s.assembleEngineConfig(ctx)
+	if err != nil {
 		return err
 	}
-
 	s.eng.ApplyConfig(cfg, prompts, skills)
 	return nil
 }

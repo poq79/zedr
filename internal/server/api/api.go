@@ -189,6 +189,9 @@ func Router(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/ai/skills", adminOnly(adminH.aiUpsertSkill))
 	mux.Handle("PUT /api/v1/ai/skills/{id}", adminOnly(adminH.aiUpsertSkill))
 	mux.Handle("DELETE /api/v1/ai/skills/{id}", adminOnly(adminH.aiDeleteSkill))
+	// AI 质量评测（admin-only）：heuristic 结构自检零成本；llm 模式消耗真实 token
+	mux.Handle("POST /api/v1/ai/eval/run", adminOnly(adminH.aiRunEval))
+	mux.Handle("GET /api/v1/ai/eval/last", adminOnly(adminH.aiLastEval))
 
 	mux.Handle("GET /api/v1/hosts", viewer(adminH.listHosts))
 	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))

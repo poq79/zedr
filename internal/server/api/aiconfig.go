@@ -182,6 +182,35 @@ func (h *adminHandler) aiDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"deleted": true})
 }
 
+// aiRunEval 运行一次 AI 质量评测（heuristic 结构自检 / llm 质量评测）。
+func (h *adminHandler) aiRunEval(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	rr, err := h.deps.Services.AI.RunEval(r.Context(), req.Mode)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.auditAI(r, "ai.eval.run", req.Mode,
+		"passed="+strconv.FormatBool(rr.Passed)+",accuracy="+strconv.FormatFloat(rr.Metrics.Accuracy, 'f', 3, 64))
+	httpx.WriteJSON(w, r, http.StatusOK, rr)
+}
+
+// aiLastEval 返回最近一次评测结果（从未运行过时为 null）。
+func (h *adminHandler) aiLastEval(w http.ResponseWriter, r *http.Request) {
+	rr, err := h.deps.Services.AI.LastEval(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, rr)
+}
+
 // actorName 取操作者（审计用）；principal 缺失时给占位。
 func actorName(r *http.Request) string {
 	if p := principal(r); p != nil {

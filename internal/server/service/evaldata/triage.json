@@ -1,0 +1,584 @@
+[
+  {
+    "id": "mal-rule-ransom",
+    "suite": "triage",
+    "title": "高分行为规则命中（疑似勒索行为）",
+    "expected": "malicious",
+    "notes": "rule 层 85 分属硬证据（>=30），启发式必须判 malicious",
+    "process_name": "svcupdate.exe",
+    "image_path": "C:\\Users\\Public\\Downloads\\svcupdate.exe",
+    "cmdline": "svcupdate.exe --run-maintenance",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "8f14e45fceea167a5a36dedd4bea2543a3c2d1e2f3b4c5d6e7f8091a2b3c4d5e",
+    "signed": false,
+    "score": 92,
+    "severity": "critical",
+    "mitre": ["T1486"],
+    "rule_ids": ["R-BEHAV-RANSOM"],
+    "evidence": [
+      {"layer": "rule", "name": "勒索行为规则命中", "score": 85, "note": "短时间内批量文件内容被替换为随机字节"}
+    ],
+    "ancestry": [
+      {"pid": 3420, "name": "explorer.exe", "path": "C:\\Windows\\explorer.exe"}
+    ]
+  },
+  {
+    "id": "mal-blacklist",
+    "suite": "triage",
+    "title": "哈希命中威胁情报 + 落地即执行",
+    "expected": "malicious",
+    "notes": "两条强证据（static 92 + behavior 40）→ malicious",
+    "process_name": "invoice_2026.exe",
+    "image_path": "C:\\Users\\alice\\AppData\\Local\\Temp\\invoice_2026.exe",
+    "cmdline": "invoice_2026.exe",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "9b7a5d2c1e3f4a6b8c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
+    "signed": false,
+    "score": 94,
+    "severity": "critical",
+    "mitre": ["T1204"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "static", "name": "哈希黑名单命中（内置情报）", "score": 92, "note": "与已知投递样本哈希一致"},
+      {"layer": "behavior", "name": "落地即执行", "score": 40, "note": "写入可写目录后 2 秒内被执行"}
+    ],
+    "ancestry": [
+      {"pid": 5512, "name": "outlook.exe", "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE"}
+    ]
+  },
+  {
+    "id": "mal-sig-invalid",
+    "suite": "triage",
+    "title": "签名无效（证书已吊销）",
+    "expected": "malicious",
+    "notes": "证据名含「签名无效」属硬证据，启发式判 malicious",
+    "process_name": "updater.exe",
+    "image_path": "C:\\ProgramData\\updater\\updater.exe",
+    "cmdline": "updater.exe /silent",
+    "user": "SYSTEM",
+    "hash_sha256": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
+    "signed": true,
+    "signer": "Unknown Publisher Ltd.",
+    "score": 88,
+    "severity": "high",
+    "mitre": ["T1553"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "static", "name": "镜像签名无效（证书已吊销）", "score": 88, "note": "签名者证书在吊销列表中"}
+    ],
+    "ancestry": []
+  },
+  {
+    "id": "mal-two-strong",
+    "suite": "triage",
+    "title": "落地即执行 + 可疑血缘组合",
+    "expected": "malicious",
+    "notes": "两条非硬强证据（behavior 40 + lineage 32）→ malicious",
+    "process_name": "chrome_helper.exe",
+    "image_path": "C:\\Users\\alice\\Downloads\\chrome_helper.exe",
+    "cmdline": "chrome_helper.exe --background",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c",
+    "signed": false,
+    "score": 76,
+    "severity": "high",
+    "mitre": ["T1204", "T1036"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "behavior", "name": "落地即执行", "score": 40, "note": "下载目录内文件被直接运行"},
+      {"layer": "lineage", "name": "罕见父子组合", "score": 32, "note": "浏览器进程直接拉起未知可执行文件"}
+    ],
+    "ancestry": [
+      {"pid": 6721, "name": "chrome.exe", "path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"}
+    ]
+  },
+  {
+    "id": "mal-persist-combo",
+    "suite": "triage",
+    "title": "建立持久化 + 落地即执行",
+    "expected": "malicious",
+    "notes": "persist 45 + behavior 35 两条强证据 → malicious",
+    "process_name": "winhealth.exe",
+    "image_path": "C:\\Windows\\Temp\\winhealth.exe",
+    "cmdline": "winhealth.exe -install",
+    "user": "SYSTEM",
+    "hash_sha256": "3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
+    "signed": false,
+    "score": 84,
+    "severity": "critical",
+    "mitre": ["T1547", "T1059"],
+    "rule_ids": ["R-PERSIST-RUNKEY"],
+    "evidence": [
+      {"layer": "persist", "name": "Run 键新增自启动项", "score": 45, "note": "注册表 Run 键新增指向 Temp 目录的启动项"},
+      {"layer": "behavior", "name": "落地即执行", "score": 35, "note": "Temp 目录内程序被立即执行"}
+    ],
+    "ancestry": [
+      {"pid": 1150, "name": "services.exe", "path": "C:\\Windows\\System32\\services.exe"}
+    ]
+  },
+  {
+    "id": "mal-rule-signed",
+    "suite": "triage",
+    "title": "有效签名但命中高分规则（签名不能洗白行为）",
+    "expected": "malicious",
+    "notes": "rule 60 硬证据压过签名；验证「签名非免罪符」",
+    "process_name": "syncagent.exe",
+    "image_path": "C:\\Program Files\\VendorSync\\syncagent.exe",
+    "cmdline": "syncagent.exe --collect-user-data",
+    "user": "SYSTEM",
+    "hash_sha256": "4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e",
+    "signed": true,
+    "signer": "VendorSync Inc.",
+    "score": 80,
+    "severity": "high",
+    "mitre": ["T1005"],
+    "rule_ids": ["R-DATA-EXFIL"],
+    "evidence": [
+      {"layer": "rule", "name": "批量收集浏览器凭据", "score": 60, "note": "读取多个浏览器凭据库并对陌生域名发起外联"}
+    ],
+    "ancestry": []
+  },
+  {
+    "id": "mal-lineage-keyword",
+    "suite": "triage",
+    "title": "血缘异常 + 可疑命令行关键词",
+    "expected": "malicious",
+    "notes": "lineage 30 + keyword 28 两条强证据 → malicious",
+    "process_name": "powershell.exe",
+    "image_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "cmdline": "powershell.exe -nop -w hidden -enc JABjAGkAcABoAGUAcgA=",
+    "user": "DESKTOP\\bob",
+    "hash_sha256": "5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 71,
+    "severity": "high",
+    "mitre": ["T1059.001", "T1027"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "lineage", "name": "办公软件拉起隐藏窗口 PowerShell", "score": 30, "note": "winword.exe → powershell.exe -w hidden"},
+      {"layer": "keyword", "name": "关键词：编码命令/隐藏窗口", "score": 28, "note": "命令行包含 -enc 与 -w hidden"}
+    ],
+    "ancestry": [
+      {"pid": 2244, "name": "winword.exe", "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"}
+    ]
+  },
+  {
+    "id": "mal-behavior-lineage-persist",
+    "suite": "triage",
+    "title": "落地即执行 + 血缘异常 + 自启动",
+    "expected": "malicious",
+    "notes": "三条强证据 → malicious",
+    "process_name": "taskhostw2.exe",
+    "image_path": "C:\\Users\\bob\\AppData\\Roaming\\taskhostw2.exe",
+    "cmdline": "taskhostw2.exe /update",
+    "user": "DESKTOP\\bob",
+    "hash_sha256": "6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a",
+    "signed": false,
+    "score": 86,
+    "severity": "critical",
+    "mitre": ["T1547", "T1204"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "behavior", "name": "落地即执行", "score": 38, "note": "Roaming 目录内文件被立即执行"},
+      {"layer": "lineage", "name": "父进程为空壳宿主", "score": 26, "note": "父进程为已注销会话的 shell 宿主"},
+      {"layer": "persist", "name": "计划任务新增", "score": 42, "note": "新增每 5 分钟触发的计划任务指向该文件"}
+    ],
+    "ancestry": [
+      {"pid": 900, "name": "dllhost.exe", "path": "C:\\Windows\\System32\\dllhost.exe"}
+    ]
+  },
+  {
+    "id": "mal-sig-and-behavior",
+    "suite": "triage",
+    "title": "签名无效 + 落地即执行",
+    "expected": "malicious",
+    "notes": "签名无效（硬证据）为核心，另一条强证据加强",
+    "process_name": "setup_patch.exe",
+    "image_path": "C:\\Users\\Public\\setup_patch.exe",
+    "cmdline": "setup_patch.exe /S",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b",
+    "signed": true,
+    "signer": "Expired Signer",
+    "score": 90,
+    "severity": "critical",
+    "mitre": ["T1553", "T1204"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "static", "name": "镜像签名无效（时间戳缺失）", "score": 90, "note": "签名存在但无可信时间戳"},
+      {"layer": "behavior", "name": "落地即执行", "score": 30, "note": "Public 目录内文件被立即运行"}
+    ],
+    "ancestry": []
+  },
+  {
+    "id": "mal-rule-low-plus-strong",
+    "suite": "triage",
+    "title": "规则命中（硬证据）+ 弱信号",
+    "expected": "malicious",
+    "notes": "rule 35 已达硬证据阈值（>=30）",
+    "process_name": "regsvr32.exe",
+    "image_path": "C:\\Windows\\System32\\regsvr32.exe",
+    "cmdline": "regsvr32.exe /s /u C:\\Users\\alice\\AppData\\Roaming\\lib.dll",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 66,
+    "severity": "high",
+    "mitre": ["T1218.010"],
+    "rule_ids": ["R-LOLBIN-REGSVR"],
+    "evidence": [
+      {"layer": "rule", "name": "regsvr32 加载用户目录 DLL", "score": 35, "note": "系统组件加载可写目录中的库文件"},
+      {"layer": "keyword", "name": "关键词：用户目录加载", "score": 12, "note": ""}
+    ],
+    "ancestry": [
+      {"pid": 4488, "name": "cmd.exe", "path": "C:\\Windows\\System32\\cmd.exe"}
+    ]
+  },
+
+  {
+    "id": "sus-one-keyword",
+    "suite": "triage",
+    "title": "单条关键词强证据（不足以定恶意）",
+    "expected": "suspicious",
+    "notes": "1 条非硬强证据 → suspicious",
+    "process_name": "mshta.exe",
+    "image_path": "C:\\Windows\\System32\\mshta.exe",
+    "cmdline": "mshta.exe http://intranet.example/panel.hta",
+    "user": "DESKTOP\\bob",
+    "hash_sha256": "9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 58,
+    "severity": "medium",
+    "mitre": ["T1218.005"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "keyword", "name": "关键词：脚本宿主远程加载", "score": 30, "note": "mshta 从远程地址加载内容"}
+    ],
+    "ancestry": [
+      {"pid": 3320, "name": "explorer.exe", "path": "C:\\Windows\\explorer.exe"}
+    ]
+  },
+  {
+    "id": "sus-one-behavior",
+    "suite": "triage",
+    "title": "单条行为强证据",
+    "expected": "suspicious",
+    "notes": "behavior 28 单条强证据 → suspicious",
+    "process_name": "helper.exe",
+    "image_path": "C:\\Users\\bob\\AppData\\Local\\Temp\\helper.exe",
+    "cmdline": "helper.exe",
+    "user": "DESKTOP\\bob",
+    "hash_sha256": "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e",
+    "signed": false,
+    "score": 52,
+    "severity": "medium",
+    "mitre": ["T1204"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "behavior", "name": "落地即执行", "score": 28, "note": "Temp 目录内文件被直接运行"}
+    ],
+    "ancestry": []
+  },
+  {
+    "id": "sus-weak-only",
+    "suite": "triage",
+    "title": "仅弱信号（关键词 + 血缘）",
+    "expected": "suspicious",
+    "notes": "weak>0 → suspicious（宁可人工看，不放过）",
+    "process_name": "cmd.exe",
+    "image_path": "C:\\Windows\\System32\\cmd.exe",
+    "cmdline": "cmd.exe /c whoami",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 34,
+    "severity": "low",
+    "mitre": ["T1033"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "keyword", "name": "关键词：侦察命令", "score": 12, "note": "whoami 属于低危侦察命令"},
+      {"layer": "lineage", "name": "常见父子组合但频率偏低", "score": 10, "note": ""}
+    ],
+    "ancestry": [
+      {"pid": 2244, "name": "winword.exe", "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"}
+    ]
+  },
+  {
+    "id": "sus-persist-single",
+    "suite": "triage",
+    "title": "单条持久化强证据",
+    "expected": "suspicious",
+    "notes": "persist 26 单条强证据 → suspicious",
+    "process_name": "cleanmgr.exe",
+    "image_path": "C:\\Windows\\System32\\cleanmgr.exe",
+    "cmdline": "cleanmgr.exe /sagerun:1",
+    "user": "SYSTEM",
+    "hash_sha256": "2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 44,
+    "severity": "medium",
+    "mitre": ["T1547"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "persist", "name": "启动目录新增快捷方式", "score": 26, "note": "启动目录新增指向系统工具的参数化快捷方式"}
+    ],
+    "ancestry": []
+  },
+  {
+    "id": "sus-lineage-single",
+    "suite": "triage",
+    "title": "单条血缘强证据",
+    "expected": "suspicious",
+    "notes": "lineage 30 单条强证据 → suspicious",
+    "process_name": "rundll32.exe",
+    "image_path": "C:\\Windows\\System32\\rundll32.exe",
+    "cmdline": "rundll32.exe C:\\Users\\alice\\Downloads\\mod.dll,Entry",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 49,
+    "severity": "medium",
+    "mitre": ["T1218.011"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "lineage", "name": "罕见父进程拉起 rundll32", "score": 30, "note": "父进程为下载器类工具"}
+    ],
+    "ancestry": [
+      {"pid": 7788, "name": "downloader.exe", "path": "C:\\Users\\alice\\Downloads\\downloader.exe"}
+    ]
+  },
+  {
+    "id": "sus-rule-low",
+    "suite": "triage",
+    "title": "低分规则命中（未达硬证据线）",
+    "expected": "suspicious",
+    "notes": "rule 20 < 30 属弱信号 → suspicious",
+    "process_name": "wmic.exe",
+    "image_path": "C:\\Windows\\System32\\wbem\\wmic.exe",
+    "cmdline": "wmic.exe process get name",
+    "user": "DESKTOP\\bob",
+    "hash_sha256": "4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 31,
+    "severity": "low",
+    "mitre": ["T1047"],
+    "rule_ids": ["R-LOLBIN-WMIC"],
+    "evidence": [
+      {"layer": "rule", "name": "WMIC 进程枚举", "score": 20, "note": "低危枚举行为，单独不构成恶意"}
+    ],
+    "ancestry": []
+  },
+  {
+    "id": "sus-keyword-weak",
+    "suite": "triage",
+    "title": "单条弱关键词",
+    "expected": "suspicious",
+    "notes": "weak 15 → suspicious",
+    "process_name": "net.exe",
+    "image_path": "C:\\Windows\\System32\\net.exe",
+    "cmdline": "net.exe view",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 28,
+    "severity": "low",
+    "mitre": ["T1018"],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "keyword", "name": "关键词：网络共享枚举", "score": 15, "note": ""}
+    ],
+    "ancestry": []
+  },
+  {
+    "id": "sus-blacklist-low",
+    "suite": "triage",
+    "title": "黑名单命中但分值偏低（情报置信度打折）",
+    "expected": "suspicious",
+    "notes": "static 40 单条强证据 → suspicious；验证低置信情报不自动升恶意",
+    "process_name": "tool.exe",
+    "image_path": "C:\\Tools\\tool.exe",
+    "cmdline": "tool.exe --scan",
+    "user": "DESKTOP\\bob",
+    "hash_sha256": "6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e",
+    "signed": false,
+    "score": 45,
+    "severity": "medium",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [
+      {"layer": "static", "name": "哈希命中低置信情报源", "score": 40, "note": "仅单源命中，未达硬证据口径"}
+    ],
+    "ancestry": []
+  },
+
+  {
+    "id": "ben-signed-clean",
+    "suite": "triage",
+    "title": "有效签名且无任何命中",
+    "expected": "benign",
+    "notes": "signed + 0 证据 → benign 0.82",
+    "process_name": "notepad.exe",
+    "image_path": "C:\\Windows\\System32\\notepad.exe",
+    "cmdline": "notepad.exe",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 0,
+    "severity": "low",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [],
+    "ancestry": [
+      {"pid": 3320, "name": "explorer.exe", "path": "C:\\Windows\\explorer.exe"}
+    ]
+  },
+  {
+    "id": "ben-unsigned-clean",
+    "suite": "triage",
+    "title": "未签名但无任何命中信号",
+    "expected": "benign",
+    "notes": "0 证据 → benign 0.6（缺少正向依据，置信度更低）",
+    "process_name": "devtool.exe",
+    "image_path": "C:\\dev\\build\\devtool.exe",
+    "cmdline": "devtool.exe --build",
+    "user": "DESKTOP\\bob",
+    "hash_sha256": "8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a",
+    "signed": false,
+    "score": 5,
+    "severity": "low",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [],
+    "ancestry": []
+  },
+  {
+    "id": "ben-signed-system",
+    "suite": "triage",
+    "title": "系统目录签名组件",
+    "expected": "benign",
+    "notes": "签名 + 受保护目录 + 无信号",
+    "process_name": "svchost.exe",
+    "image_path": "C:\\Windows\\System32\\svchost.exe",
+    "cmdline": "svchost.exe -k netsvcs -p",
+    "user": "SYSTEM",
+    "hash_sha256": "9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 0,
+    "severity": "low",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [],
+    "ancestry": [
+      {"pid": 700, "name": "services.exe", "path": "C:\\Windows\\System32\\services.exe"}
+    ]
+  },
+  {
+    "id": "ben-signed-updater",
+    "suite": "triage",
+    "title": "签名的正规更新程序",
+    "expected": "benign",
+    "notes": "签名 + 标准安装目录",
+    "process_name": "updater.exe",
+    "image_path": "C:\\Program Files\\VendorApp\\updater.exe",
+    "cmdline": "updater.exe --check",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c",
+    "signed": true,
+    "signer": "VendorApp GmbH",
+    "score": 0,
+    "severity": "low",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [],
+    "ancestry": []
+  },
+  {
+    "id": "ben-unsigned-tool",
+    "suite": "triage",
+    "title": "未签名的内网工具（无信号）",
+    "expected": "benign",
+    "notes": "0 证据；即使未签名也应按低置信 benign 处理",
+    "process_name": "inventory.exe",
+    "image_path": "C:\\Tools\\inventory.exe",
+    "cmdline": "inventory.exe --report",
+    "user": "DESKTOP\\bob",
+    "hash_sha256": "1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
+    "signed": false,
+    "score": 3,
+    "severity": "low",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [],
+    "ancestry": []
+  },
+  {
+    "id": "ben-signed-driver",
+    "suite": "triage",
+    "title": "签名驱动加载（无异常）",
+    "expected": "benign",
+    "notes": "合法驱动路径 + 签名",
+    "process_name": "driverhost.exe",
+    "image_path": "C:\\Windows\\System32\\drivers\\driverhost.exe",
+    "cmdline": "driverhost.exe --load",
+    "user": "SYSTEM",
+    "hash_sha256": "2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 0,
+    "severity": "low",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [],
+    "ancestry": []
+  },
+  {
+    "id": "ben-clean-command",
+    "suite": "triage",
+    "title": "常规命令行操作",
+    "expected": "benign",
+    "notes": "签名 + 普通参数，无关键词命中",
+    "process_name": "cmd.exe",
+    "image_path": "C:\\Windows\\System32\\cmd.exe",
+    "cmdline": "cmd.exe /c dir C:\\Users\\alice\\Documents",
+    "user": "DESKTOP\\alice",
+    "hash_sha256": "3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f",
+    "signed": true,
+    "signer": "Microsoft Windows",
+    "score": 0,
+    "severity": "low",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [],
+    "ancestry": []
+  },
+  {
+    "id": "ben-signed-backup",
+    "suite": "triage",
+    "title": "签名的备份工具扫描",
+    "expected": "benign",
+    "notes": "命名容易误报（backup 相关），但无信号",
+    "process_name": "backupagent.exe",
+    "image_path": "C:\\Program Files\\BackupSuite\\backupagent.exe",
+    "cmdline": "backupagent.exe /scan",
+    "user": "SYSTEM",
+    "hash_sha256": "4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a",
+    "signed": true,
+    "signer": "BackupSuite Ltd.",
+    "score": 0,
+    "severity": "low",
+    "mitre": [],
+    "rule_ids": [],
+    "evidence": [],
+    "ancestry": []
+  }
+]
