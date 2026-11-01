@@ -10,6 +10,8 @@ import { ConfirmProvider, ToastProvider, useToast } from './components/ui/overla
 import { LoginPage } from './pages/Login';
 import { OverviewPage } from './pages/Overview';
 import { Alerts } from './pages/Alerts';
+import { AttackMatrixPage } from './pages/AttackMatrix';
+import { IntelPage } from './pages/Intel';
 import { IncidentsPage, ReportPage, HostsPage, RulesPage, AllowlistPage, AuditPage, UsersPage } from './pages/Misc';
 
 function AppInner() {
@@ -139,6 +141,8 @@ function AppInner() {
                 <Route path="/overview" element={<OverviewPage key={`o${refreshTick}`} />} />
                 <Route path="/alerts" element={<Alerts key={`a${refreshTick}`} user={user} />} />
                 <Route path="/incidents" element={<IncidentsPage key={`i${refreshTick}`} onOpenAlert={(id) => navigate(`/alerts?open=${id}`)} />} />
+                <Route path="/attack" element={<AttackMatrixPage key={`m${refreshTick}`} />} />
+                <Route path="/intel" element={<IntelPage key={`io${refreshTick}`} user={user} />} />
                 <Route path="/report" element={<ReportPage key={`r${refreshTick}`} />} />
                 <Route path="/hosts" element={<HostsPage key={`h${refreshTick}`} />} />
                 <Route path="/rules" element={<RulesPage key={`ru${refreshTick}`} user={user} />} />

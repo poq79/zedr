@@ -21,7 +21,7 @@ export function Alerts({ user }: { user: User }) {
   const [rows, setRows] = useState<Alert[] | null>(null);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ q: '', status: '', severity: '', verdict: '' });
+  const [filters, setFilters] = useState({ q: '', status: '', severity: '', verdict: '', mitre: '' });
   const [page, setPage] = useState(1);
   const [sortKey, setSortKey] = useState<SortKey>('time');
   const [sortDesc, setSortDesc] = useState(true);
@@ -34,7 +34,11 @@ export function Alerts({ user }: { user: User }) {
   /* 事件页跳转：/alerts?open=ID 直接打开对应详情 */
   useEffect(() => {
     const open = searchParams.get('open');
-    if (open) { setOpenId(Number(open)); setSearchParams({}, { replace: true }); }
+    const mitre = searchParams.get('mitre');
+    if (open) { setOpenId(Number(open)); }
+    // ATT&CK 矩阵格子下钻：?mitre=T1059 精确过滤（后端 CSV 定界匹配，不会误中 T1059.001）
+    if (mitre) { setFilters((f) => ({ ...f, mitre })); }
+    if (open || mitre) { setSearchParams({}, { replace: true }); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -47,6 +51,7 @@ export function Alerts({ user }: { user: User }) {
     if (filters.status) qs.set('status', filters.status);
     if (filters.severity) qs.set('severity', filters.severity);
     if (filters.verdict) qs.set('verdict', filters.verdict);
+    if (filters.mitre) qs.set('mitre', filters.mitre);
     try {
       const res = await api.get<{ items: Alert[]; total: number }>(`/api/v1/alerts?${qs.toString()}`);
       setRows(res.items || []);
@@ -170,6 +175,12 @@ export function Alerts({ user }: { user: User }) {
           <option value="">全部结论</option>
           {Object.entries(VERDICT_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </Select>
+        {filters.mitre && (
+          <Badge tone="info" className="gap-1.5">
+            <span className="font-mono">{filters.mitre}</span>
+            <button aria-label="清除 ATT&CK 过滤" onClick={() => setFilter('mitre', '')} className="ml-0.5 cursor-pointer font-bold leading-none opacity-70 hover:opacity-100">×</button>
+          </Badge>
+        )}
         <div className="flex-1" />
         <Button size="sm" onClick={exportCsv}><Download size={13} /> 导出 CSV</Button>
       </div>

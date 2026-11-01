@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, TriangleAlert, GitBranch, BarChart3, Monitor,
   ShieldCheck, ShieldBan, ScrollText, Users, LogOut, RefreshCw, Settings,
-  Moon, Sun, Rows3, Keyboard, CircleDot,
+  Moon, Sun, Rows3, Keyboard, CircleDot, Crosshair, Fingerprint,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Button } from './ui/basics';
@@ -18,9 +18,11 @@ export const ROUTES = [
   { to: '/overview', label: '概览', icon: LayoutDashboard },
   { to: '/alerts', label: '告警中心', icon: TriangleAlert, badge: 'alerts' as const },
   { to: '/incidents', label: '事件', icon: GitBranch },
+  { to: '/attack', label: '攻击矩阵', icon: Crosshair },
   { to: '/report', label: '报表', icon: BarChart3 },
   { to: '/hosts', label: '主机终端', icon: Monitor },
   { to: '/rules', label: '检测规则', icon: ShieldCheck },
+  { to: '/intel', label: '威胁情报', icon: Fingerprint },
   { to: '/allowlist', label: '白名单', icon: ShieldBan },
   { to: '/audit', label: '审计日志', icon: ScrollText, adminOnly: true },
   { to: '/users', label: '账号管理', icon: Users, adminOnly: true },
@@ -29,14 +31,15 @@ export const ROUTES = [
 /* 导航 IA 分组（DESIGN.md §4.2）：组标签是信息架构，不是装饰 */
 const NAV_GROUPS: Array<{ label: string; tos: string[] }> = [
   { label: '总览', tos: ['/overview'] },
-  { label: '运营', tos: ['/alerts', '/incidents', '/report', '/hosts'] },
-  { label: '策略', tos: ['/rules', '/allowlist'] },
+  { label: '运营', tos: ['/alerts', '/incidents', '/attack', '/report', '/hosts'] },
+  { label: '策略', tos: ['/rules', '/intel', '/allowlist'] },
   { label: '治理', tos: ['/audit', '/users'] },
 ];
 
 const TITLES: Record<string, string> = {
-  overview: '概览', alerts: '告警中心', incidents: '事件（攻击链聚类）', report: '运营周报',
-  hosts: '主机终端', rules: '检测规则', allowlist: '白名单与降噪', audit: '审计日志', users: '账号管理',
+  overview: '概览', alerts: '告警中心', incidents: '事件（攻击链聚类）', attack: 'ATT&CK 矩阵',
+  report: '运营周报', hosts: '主机终端', rules: '检测规则', intel: '威胁情报',
+  allowlist: '白名单与降噪', audit: '审计日志', users: '账号管理',
 };
 
 /* 页头副行：一句话说明本页职责——真实信息，不是口号 */
@@ -44,9 +47,11 @@ const SUBTITLES: Record<string, string> = {
   overview: '检测态势与运营指标',
   alerts: '实时检测输出 · 处置需人工确认',
   incidents: '告警聚类为攻击链 · 一个事件看全程',
+  attack: '命中与覆盖两个维度 · 点击格子按技术编号下钻',
   report: 'MTTR / 误报率 / 运营周报',
   hosts: '已接入探针的主机与进程视图',
   rules: '检测规则集中管理与签名下发',
+  intel: 'SHA256 指标 · 随签名包热下发到终端',
   allowlist: '加白降噪 · 误报回收',
   audit: '全部管理操作留痕',
   users: '账号 · 角色 · 密码策略',

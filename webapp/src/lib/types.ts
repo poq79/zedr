@@ -59,3 +59,39 @@ export interface AiTriage { verdict: Verdict; confidence: number; summary: strin
 export interface Paged<T> { items: T[]; total?: number }
 
 export interface AiStats { total: number; blocked: number; degraded: number; avg_ms?: number }
+
+/* ---- v0.9 新接口（[FE-WANTED] 跟进） ---- */
+
+/** 威胁指标（当前仅 SHA256），随签名包下发到终端 */
+export interface IOC { id: string; hash: string; note?: string; created_by?: string; created_at: string }
+
+/** 远程指令：terminate/quarantine_file/quarantine_restore/rescan/sync_rules/collect */
+export interface AgentCommand {
+  id: string; agent_id: string; type: string; payload?: string;
+  status: 'pending' | 'delivered' | 'done' | 'failed' | string;
+  result?: string; created_by?: string; created_at: string;
+  delivered_at?: string | null; finished_at?: string | null;
+}
+
+/** 主机资产清单节（探针分节上报，payload 是 JSON 字符串，服务端不解析） */
+export interface HostInventorySection { name: string; hash: string; payload: string; updated_at: string }
+
+/** ATT&CK 战术×技术矩阵（GET /api/v1/attack/matrix） */
+export interface AttackMatrix {
+  tactics: AttackTactic[];
+  window_days: number;
+  generated_at: string;
+  summary: { techniques_hit: number; techniques_covered: number; total_alerts: number; unmapped: number };
+}
+export interface AttackTactic { id: string; name: string; name_zh: string; techniques: AttackTechStat[] }
+export interface AttackTechStat {
+  id: string; name: string; name_zh: string;
+  alert_count: number; open_count: number; critical_count: number;
+  rule_count: number; last_seen?: string;
+}
+
+/** 告警完整性链逐日校验 */
+export interface IntegrityReport {
+  days: { day: string; status: 'ok' | 'purged' | 'tampered' | string; alerts?: number }[];
+  ok: number; purged: number; tampered: number;
+}
