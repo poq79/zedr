@@ -38,3 +38,9 @@ webapp/node_modules/
 
 *~
 .zcode/
+
+# 私有文档（独立 git 仓库 zedr-private-docs/，永不入库，永不公开）
+/zedr-private-docs/
+# docs/ 整目录不再入库：开发过程/AI 总结类文档一律放私有分仓，
+# 未来如需公开单个文档，用 !docs/<文件名> 显式豁免。
+/docs/
