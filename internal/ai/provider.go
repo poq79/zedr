@@ -26,6 +26,8 @@ type Backend interface {
 	Triage(ctx context.Context, in *TriageInput) (*TriageResult, error)
 	// Translate 把自然语言转成受控查询 DSL。
 	Translate(ctx context.Context, nl string, schema *QuerySchema) (*Query, error)
+	// Narrate 把一组告警重建为攻击链叙事（事件级检测）。
+	Narrate(ctx context.Context, in *IncidentInput) (*IncidentNarrative, error)
 }
 
 // ---------------------------------------------------------------- 确定性启发式后端
@@ -193,6 +195,14 @@ func (heuristicBackend) Triage(_ context.Context, in *TriageInput) (*TriageResul
 // Translate 实现 Backend：用关键词规则把自然语言转成查询。
 func (heuristicBackend) Translate(_ context.Context, nl string, schema *QuerySchema) (*Query, error) {
 	return schema.Normalize(heuristicTranslate(nl))
+}
+
+// Narrate 实现 Backend：确定性攻击链重建（战术阶段 + 证据层兜底）。
+func (heuristicBackend) Narrate(_ context.Context, in *IncidentInput) (*IncidentNarrative, error) {
+	start := time.Now()
+	n := deterministicNarrative(in)
+	n.LatencyMs = time.Since(start).Milliseconds()
+	return n, nil
 }
 
 func isHardEvidence(e EvidenceItem) bool {
@@ -544,6 +554,42 @@ func (o *OpenAICompatible) Translate(ctx context.Context, nl string, schema *Que
 		return nil, fmt.Errorf("模型输出不是合法 JSON: %w", err)
 	}
 	return schema.Normalize(&q)
+}
+
+// Narrate 实现 Backend：事件级攻击链重建。
+// 引用校验与审批强制在 Engine 出口统一执行（与单告警研判同一纪律）。
+func (o *OpenAICompatible) Narrate(ctx context.Context, in *IncidentInput) (*IncidentNarrative, error) {
+	start := time.Now()
+	over, sks := o.promptSettings(SlotNarrative)
+	sys, user := buildNarrativePrompt(in, in.UntrustedIgnoredHintNarrative(), over)
+	if len(sks) > 0 {
+		sys += "\n\n" + skillBlock(sks)
+	}
+	content, _, err := o.chat(ctx, sys, user, 1800)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Summary       string           `json:"summary"`
+		RiskScore     int              `json:"risk_score"`
+		Phases        []NarrativePhase `json:"phases"`
+		MissingPhases []string         `json:"missing_phases"`
+		Actions       []Action         `json:"actions"`
+	}
+	if err := json.Unmarshal([]byte(extractJSON(content)), &out); err != nil {
+		return nil, fmt.Errorf("模型输出不是合法 JSON: %w", err)
+	}
+	n := &IncidentNarrative{
+		Summary:       out.Summary,
+		RiskScore:     out.RiskScore,
+		Phases:        out.Phases,
+		MissingPhases: out.MissingPhases,
+		Actions:       out.Actions,
+		Model:         o.model,
+		Engine:        "llm",
+		LatencyMs:     time.Since(start).Milliseconds(),
+	}
+	return n, nil
 }
 
 // extractJSON 从模型输出里取出 JSON 主体。

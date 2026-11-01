@@ -64,6 +64,11 @@ type Config struct {
 	CacheTTL time.Duration
 }
 
+// Incidents 是事件叙事统计（与 Triage 分列）。
+type Incidents struct {
+	Narrated int64
+}
+
 // Stats 是引擎运行统计（暴露给管理台）。
 type Stats struct {
 	Triaged      int64 `json:"triaged"`
@@ -74,6 +79,10 @@ type Stats struct {
 	BudgetCap    int   `json:"budget_cap"`
 	BudgetUsed   int   `json:"budget_used"`
 	AvgLatencyMs int64 `json:"avg_latency_ms"`
+	// Narrated 是事件叙事调用次数（事件级检测的用量）。
+	Narrated int64 `json:"narrated"`
+	// Slots 是按任务槽的调用分布（判断"钱花在哪个能力上"）。
+	Slots map[string]SlotStat `json:"slots,omitempty"`
 	// GroundedRate 是"结论全部带有效证据引用"的比例，
 	// 这是衡量 AI 输出可核查性的核心指标。
 	GroundedRate float64 `json:"grounded_rate"`
@@ -83,9 +92,27 @@ type Stats struct {
 	Model         string `json:"model"`
 }
 
+// SlotStat 是单个任务槽的用量。
+type SlotStat struct {
+	Calls int64 `json:"calls"`
+	AvgMs int64 `json:"avg_ms"`
+}
+
+// slotCounter 是槽位统计的内部累加器。
+type slotCounter struct {
+	calls int64
+	msSum int64
+}
+
 type cacheEntry struct {
 	res *TriageResult
 	at  time.Time
+}
+
+// narrativeEntry 是事件叙事缓存项。
+type narrativeEntry struct {
+	narrative *IncidentNarrative
+	at        time.Time
 }
 
 // Engine 是 AI 能力门面：统一调度推理后端、预算、缓存与护栏。
@@ -106,6 +133,12 @@ type Engine struct {
 	windowFrom time.Time
 	tokens     int
 	cache      map[string]cacheEntry
+	// narrativeCache 是事件叙事的短时缓存（key: incidentID#ver）。
+	narrativeCache map[string]narrativeEntry
+	// ver 是配置版本：ApplyConfig 每次递增，缓存键携带版本号——
+	// 改模型/提示词/技能包后旧结论立即失效（此前要等 5 分钟 TTL）。
+	ver uint64
+	slots map[string]*slotCounter
 
 	stTriaged   int64
 	stLLM       int64
@@ -115,6 +148,7 @@ type Engine struct {
 	stLatSum    int64
 	stGrounded  int64
 	stConflicts int64
+	stNarrated  int64
 }
 
 // NewEngine 按配置构造引擎。
@@ -133,13 +167,16 @@ func NewEngine(cfg Config, log *slog.Logger) *Engine {
 	}
 
 	e := &Engine{
-		log:        log,
-		heur:       NewHeuristic(),
-		start:      time.Now(),
-		windowFrom: time.Now(),
-		cache:      make(map[string]cacheEntry, 256),
-		prompts:    map[string]string{},
-		skills:     map[string][]string{},
+		log:            log,
+		heur:           NewHeuristic(),
+		start:          time.Now(),
+		windowFrom:     time.Now(),
+		cache:          make(map[string]cacheEntry, 256),
+		narrativeCache: make(map[string]narrativeEntry, 64),
+		slots:          make(map[string]*slotCounter, 4),
+		prompts:        map[string]string{},
+		skills:         map[string][]string{},
+		ver:            1,
 	}
 	e.llms = buildBackends(cfg, log)
 	e.cfg = cfg
@@ -253,7 +290,9 @@ func (e *Engine) ApplyConfig(cfg Config, prompts map[string]string, skills map[s
 	e.cfg = cfg
 	e.windowFrom = time.Now()
 	e.tokens = 0
+	e.ver++
 	e.cache = make(map[string]cacheEntry, 256)
+	e.narrativeCache = make(map[string]narrativeEntry, 64)
 	e.llms = buildBackends(cfg, e.log)
 
 	e.prompts = map[string]string{}
@@ -300,7 +339,8 @@ func (e *Engine) Enabled() bool {
 func (e *Engine) Triage(ctx context.Context, in *TriageInput) *TriageResult {
 	start := time.Now()
 
-	if cached := e.fromCache(in.AlertID); cached != nil {
+	cacheKey := e.cacheKey(in.AlertID)
+	if cached := e.fromCache(cacheKey); cached != nil {
 		e.bump(func(s *Engine) { s.stCacheHit++ })
 		return cached
 	}
@@ -399,8 +439,30 @@ func (e *Engine) Triage(ctx context.Context, in *TriageInput) *TriageResult {
 
 	res.LatencyMs = time.Since(start).Milliseconds()
 	e.record(res)
-	e.toCache(in.AlertID, res)
+	e.toCache(cacheKey, res)
+	e.slotBump(SlotTriage, res.LatencyMs)
 	return res
+}
+
+// cacheKey 给缓存键附加配置版本：配置中心每次保存都会 bump ver，
+// 旧的研判缓存立刻失效——"改了提示词/模型却还要等 5 分钟"不再是问题。
+func (e *Engine) cacheKey(id string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return fmt.Sprintf("%s#%d", id, e.ver)
+}
+
+// slotBump 记录某任务槽的一次调用（用量分布，帮助判断成本花在哪）。
+func (e *Engine) slotBump(slot string, ms int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	c, ok := e.slots[slot]
+	if !ok {
+		c = &slotCounter{}
+		e.slots[slot] = c
+	}
+	c.calls++
+	c.msSum += ms
 }
 
 // Translate 把自然语言转成受控查询。
@@ -408,6 +470,8 @@ func (e *Engine) Translate(ctx context.Context, nl string) (*Query, error) {
 	if strings.TrimSpace(nl) == "" {
 		return nil, fmt.Errorf("查询语句为空")
 	}
+	start := time.Now()
+	defer func() { e.slotBump(SlotHunt, time.Since(start).Milliseconds()) }()
 	schema := AlertQuerySchema()
 
 	if hb := e.backend(SlotHunt); hb != nil && e.budgetLeft() > 0 {
@@ -426,6 +490,76 @@ func (e *Engine) Translate(ctx context.Context, nl string) (*Query, error) {
 	return schema.Normalize(q)
 }
 
+// NarrateIncident 把一组告警重建为攻击链叙事（事件级检测 L6）。
+//
+// 与 Triage 同一条流水线形态：缓存 → 注入隔离 → 模型（预算内）→
+// 降级确定性重建 → 引用校验 → 审批强制 → 缓存。
+// 任何一步失败都退回确定性叙事，绝不把错误抛给调用方——
+// "稍弱的结论"永远优于"分析失败"。
+func (e *Engine) NarrateIncident(ctx context.Context, in *IncidentInput) *IncidentNarrative {
+	start := time.Now()
+
+	key := e.cacheKey("inc:" + in.IncidentID)
+	if cached := e.fromNarrativeCache(key); cached != nil {
+		e.bump(func(s *Engine) { s.stCacheHit++ })
+		return cached
+	}
+
+	// ---- 注入隔离：告警字段同样是攻击者可控内容 ----
+	safeIn, ignored := sanitizeIncidentInput(in)
+	in = safeIn
+
+	var (
+		res       *IncidentNarrative
+		degraded  bool
+		degReason string
+	)
+
+	be := e.backend(SlotNarrative)
+	if be != nil && e.budgetLeft() > 0 {
+		n, err := be.Narrate(ctx, in)
+		if err == nil {
+			res = n
+			e.bump(func(s *Engine) { s.stLLM++ })
+		} else {
+			degraded = true
+			degReason = "模型调用失败：" + err.Error()
+			if e.log != nil {
+				e.log.Warn("ai_narrate_llm_failed", "err", err)
+			}
+		}
+	} else if be != nil {
+		degraded = true
+		degReason = fmt.Sprintf("本小时 token 预算已用尽（上限 %d）", e.budgetCap())
+	} else {
+		degraded = true
+		degReason = "未配置外部模型，使用确定性事件重建"
+	}
+
+	if res == nil {
+		r, err := e.heur.Narrate(ctx, in)
+		if err != nil || r == nil {
+			res = &IncidentNarrative{Engine: "heuristic", RiskScore: 0,
+				Summary: "事件重建失败，请人工复核时间线。"}
+		} else {
+			res = r
+		}
+		res.Degraded = degraded
+		res.DegradedReason = degReason
+		e.bump(func(s *Engine) { s.stDegraded++ })
+	}
+
+	res.UntrustedIgnored = ignored
+	// ---- 护栏：引用校验（编造引用剔除）+ 风险钳制 + 审批强制 ----
+	res = ValidateNarrative(res, in)
+
+	res.LatencyMs = time.Since(start).Milliseconds()
+	e.bump(func(s *Engine) { s.stNarrated++ })
+	e.slotBump(SlotNarrative, res.LatencyMs)
+	e.toNarrativeCache(key, res)
+	return res
+}
+
 // Stats 返回运行统计。
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
@@ -439,8 +573,19 @@ func (e *Engine) Stats() Stats {
 		TokensUsed:    e.stTokens,
 		BudgetCap:     e.cfg.HourlyTokenBudget,
 		BudgetUsed:    e.tokens,
+		Narrated:      e.stNarrated,
 		ConflictCount: e.stConflicts,
 		Engine:        "heuristic",
+	}
+	if len(e.slots) > 0 {
+		st.Slots = make(map[string]SlotStat, len(e.slots))
+		for name, c := range e.slots {
+			avg := int64(0)
+			if c.calls > 0 {
+				avg = c.msSum / c.calls
+			}
+			st.Slots[name] = SlotStat{Calls: c.calls, AvgMs: avg}
+		}
 	}
 	if e.stTriaged > 0 {
 		st.AvgLatencyMs = e.stLatSum / e.stTriaged
@@ -507,8 +652,8 @@ func (e *Engine) fromCache(id string) *TriageResult {
 	return nil
 }
 
-func (e *Engine) toCache(id string, res *TriageResult) {
-	if id == "" || res == nil {
+func (e *Engine) toCache(key string, res *TriageResult) {
+	if key == "" || res == nil {
 		return
 	}
 	e.mu.Lock()
@@ -517,7 +662,30 @@ func (e *Engine) toCache(id string, res *TriageResult) {
 	if len(e.cache) >= 1024 {
 		e.cache = make(map[string]cacheEntry, 256)
 	}
-	e.cache[id] = cacheEntry{res: res, at: time.Now()}
+	e.cache[key] = cacheEntry{res: res, at: time.Now()}
+}
+
+// fromNarrativeCache / toNarrativeCache 是事件叙事的独立缓存
+// （结构与研判缓存相同，但结果类型不同，不能共用 map）。
+func (e *Engine) fromNarrativeCache(key string) *IncidentNarrative {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if ent, ok := e.narrativeCache[key]; ok && time.Since(ent.at) < e.cfg.CacheTTL {
+		return ent.narrative
+	}
+	return nil
+}
+
+func (e *Engine) toNarrativeCache(key string, res *IncidentNarrative) {
+	if key == "" || res == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.narrativeCache) >= 256 {
+		e.narrativeCache = make(map[string]narrativeEntry, 64)
+	}
+	e.narrativeCache[key] = narrativeEntry{narrative: res, at: time.Now()}
 }
 
 // AddTokens 由后端回填实际 token 消耗（成本可观测）。

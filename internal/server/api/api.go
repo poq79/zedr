@@ -222,6 +222,9 @@ func Router(d Deps) http.Handler {
 
 	mux.Handle("GET /api/v1/incidents", viewer(adminH.listIncidents))
 	mux.Handle("POST /api/v1/incidents/{id}/status", writer(adminH.transitionIncident))
+	// 事件级 AI 检测（跨告警攻击链叙事）：与单告警研判同口径，viewer 可触发
+	mux.Handle("POST /api/v1/incidents/{id}/narrate", viewer(adminH.narrateIncident))
+	mux.Handle("GET /api/v1/incidents/{id}/narrative", viewer(adminH.getIncidentNarrative))
 	mux.Handle("GET /api/v1/hosts/{id}/changes", viewer(adminH.getHostChanges))
 	mux.Handle("POST /api/v1/alerts/{id}/investigate", viewer(adminH.investigateAlert))
 	// 实时查询（只读调查面）：ping 是探活所以 viewer 可用；
