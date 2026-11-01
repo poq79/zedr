@@ -14,6 +14,7 @@ import (
 	"hostguard/internal/model"
 	"hostguard/internal/server/auth"
 	"hostguard/internal/server/repository/sqlite"
+	"hostguard/internal/ai"
 	"hostguard/internal/server/service"
 )
 
@@ -62,7 +63,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		HeartbeatInterval: 30 * time.Second,
 		ScanInterval:      2 * time.Second,
 		DupWindow:         5 * time.Minute,
-	}, log)
+	}, log, ai.NewEngine(ai.Config{Provider: "none"}, log))
 
 	if _, err := svc.Rule.SeedBuiltins(t.Context()); err != nil {
 		t.Fatalf("播种规则失败: %v", err)

@@ -8,6 +8,7 @@ import (
 
 	"hostguard/internal/platform/apperr"
 	"hostguard/internal/platform/httpx"
+	"hostguard/internal/ai"
 	"hostguard/internal/platform/rulehash"
 	"hostguard/internal/platform/idgen"
 	"hostguard/internal/platform/logx"
@@ -63,6 +64,15 @@ func New() (*App, error) {
 			"hint", "请把该值配置到终端 HG_AGENT_ENROLL_TOKEN，并写入服务端 HG_SERVER_ENROLL_TOKEN 以便重启后保持")
 	}
 
+	aiEngine := ai.NewEngine(ai.Config{
+		Provider:          cfg.AIProvider,
+		BaseURL:           cfg.AIBaseURL,
+		APIKey:            cfg.AIAPIKey,
+		Model:             cfg.AIModel,
+		Timeout:           cfg.AITimeout,
+		HourlyTokenBudget: cfg.AITokenBudget,
+	}, log)
+
 	svc := service.New(repos, tokens, service.Config{
 		EnrollToken:       cfg.EnrollToken,
 		KillEnabled:       cfg.KillEnabled,
@@ -70,7 +80,7 @@ func New() (*App, error) {
 		ScanInterval:      time.Duration(cfg.ScanSec) * time.Second,
 		DupWindow:         5 * time.Minute,
 		RetentionDays:     cfg.RetentionDays,
-	}, log)
+	}, log, aiEngine)
 
 	// 播种内置规则 + 初始管理员
 	if _, err := svc.Rule.SeedBuiltins(ctx); err != nil {

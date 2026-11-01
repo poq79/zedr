@@ -21,6 +21,14 @@ type Config struct {
 	DBPath          string
 	CORSOrigins     []string
 	RuleSignKey  string // 规则包签名密钥；空则从 JWTSecret 派生
+
+	// AI 推理后端配置。Provider=none 时只用确定性启发式分析。
+	AIProvider    string
+	AIBaseURL     string
+	AIAPIKey      string
+	AIModel       string
+	AITimeout     time.Duration
+	AITokenBudget int
 	JWTSecret       string
 	AccessTTL       time.Duration
 	RefreshTTL      time.Duration
@@ -53,6 +61,13 @@ func LoadConfig() (*Config, error) {
 	c.CORSOrigins = l.CSV("HG_SERVER_CORS_ORIGINS", []string{"http://localhost:8080", "http://127.0.0.1:8080"})
 	c.JWTSecret = l.Required("HG_SERVER_JWT_SECRET")
 	c.RuleSignKey = l.Env("HG_SERVER_RULE_SIGN_KEY", "")
+
+	c.AIProvider = l.Env("HG_AI_PROVIDER", "none")
+	c.AIBaseURL = l.Env("HG_AI_BASE_URL", "")
+	c.AIAPIKey = l.Env("HG_AI_API_KEY", "")
+	c.AIModel = l.Env("HG_AI_MODEL", "")
+	c.AITimeout = l.Duration("HG_AI_TIMEOUT", 45*time.Second)
+	c.AITokenBudget = l.Int("HG_AI_HOURLY_TOKEN_BUDGET", 200000)
 	c.AccessTTL = l.Duration("HG_SERVER_ACCESS_TTL", 15*time.Minute)
 	c.RefreshTTL = l.Duration("HG_SERVER_REFRESH_TTL", 168*time.Hour)
 	c.CookieSecure = l.Bool("HG_SERVER_COOKIE_SECURE", false)
@@ -70,6 +85,9 @@ func LoadConfig() (*Config, error) {
 	c.ShutdownTimeout = l.Duration("HG_SERVER_SHUTDOWN_TIMEOUT", 20*time.Second)
 
 	// 校验
+	l.Check(c.AIProvider == "none" || c.AIProvider == "openai",
+		"HG_AI_PROVIDER 只能是 none 或 openai")
+	l.Check(c.AITokenBudget >= 1000, "HG_AI_HOURLY_TOKEN_BUDGET 至少 1000")
 	l.Check(len(c.JWTSecret) >= 32, "HG_SERVER_JWT_SECRET 长度必须 >= 32 字节（可用 openssl rand -hex 32 生成）")
 	l.Check(c.RefreshTTL > c.AccessTTL, "HG_SERVER_REFRESH_TTL 必须大于 HG_SERVER_ACCESS_TTL")
 	l.Check(c.AccessTTL <= 30*time.Minute, "HG_SERVER_ACCESS_TTL 建议不超过 30 分钟（短时效访问令牌）")

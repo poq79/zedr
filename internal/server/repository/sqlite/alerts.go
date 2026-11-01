@@ -156,6 +156,38 @@ func (r *alertRepo) List(ctx context.Context, f domain.AlertFilter) ([]domain.Al
 		args = append(args, like, like, like, like, like)
 	}
 
+	// ---- AI 查询 DSL 映射的字段 ----
+	// 每个字段对应固定 SQL 片段，值全部参数绑定。
+	// 模型能影响的只有"值"，碰不到"结构"，因此不存在拼接注入的路径。
+	likeFilter := func(col, val string) {
+		if val == "" {
+			return
+		}
+		where = append(where, col+" LIKE ?")
+		args = append(args, "%"+val+"%")
+	}
+	likeFilter("process_name", f.ProcessLike)
+	likeFilter("image_path", f.PathLike)
+	likeFilter("cmdline", f.CmdLike)
+	likeFilter("proc_user", f.UserLike)
+	likeFilter("hostname", f.HostLike)
+	likeFilter("rule_ids", f.RuleLike)
+	if f.Hash != "" {
+		where = append(where, "hash_sha256 = ?")
+		args = append(args, f.Hash)
+	}
+	if f.MinScore > 0 {
+		where = append(where, "score >= ?")
+		args = append(args, f.MinScore)
+	}
+	if f.Unsigned != nil {
+		if *f.Unsigned {
+			where = append(where, "signed = 0")
+		} else {
+			where = append(where, "signed = 1")
+		}
+	}
+
 	whereSQL := ""
 	if len(where) > 0 {
 		whereSQL = " WHERE " + strings.Join(where, " AND ")

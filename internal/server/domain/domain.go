@@ -243,6 +243,20 @@ type AlertFilter struct {
 	Page     int
 	PageSize int
 	Sort     string
+
+	// 以下字段由 AI 查询 DSL 映射而来（见 service.AIService.Hunt）。
+	// 每个字段都对应固定的 SQL 片段，值一律走参数绑定——
+	// 这是"模型无法触及 SQL"的落地点。
+	ProcessLike string
+	PathLike    string
+	CmdLike     string
+	UserLike    string
+	HostLike    string
+	RuleLike    string
+	Hash        string
+	MinScore    int
+	// Unsigned 为 true 时只要未签名；false 时只要已签名；nil 表示不限。
+	Unsigned *bool
 }
 
 // Normalize 补全默认分页参数并限制上限。

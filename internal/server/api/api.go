@@ -144,6 +144,11 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/alerts/{id}", viewer(adminH.getAlert))
 	mux.Handle("POST /api/v1/alerts/{id}/status", writer(adminH.updateAlertStatus))
 
+	// AI 分析能力：研判 / 自然语言检索 / 引擎状态
+	mux.Handle("POST /api/v1/alerts/{id}/triage", viewer(adminH.triageAlert))
+	mux.Handle("POST /api/v1/ai/hunt", viewer(adminH.hunt))
+	mux.Handle("GET /api/v1/ai/stats", viewer(adminH.aiStats))
+
 	mux.Handle("GET /api/v1/hosts", viewer(adminH.listHosts))
 	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))
 	mux.Handle("DELETE /api/v1/hosts/{id}", adminOnly(adminH.deleteHost))

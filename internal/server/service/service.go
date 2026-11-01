@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"hostguard/internal/server/auth"
+	"hostguard/internal/ai"
 	"hostguard/internal/server/repository"
 )
 
@@ -31,10 +32,11 @@ type Services struct {
 	Audit *AuditService
 	Stats *StatsService
 	Bus   *AlertBus
+	AI    *AIService
 }
 
 // New 组装服务集合（依赖注入：仓储 + 令牌管理器 + 配置 + 日志）。
-func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Logger) *Services {
+func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Logger, aiEngine *ai.Engine) *Services {
 	if cfg.DupWindow <= 0 {
 		cfg.DupWindow = 5 * time.Minute
 	}
@@ -48,5 +50,6 @@ func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Log
 		Audit: &AuditService{repos: repos},
 		Stats: &StatsService{repos: repos},
 		Bus:   bus,
+		AI:    &AIService{repos: repos, eng: aiEngine, log: log},
 	}
 }

@@ -374,6 +374,13 @@ async function viewAlerts() {
       <button class="btn sm primary" id="fApply">应用筛选</button>
       <button class="btn sm ghost" id="fReset">重置</button>
     </div>
+    <div class="toolbar" style="margin-top:-6px">
+      <input type="search" id="aiHunt" placeholder="用一句话检索，例如：最近24小时未签名的高分告警"
+             style="flex:1;min-width:280px" />
+      <button class="btn sm" id="aiHuntBtn">AI 检索</button>
+      <button class="btn sm ghost" id="aiHuntClear" style="display:none">清除结果</button>
+    </div>
+    <div id="aiHuntResult"></div>
     <div class="card" style="padding:14px 8px 8px">
       <div id="alertTable"><div class="empty"><span class="spin"></span> 加载中…</div></div>
       <div class="pager" id="alertPager"></div>
@@ -388,6 +395,8 @@ async function viewAlerts() {
     state.alerts.page = 1;
     loadAlertTable();
   });
+  bindAIHunt();
+
   $('#fReset').addEventListener('click', () => {
     state.alerts.filters = { status: '', severity: '', verdict: '', q: '' };
     state.alerts.page = 1;
@@ -574,6 +583,8 @@ function renderAlertDetail(a) {
     ${a.cmdline || p.cmdline ? `<section class="block"><h3>命令行原文</h3>
       <pre class="code">${esc(p.cmdline || a.cmdline)}</pre></section>` : ''}
 
+    ${aiPanelHTML(a)}
+
     <section class="block">
       <h3>命中信号（${(ev.signals || []).length}）</h3>
       ${signals}
@@ -618,6 +629,8 @@ function renderAlertDetail(a) {
     ['false_positive', '标记误报', ''],
     ['open', '重新打开', 'ghost'],
   ];
+  bindAITriage(a);
+
   $('#drawerFoot').innerHTML = canWrite
     ? `${actions.map(([st, label, cls]) =>
         `<button class="btn sm ${cls}" data-status="${st}">${label}</button>`).join('')}
@@ -1125,3 +1138,208 @@ async function boot() {
 }
 
 document.addEventListener('DOMContentLoaded', boot);
+
+/* ------------------------------------------------------------------ AI 研判 */
+
+let AI_STATS = null;
+
+function aiPanelHTML(a) {
+  return `
+  <section class="block">
+    <h3 style="display:flex;align-items:center;gap:10px">
+      AI 研判
+      <span id="aiEngineBadge" class="badge info" style="font-weight:400">…</span>
+      <button class="btn sm" id="aiTriageBtn" style="margin-left:auto">开始分析</button>
+    </h3>
+    <div class="card" style="padding:14px">
+      <div id="aiBody" class="small muted">
+        结合该告警的完整证据链做判断：给出结论、置信度、逐条可核对的理由，以及处置建议。
+        <br />所有结论都会标注所依据的证据编号，可以逐条回到下方"命中信号"核对。
+      </div>
+    </div>
+  </section>`;
+}
+
+async function loadAIStats() {
+  try { AI_STATS = await api.get('/api/v1/ai/stats'); } catch (_) { AI_STATS = null; }
+  const el = $('#aiEngineBadge');
+  if (!el || !AI_STATS) return;
+  const st = AI_STATS.stats || {};
+  el.textContent = AI_STATS.enabled
+    ? `模型 ${st.model || ''}`
+    : '确定性引擎';
+  el.className = 'badge ' + (AI_STATS.enabled ? 'ok' : 'info');
+  el.title = AI_STATS.enabled
+    ? `已接入大模型；本小时 token 用量 ${st.budget_used || 0}/${st.budget_cap || 0}`
+    : '未配置外部模型，使用内置确定性分析（结论同样带证据引用）';
+}
+
+function bindAITriage(a) {
+  loadAIStats();
+  const btn = $('#aiTriageBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = '分析中…';
+    const body = $('#aiBody');
+    body.innerHTML = '<span class="spin"></span> 正在分析证据链…';
+    try {
+      const r = await api.post(`/api/v1/alerts/${encodeURIComponent(a.id)}/triage`, {});
+      body.innerHTML = renderTriage(r);
+    } catch (e) {
+      body.innerHTML = `<span style="color:var(--crit)">分析失败：${esc(e.message)}</span>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '重新分析';
+    }
+  });
+}
+
+const TRIAGE_VERDICT = {
+  malicious: ['恶意', 'crit'],
+  suspicious: ['可疑', 'warn'],
+  benign: ['无害', 'ok'],
+  inconclusive: ['证据不足', 'info'],
+};
+
+function renderTriage(r) {
+  const [vLabel, vCls] = TRIAGE_VERDICT[r.verdict] || ['未知', 'info'];
+  const conf = Math.round((r.confidence || 0) * 100);
+
+  // 引擎与质量标注：让分析师一眼看出"这份结论是怎么来的、可不可信"
+  const meta = [];
+  meta.push(`<span class="badge ${r.engine === 'llm' ? 'ok' : 'info'}">${r.engine === 'llm' ? '大模型' : '确定性引擎'}</span>`);
+  if (r.model) meta.push(`<span class="badge info">${esc(r.model)}</span>`);
+  meta.push(`<span class="badge ${r.grounded ? 'ok' : 'warn'}">${r.grounded ? '结论全部可溯源' : `${r.uncited} 条结论无引用`}</span>`);
+  if (r.degraded) meta.push(`<span class="badge warn" title="${esc(r.degraded_reason || '')}">已降级</span>`);
+  if (r.untrusted_ignored > 0) {
+    meta.push(`<span class="badge crit" title="命令行/路径中包含试图操纵分析模型的指令，已隔离">拦截 ${r.untrusted_ignored} 处注入</span>`);
+  }
+  meta.push(`<span class="muted small">${r.latency_ms || 0} ms</span>`);
+
+  const reasons = (r.reasoning || []).map((x) => {
+    const cites = (x.citations || []).map((c) => `<span class="badge info" style="font-family:var(--mono)">${esc(c)}</span>`).join(' ');
+    const isGuard = (x.text || '').startsWith('【护栏】');
+    return `<div class="signal" style="${isGuard ? 'background:rgba(239,68,68,.08);border-left:3px solid var(--crit)' : ''}">
+      <span style="flex:1;min-width:0">${esc(x.text)}</span>
+      <span style="white-space:nowrap">${cites || '<span class="badge warn">无引用</span>'}</span>
+    </div>`;
+  }).join('') || '<div class="empty small">无</div>';
+
+  const actions = (r.actions || []).map((x) => `
+    <div class="signal">
+      <span class="layer">${esc(x.type)}</span>
+      <span style="flex:1;min-width:0">
+        <b>${esc(x.target || '')}</b>
+        <div class="small muted" style="margin-top:3px">${esc(x.detail || '')}</div>
+      </span>
+      ${x.requires_approval ? '<span class="badge warn">需人工确认</span>' : '<span class="badge info">可自助</span>'}
+    </div>`).join('') || '<div class="empty small">无建议动作</div>';
+
+  const chain = (r.attack_chain || []).length
+    ? `<div style="margin-top:12px"><div class="small muted" style="margin-bottom:6px">推测攻击链</div>
+       <div class="tree">${r.attack_chain.map((c, i) => `<div>${i + 1}. ${esc(c)}</div>`).join('')}</div></div>`
+    : '';
+
+  return `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <span class="badge ${vCls}" style="font-size:14px;padding:4px 12px">${vLabel}</span>
+      <span class="small muted">置信度 <b style="color:var(--text)">${conf}%</b></span>
+      ${meta.join(' ')}
+    </div>
+    ${r.narrative ? `<div style="margin-bottom:14px;line-height:1.8">${esc(r.narrative)}</div>` : ''}
+    <div class="small muted" style="margin:10px 0 6px">判断依据（括号内为引用的证据编号）</div>
+    ${reasons}
+    <div class="small muted" style="margin:14px 0 6px">建议处置</div>
+    ${actions}
+    ${chain}
+  `;
+}
+
+/* ------------------------------------------------------------------ 自然语言检索 */
+
+function bindAIHunt() {
+  const btn = $('#aiHuntBtn'), input = $('#aiHunt'), clear = $('#aiHuntClear');
+  if (!btn || !input) return;
+
+  // 回车即检索
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') runAIHunt(); });
+  btn.addEventListener('click', runAIHunt);
+  if (clear) clear.addEventListener('click', () => {
+    $('#aiHuntResult').innerHTML = '';
+    clear.style.display = 'none';
+    loadAlertTable();
+  });
+}
+
+const FIELD_LABEL = {
+  process_name: '进程名', image_path: '路径', cmdline: '命令行',
+  hash_sha256: 'SHA256', verdict: '结论', severity: '严重度',
+  score: '分值', signed: '签名', proc_user: '账号',
+  hostname: '主机', rule_ids: '规则', status: '状态',
+};
+
+async function runAIHunt() {
+  const input = $('#aiHunt');
+  const q = (input.value || '').trim();
+  if (!q) return;
+
+  const box = $('#aiHuntResult');
+  const btn = $('#aiHuntBtn');
+  btn.disabled = true; btn.textContent = '解析中…';
+  box.innerHTML = '<div class="card" style="padding:14px"><span class="spin"></span> 正在理解查询…</div>';
+
+  let r;
+  try { r = await api.post('/api/v1/ai/hunt', { query: q }); }
+  catch (e) {
+    box.innerHTML = `<div class="card" style="padding:14px;color:var(--crit)">${esc(e.message)}</div>`;
+    btn.disabled = false; btn.textContent = 'AI 检索';
+    return;
+  } finally {
+    btn.disabled = false; btn.textContent = 'AI 检索';
+  }
+
+  const query = r.query || {};
+  const conds = (query.filters || []).map((f) =>
+    `<span class="badge info">${esc(FIELD_LABEL[f.field] || f.field)} ${esc(f.op)} ${esc(f.value || (f.values || []).join(','))}</span>`
+  ).join(' ') || '<span class="muted small">无条件（仅时间窗口）</span>';
+
+  const rows = (r.alerts || []).map((a) => `
+    <tr class="clickable" data-hunt-id="${esc(a.id)}">
+      <td>${sevBadge(a.severity)}</td>
+      <td><div style="font-weight:500">${esc(a.title)}</div></td>
+      <td>${esc(a.hostname)}</td>
+      <td class="mono">${esc(a.process_name)}</td>
+      <td><b style="color:${a.score >= 70 ? 'var(--crit)' : a.score >= 40 ? 'var(--warn)' : 'var(--text-dim)'}">${a.score}</b></td>
+      <td>${statusBadge(a.status)}</td>
+      <td class="small muted">${relTime(a.created_at)}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">没有匹配的告警</td></tr>';
+
+  box.innerHTML = `
+    <div class="card" style="padding:14px;margin-bottom:12px">
+      <div class="small muted" style="margin-bottom:8px">引擎理解的查询意图</div>
+      <div style="margin-bottom:10px">${esc(query.explain || q)}</div>
+      <div class="small muted" style="margin-bottom:6px">解析出的条件</div>
+      <div style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px">${conds}</div>
+      <div class="small muted">
+        时间窗口 ${Math.round((query.since_sec || 86400) / 3600)} 小时 ·
+        命中 <b style="color:var(--text)">${r.total || 0}</b> 条 · 显示前 ${(r.alerts || []).length} 条
+      </div>
+    </div>
+    <div class="card" style="padding:6px 12px 10px">
+      <table>
+        <thead><tr>
+          <th style="width:64px">严重度</th><th>告警</th><th style="width:150px">主机</th>
+          <th style="width:180px">进程</th><th style="width:64px">分值</th>
+          <th style="width:88px">状态</th><th style="width:96px">时间</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+
+  const clear = $('#aiHuntClear');
+  if (clear) clear.style.display = '';
+  $$('#aiHuntResult tr[data-hunt-id]').forEach((tr) => {
+    tr.addEventListener('click', () => openAlert(tr.dataset.huntId));
+  });
+}
