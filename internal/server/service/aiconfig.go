@@ -150,8 +150,10 @@ type SaveAIConfigInput struct {
 	CacheTTLSec  *int                      `json:"cache_ttl_sec"`
 }
 
-// aiSlotTasks 是配置中心管理的槽位清单（narrative 预留、暂不开放编辑）。
-var aiSlotTasks = []string{ai.SlotTriage, ai.SlotHunt, ai.SlotInvestigate}
+// aiSlotTasks 是配置中心管理的槽位清单。
+// narrative（事件攻击链叙事）独立成槽：叙事是长上下文任务，值得单独配强模型；
+// 未单独配置时自动回落 triage 槽（引擎侧逻辑）。
+var aiSlotTasks = []string{ai.SlotTriage, ai.SlotHunt, ai.SlotInvestigate, ai.SlotNarrative}
 
 // ---------------------------------------------------------------- 解析（纯函数，可单测）
 
@@ -585,7 +587,7 @@ func (s *AIService) effectiveKey(ctx context.Context) string {
 // ---------------------------------------------------------------- 提示词模板
 
 // PromptTasks 是开放覆盖的提示词任务清单。
-var PromptTasks = []string{ai.SlotTriage, ai.SlotHunt, ai.SlotInvestigate}
+var PromptTasks = []string{ai.SlotTriage, ai.SlotHunt, ai.SlotInvestigate, ai.SlotNarrative}
 
 // GetPrompt 读某任务的提示词模板（含历史版本）。
 func (s *AIService) GetPrompt(ctx context.Context, task string) (*domain.AIPrompt, error) {

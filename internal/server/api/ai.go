@@ -5,6 +5,7 @@ import (
 
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
+	"zedr/internal/server/service"
 )
 
 // triageAlert 对单条告警做 AI 研判。
@@ -32,9 +33,12 @@ func (h *adminHandler) triageAlert(w http.ResponseWriter, r *http.Request) {
 }
 
 // hunt 把自然语言查询翻译成受控条件并返回结果。
+// 支持多轮会话：前端携带 history（上一轮的问题与当时的理解），
+// LLM 引擎会把历史作为背景理解"追问"；确定性引擎只用当前句。
 func (h *adminHandler) hunt(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Query string `json:"query"`
+		Query   string             `json:"query"`
+		History []service.HuntTurn `json:"history"`
 	}
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		httpx.WriteError(w, r, err)
@@ -44,8 +48,12 @@ func (h *adminHandler) hunt(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, apperr.Invalid("查询语句过长（上限 500 字）"))
 		return
 	}
+	if len(req.History) > 20 {
+		httpx.WriteError(w, r, apperr.Invalid("历史轮次过多"))
+		return
+	}
 
-	res, err := h.deps.Services.AI.Hunt(r.Context(), req.Query)
+	res, err := h.deps.Services.AI.HuntConversation(r.Context(), req.Query, req.History)
 	if err != nil {
 		httpx.WriteError(w, r, err)
 		return

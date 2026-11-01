@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strings"
@@ -66,6 +67,36 @@ type InjectionScan struct {
 	Redacted string
 }
 
+// 变体混淆的归一化表（2026-11 评测扩展）：
+//   - 零宽字符：攻击者用 \u200b 等把 "ignore" 拆成 "ig\u200bnore" 绕过正则；
+//   - 同形字：西里尔/希腊字母的 a/e/o/p/c 与拉丁字母视觉一致；
+//   - Base64：整段指令编码后放进命令行，是最常见的打包方式。
+//
+// 只做"检测用归一化"：命中后仍按原文定位并替换，不改变分析师看到的载荷。
+var zeroWidthStripper = strings.NewReplacer(
+	"\u200b", "", "\u200c", "", "\u200d", "", "\u2060", "", "\ufeff", "",
+)
+
+var homoglyphFolder = strings.NewReplacer(
+	"а", "a", "е", "e", "о", "o", "р", "p", "с", "c", "у", "y", "х", "x", "ѕ", "s", "і", "i", "ј", "j",
+	"А", "A", "Е", "E", "О", "O", "Р", "P", "С", "C", "У", "Y", "Х", "X",
+	"α", "a", "ο", "o", "ρ", "p",
+)
+
+// b64Token 匹配 Base64 片段（32 字符起——过短会把普通单词误当编码）。
+var b64Token = regexp.MustCompile(`[A-Za-z0-9+/]{32,}={0,2}`)
+
+// scanPatternHits 返回文本命中的模式名（不改写文本）。
+func scanPatternHits(s string) []string {
+	var hits []string
+	for _, p := range injectionPatterns {
+		if p.re.MatchString(s) {
+			hits = append(hits, p.name)
+		}
+	}
+	return hits
+}
+
 // Scan 扫描一段不可信内容。
 func Scan(s string) InjectionScan {
 	if strings.TrimSpace(s) == "" {
@@ -73,28 +104,87 @@ func Scan(s string) InjectionScan {
 	}
 
 	var hits []string
-	seen := make(map[string]struct{}, 4)
+	seen := make(map[string]struct{}, 6)
+	addHits := func(names []string, suffix string) {
+		for _, h := range names {
+			name := h + suffix
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			hits = append(hits, name)
+		}
+	}
+
 	redacted := s
 
+	// ---- 第一层：原始文本直接匹配（原有行为，含片段隔离）----
+	addHits(scanPatternHits(s), "")
 	for _, p := range injectionPatterns {
-		if !p.re.MatchString(s) {
-			continue
+		if p.re.MatchString(s) {
+			redacted = p.re.ReplaceAllStringFunc(redacted, func(m string) string {
+				return "[已隔离:疑似指令注入]"
+			})
 		}
-		if _, dup := seen[p.name]; !dup {
-			seen[p.name] = struct{}{}
-			hits = append(hits, p.name)
-		}
-		// 只替换命中的片段，保留其余上下文——模型仍需看到命令行的真实结构
-		// （比如它确实是通过 powershell -enc 启动的），只是不能照它的"指令"行事。
-		redacted = p.re.ReplaceAllStringFunc(redacted, func(m string) string {
-			return "[已隔离:疑似指令注入]"
-		})
 	}
+
+	// ---- 第二层：去零宽 + 同形字折叠后再匹配（只做检测）----
+	norm := homoglyphFolder.Replace(zeroWidthStripper.Replace(s))
+	if norm != s {
+		rawCount := len(hits)
+		variantHits := scanPatternHits(norm)
+		if len(variantHits) > 0 {
+			addHits(variantHits, "(混淆变体)")
+			// 原文里可能夹着零宽字符：清理后的副本送模型，避免残留干扰
+			redacted = zeroWidthStripper.Replace(redacted)
+			if rawCount == 0 {
+				// 原文直接匹配为空、仅归一化命中：不泄露载荷原文，
+				// 在副本末尾标注隔离（片段替换无法对齐原文位置）
+				redacted += " [已隔离:疑似指令注入(混淆变体)]"
+			}
+		}
+	}
+
+	// ---- 第三层：Base64 编码载荷 ----
+	redacted = b64Token.ReplaceAllStringFunc(redacted, func(tok string) string {
+		if looksInjected(decodedText(tok)) {
+			if _, dup := seen["编码载荷"]; !dup {
+				seen["编码载荷"] = struct{}{}
+				hits = append(hits, "编码载荷")
+			}
+			return "[已隔离:疑似指令注入(编码载荷)]"
+		}
+		return tok
+	})
 
 	if len(hits) == 0 {
 		return InjectionScan{Redacted: s}
 	}
 	return InjectionScan{Flagged: true, Hits: hits, Redacted: redacted}
+}
+
+// looksInjected 判断 Base64 解码后的文本是否命中注入模式。
+func looksInjected(plain string) bool {
+	return plain != "" && len(scanPatternHits(plain)) > 0
+}
+
+// decodedText 尝试 Base64 解码；失败或解出非文本（大量不可打印字节）时返回空。
+func decodedText(tok string) string {
+	raw, err := base64.StdEncoding.DecodeString(tok)
+	if err != nil {
+		// 容忍无填充的变体
+		raw, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(tok, "="))
+		if err != nil {
+			return ""
+		}
+	}
+	plain := string(raw)
+	for _, r := range plain {
+		if r < 0x20 && r != '\n' && r != '\t' && r != '\r' {
+			return "" // 二进制载荷，不是文本指令
+		}
+	}
+	return plain
 }
 
 // sanitizeInput 对待送模型的所有不可信字段做扫描与隔离。

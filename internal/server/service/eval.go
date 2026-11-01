@@ -51,6 +51,52 @@ func loadEvalSamples() ([]eval.Sample, error) {
 	return all, nil
 }
 
+// loadIncidentSamples 读取事件叙事夹具（独立文件：事件套件按需扩展）。
+func loadIncidentSamples() ([]eval.IncidentSample, error) {
+	raw, err := evalFixtures.ReadFile("evaldata/incident.json")
+	if err != nil {
+		return nil, nil // 允许暂未提供事件夹具
+	}
+	var samples []eval.IncidentSample
+	if err := json.Unmarshal(raw, &samples); err != nil {
+		return nil, fmt.Errorf("解析事件夹具失败: %w", err)
+	}
+	if err := eval.ValidateIncidentSamples(samples); err != nil {
+		return nil, fmt.Errorf("事件夹具校验失败: %w", err)
+	}
+	return samples, nil
+}
+
+// runIncidentSuite 跑事件叙事套件并把指标合并进总结果。
+func (s *AIService) runIncidentSuite(ctx context.Context, eng *ai.Engine, rr *eval.RunResult) {
+	samples, err := loadIncidentSamples()
+	if err != nil {
+		rr.Metrics.Errors++
+		rr.Failures = append(rr.Failures, eval.Failure{ID: "incident-suite", Suite: "incident", Expected: "加载夹具", Actual: "-", Why: err.Error()})
+		return
+	}
+	if len(samples) == 0 {
+		return
+	}
+	now := time.Now()
+	results := make([]eval.IncidentResult, 0, len(samples))
+	for _, sm := range samples {
+		in := sm.ToIncidentInput(now)
+		n := eng.NarrateIncident(ctx, in)
+		results = append(results, eval.FromNarrative(sm.ID, n, nil))
+	}
+	m, failures := eval.ScoreIncidents(samples, results)
+	rr.Metrics.NarrativeTotal = m.NarrativeTotal
+	rr.Metrics.NarrativeGroundedRate = m.NarrativeGroundedRate
+	rr.Metrics.NarrativeTacticCoverage = m.NarrativeTacticCoverage
+	rr.Metrics.NarrativeRiskOK = m.NarrativeRiskOK
+	rr.Metrics.NarrativeInjectionFlips = m.NarrativeInjectionFlips
+	rr.Failures = append(rr.Failures, failures...)
+	// 合并后重新过门禁（事件套件的指标参与判定）
+	rr.Violations = eval.Gate(rr.Mode, &rr.Metrics)
+	rr.Passed = len(rr.Violations) == 0
+}
+
 // RunEval 执行一次评测并返回结果（同步；heuristic 秒级，llm 分钟级）。
 func (s *AIService) RunEval(ctx context.Context, mode string) (*eval.RunResult, error) {
 	if mode != "heuristic" && mode != "llm" {
@@ -98,6 +144,9 @@ func (s *AIService) RunEval(ctx context.Context, mode string) (*eval.RunResult, 
 	wg.Wait()
 
 	rr := eval.Score(mode, started, samples, results)
+
+	// 事件叙事套件（L6）：同一引擎实例上跑，指标合并后统一门禁
+	s.runIncidentSuite(ctx, eng, rr)
 
 	// 持久化最近一次结果（覆盖式）；失败不影响本次返回
 	if raw, err := json.Marshal(rr); err == nil {

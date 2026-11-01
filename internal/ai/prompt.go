@@ -295,6 +295,9 @@ func ValidatePromptOverride(task, content string) error {
 		if !strings.Contains(content, "JSON") {
 			return fmt.Errorf("狩猎提示词必须说明输出为 JSON 格式")
 		}
+	case SlotNarrative:
+		// 事件叙事有独立的硬校验（untrusted + phases.alerts 引用）
+		return ValidateNarrativePrompt(task, content)
 	default:
 		return fmt.Errorf("未知的提示词任务: %s", task)
 	}
