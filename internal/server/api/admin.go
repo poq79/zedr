@@ -51,6 +51,18 @@ func (h *adminHandler) dashboard(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, sum)
 }
 
+// attackMatrix 返回 ATT&CK 战术×技术覆盖矩阵。
+// days 查询参数控制告警聚合窗口（默认 30 天，上限 365）。
+func (h *adminHandler) attackMatrix(w http.ResponseWriter, r *http.Request) {
+	days := clampInt(atoiDefault(r.URL.Query().Get("days"), 30), 1, 365)
+	m, err := h.deps.Services.Stats.AttackMatrix(r.Context(), days)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, m)
+}
+
 // ---------------------------------------------------------------- 告警
 
 func (h *adminHandler) listAlerts(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +71,7 @@ func (h *adminHandler) listAlerts(w http.ResponseWriter, r *http.Request) {
 		AgentID: q.Get("agent_id"),
 		Query:   q.Get("q"),
 		Sort:    q.Get("sort"),
+		Mitre:   strings.ToUpper(strings.TrimSpace(q.Get("mitre"))),
 		Page:     clampInt(atoiDefault(q.Get("page"), 1), 1, 10000),
 		PageSize: clampInt(atoiDefault(q.Get("page_size"), 20), 1, 200),
 	}

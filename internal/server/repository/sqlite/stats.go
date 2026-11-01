@@ -204,6 +204,62 @@ func sortMITREStats(s []domain.MITREStat, limit int) []domain.MITREStat {
 	return s
 }
 
+// MitreAgg 按技术编号聚合时间窗内的告警计数。
+// mitre 列是 CSV（如 "T1059.001,T1027"），在应用层拆分后合并——
+// 与 Dashboard 的 TopMITRE 同一策略：SQLite 侧不做字符串拆分，
+// 避免 CSV 解析语义散落进 SQL。
+// alertTotal 是窗口内带 MITRE 的告警条数（一条告警可命中多个技术，
+// 按技术求和会重复计数，告警数必须单独统计）。
+func (r *statsRepo) MitreAgg(ctx context.Context, since time.Time) (map[string]domain.MitreAgg, int, error) {
+	rows, err := r.s.db.QueryContext(ctx,
+		`SELECT mitre, COUNT(1),
+		        COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0),
+		        COALESCE(SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END), 0),
+		        MAX(created_at)
+		 FROM alerts WHERE mitre <> '' AND created_at >= ?
+		 GROUP BY mitre`, millis(since))
+	if err != nil {
+		return nil, 0, fmt.Errorf("聚合 MITRE 统计失败: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]domain.MitreAgg{}
+	for rows.Next() {
+		var (
+			mitre    string
+			agg      domain.MitreAgg
+			lastSeen int64
+		)
+		if err := rows.Scan(&mitre, &agg.Count, &agg.Open, &agg.Critical, &lastSeen); err != nil {
+			return nil, 0, err
+		}
+		for _, t := range splitCSV(mitre) {
+			if t == "" {
+				continue
+			}
+			cur := out[t]
+			cur.Count += agg.Count
+			cur.Open += agg.Open
+			cur.Critical += agg.Critical
+			if ts := fromMillis(lastSeen); ts.After(cur.LastSeen) {
+				cur.LastSeen = ts
+			}
+			out[t] = cur
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var alertTotal int
+	if err := r.s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM alerts WHERE mitre <> '' AND created_at >= ?`, millis(since)).
+		Scan(&alertTotal); err != nil {
+		return nil, 0, fmt.Errorf("统计 MITRE 告警总数失败: %w", err)
+	}
+	return out, alertTotal, nil
+}
+
 
 // VersionDist 统计各终端探针版本分布。
 // 版本碎片化是企业部署最现实的问题：旧版本终端的检测能力矩阵

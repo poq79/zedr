@@ -178,6 +178,11 @@ func (r *alertRepo) List(ctx context.Context, f domain.AlertFilter) ([]domain.Al
 		where = append(where, "hash_sha256 = ?")
 		args = append(args, f.Hash)
 	}
+	// ATT&CK 精确匹配：CSV 列用逗号定界比对，T1059 不会误命中 T1059.001
+	if f.Mitre != "" {
+		where = append(where, `(',' || mitre || ',') LIKE ?`)
+		args = append(args, "%,"+f.Mitre+",%")
+	}
 	if f.MinScore > 0 {
 		where = append(where, "score >= ?")
 		args = append(args, f.MinScore)

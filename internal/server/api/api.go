@@ -174,6 +174,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/incidents", viewer(adminH.listIncidents))
 	mux.Handle("GET /api/v1/report/weekly", viewer(adminH.weeklyReport))
 	mux.Handle("GET /api/v1/integrity", viewer(adminH.integrityReport))
+	mux.Handle("GET /api/v1/attack/matrix", viewer(adminH.attackMatrix))
 	mux.Handle("GET /api/v1/alerts/export", viewer(adminH.exportCSV))
 	mux.HandleFunc("GET /metrics", adminH.metrics)
 

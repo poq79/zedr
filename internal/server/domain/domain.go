@@ -246,6 +246,54 @@ type MITREStat struct {
 	Count int    `json:"count"`
 }
 
+// AttackMatrix 是战术×技术覆盖矩阵（GET /api/v1/attack/matrix）。
+// 与 Dashboard 的 TopMITRE 不同：矩阵按战术组织全部技术，同时给出
+// "告警命中"与"规则覆盖"两个维度——只有命中没有覆盖 = 检出靠运气；
+// 只有覆盖没有命中 = 安静态（是好事）。
+type AttackMatrix struct {
+	Tactics     []AttackTactic `json:"tactics"`
+	WindowDays  int            `json:"window_days"`
+	GeneratedAt time.Time      `json:"generated_at"`
+	Summary     AttackSummary  `json:"summary"`
+}
+
+// AttackTactic 是矩阵中的一列（一个战术）。
+type AttackTactic struct {
+	ID         string           `json:"id"`
+	Name       string           `json:"name"`
+	NameZh     string           `json:"name_zh"`
+	Techniques []AttackTechStat `json:"techniques"`
+}
+
+// AttackTechStat 是矩阵中的一个格子（一项技术的聚合状态）。
+type AttackTechStat struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	NameZh        string `json:"name_zh"`
+	AlertCount    int    `json:"alert_count"`
+	OpenCount     int    `json:"open_count"`
+	CriticalCount int    `json:"critical_count"`
+	RuleCount     int    `json:"rule_count"`
+	LastSeen      string `json:"last_seen,omitempty"`
+}
+
+// AttackSummary 是矩阵的全局摘要。
+type AttackSummary struct {
+	TechniquesHit     int `json:"techniques_hit"`
+	TechniquesCovered int `json:"techniques_covered"`
+	TotalAlerts       int `json:"total_alerts"`
+	// Unmapped 是目录外技术编号数（聚合层归入未分类战术）。
+	Unmapped int `json:"unmapped"`
+}
+
+// MitreAgg 是单个技术编号在时间窗内的告警聚合值。
+type MitreAgg struct {
+	Count    int
+	Open     int
+	Critical int
+	LastSeen time.Time
+}
+
 // AlertFilter 是告警查询条件。
 type AlertFilter struct {
 	Status   []AlertStatus
@@ -267,6 +315,9 @@ type AlertFilter struct {
 	HostLike    string
 	RuleLike    string
 	Hash        string
+	// Mitre 是 ATT&CK 技术编号的精确匹配（供矩阵格子下钻）。
+	// 存储侧是 CSV 列，SQL 用逗号定界匹配，避免 T1059 误匹配 T1059.001。
+	Mitre string
 	MinScore    int
 	// Unsigned 为 true 时只要未签名；false 时只要已签名；nil 表示不限。
 	Unsigned *bool

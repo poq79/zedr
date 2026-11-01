@@ -118,4 +118,9 @@ type CommandRepo interface {
 type StatsRepo interface {
 	Dashboard(ctx context.Context, since time.Time, bucketMinutes int) (*domain.DashboardSummary, error)
 	VersionDist(ctx context.Context) (map[string]int, error)
+	// MitreAgg 按技术编号聚合时间窗内的告警计数（供 ATT&CK 矩阵）。
+	// 存储侧 mitre 是 CSV 列，本方法在应用层拆分合并。
+	// 第二个返回值是窗口内"带 MITRE 编号的告警条数"（一条告警可命中
+	// 多个技术，按技术求和会重复计数，告警数必须单独统计）。
+	MitreAgg(ctx context.Context, since time.Time) (agg map[string]domain.MitreAgg, alertTotal int, err error)
 }
