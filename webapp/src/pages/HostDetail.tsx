@@ -9,6 +9,7 @@ import { useToast, useConfirm } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
 import { LiveFilesTab } from './HostLiveFiles';
+import { LiveProcsTab, LiveProbeInfo } from './HostLiveProcs';
 
 /* 主机详情（整页，/hosts/:id）。
    资产清单 7 节各有明确 schema（服务/任务/自启动动辄数百行），
@@ -42,6 +43,8 @@ export function HostDetailPage({ user }: { user: User }) {
   const [qPid, setQPid] = useState('');
   const [changes, setChanges] = useState<Alert[] | null>(null);
   const [changeSection, setChangeSection] = useState('');
+  /* 实时进程→实时文件 跨 Tab 联动：待打开的文件绝对路径（消费后置空） */
+  const [liveFileTarget, setLiveFileTarget] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab') || 'overview';
   const setTab = (k: string) => setSearchParams(k === 'overview' ? {} : { tab: k }, { replace: true });
@@ -128,6 +131,7 @@ export function HostDetailPage({ user }: { user: User }) {
               { key: 'tasks', label: '计划任务', count: rowsOf('tasks').length },
               { key: 'startup', label: '自启动', count: rowsOf('startup').length },
               { key: 'network', label: '网络', count: rowsOf('adapters').length + rowsOf('listeners').length },
+              { key: 'liveprocs', label: '实时进程' },
               { key: 'live', label: '实时文件' },
               { key: 'changes', label: '变更', count: changes?.length },
               { key: 'ops', label: '处置与历史', count: cmds?.length },
@@ -138,7 +142,7 @@ export function HostDetailPage({ user }: { user: User }) {
               <>
                 <div className="grid gap-3.5 lg:grid-cols-2">
                   <SystemCard s={sec('system')} host={host} />
-                  <AgentCard s={sec('agent')} />
+                  <AgentCard s={sec('agent')} agentId={id} />
                 </div>
           {/* 最近告警：/hosts/{id} 随附 20 条，点行进告警详情（/alerts?open=id） */}
           <Card className="px-2 py-3.5">
@@ -215,7 +219,14 @@ export function HostDetailPage({ user }: { user: User }) {
 
               </>
             )}
-            {tab === 'live' && <LiveFilesTab agentId={id} user={user} />}
+            {tab === 'liveprocs' && (
+              <LiveProcsTab agentId={id} user={user}
+                onAnalyzeFile={(p) => { setLiveFileTarget(p); setTab('live'); }} />
+            )}
+            {tab === 'live' && (
+              <LiveFilesTab agentId={id} user={user}
+                openPath={liveFileTarget} onOpenPathDone={() => setLiveFileTarget(null)} />
+            )}
             {tab === 'changes' && (
               <Card className="p-4">
                 <div className="mb-2.5 flex flex-wrap items-center gap-2.5">
@@ -409,7 +420,7 @@ function SystemCard({ s, host }: { s?: HostInventorySection; host: Host }) {
   );
 }
 
-function AgentCard({ s }: { s?: HostInventorySection }) {
+function AgentCard({ s, agentId }: { s?: HostInventorySection; agentId?: string }) {
   let a: Record<string, unknown> | null = null;
   if (s) { try { a = JSON.parse(s.payload) as Record<string, unknown>; } catch { /* 原样 */ } }
   const dropped = a ? num(a.queue_dropped) : 0;
@@ -431,6 +442,8 @@ function AgentCard({ s }: { s?: HostInventorySection }) {
           <dt className="text-faint">进程运行</dt><dd className="m-0 font-mono tabular-nums">{Math.round(num(a.uptime_sec) / 3600)} 小时</dd>
         </dl>
       )}
+      {/* 实时 CPU/内存/进程数（30s 轮询；失败静默降级不显示，见 HostLiveProcs.tsx） */}
+      {agentId && <LiveProbeInfo agentId={agentId} />}
     </Card>
   );
 }

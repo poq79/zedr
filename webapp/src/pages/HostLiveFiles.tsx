@@ -1,23 +1,30 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   ChevronUp, CircleAlert, Copy, EyeOff, FileQuestion, Fingerprint, Folder, FolderSearch,
-  RefreshCw, ShieldBan, ShieldCheck, Unplug,
+  Globe, RefreshCw, ScanSearch, Search, ShieldBan, ShieldCheck, TriangleAlert, Unplug,
 } from 'lucide-react';
 import { api, live, ApiError, liveErrorKind } from '../lib/api';
-import type { LiveFsEntry, LiveFsList, LiveHash, User } from '../lib/types';
+import type {
+  LiveAds, LiveAnalyze, LiveFsEntry, LiveFsList, LiveHash, LiveSearchEntry,
+  LiveSearchResult, LiveStrings, User,
+} from '../lib/types';
 import { fmtBytes, fmtTime } from '../lib/format';
 import { Badge, Button, Card, EmptyState, Input, Skeleton, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useConfirm, useToast } from '../components/ui/overlays';
 import { cn } from '../lib/utils';
 import type { LiveFixtureApi } from '../lib/liveFixture';
 
-/* 主机详情「实时文件」Tab（docs/LIVE-TUNNEL.md §5.3，W1-F）。
+/* 主机详情「实时文件」Tab（docs/LIVE-TUNNEL.md §5.3 v1 + §11.4 v2，W1-F/F2）。
    通过服务端代理只读浏览探针终端文件系统：目录列表游标分页、文本预览、
-   现场哈希；处置（加白/隔离）走既有 REST/指令通道，隧道本身只读。
-   错误契约：503 tunnel_not_connected → 状态条；429/403/501 → Toast。 */
+   现场哈希；v2 增量：目录限深搜索（fs/search，quick 速览徽标）、三哈希
+   与一键复制、按需深度分析（PE 节区熵/导入分类/版本资源/字符串线索）、
+   MotW 下载来源（ADS）。处置（加白/隔离）走既有 REST/指令通道，隧道本身
+   只读。错误契约：503 tunnel_not_connected → 状态条；429/403/501 → Toast。 */
 
 const INITIAL_PATH = 'C:\\';
 const PREVIEW_LIMIT = 64 * 1024;
+const SEARCH_DEPTH = 2; // fs/search 默认深度（契约 ≤4）
+const SEARCH_LIMIT = 100; // 结果条数（契约 ≤200）
 
 /* ---- 路径工具（Win32：条目只含 name，全路径由前端拼接） ---- */
 
@@ -31,6 +38,11 @@ function parentPath(p: string): string {
   const cut = t.lastIndexOf('\\');
   if (cut <= 2) return `${t.slice(0, 2)}\\`;
   return t.slice(0, cut);
+}
+
+function baseName(p: string): string {
+  const i = p.lastIndexOf('\\');
+  return i >= 0 ? p.slice(i + 1) : p;
 }
 
 function crumbs(p: string): { label: string; path: string }[] {
@@ -55,6 +67,13 @@ function liveErrNote(e: unknown): string | null {
   }
 }
 
+/* v2 端点（analyze/ads/fs/search）的降级口径：老服务端预算表没有这些路径
+   时代理 404、老探针 mux 没挂 handler 时 501——两者对操作员含义相同 */
+function featNote(e: unknown): string {
+  if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return '该探针或服务端版本不支持此能力';
+  return liveErrNote(e) || (e as Error).message;
+}
+
 /* 开发期假数据开关：仅 DEV 构建且 localStorage 显式打开时可用（W3 联调前
    预览交互）。生产构建 DEV=false 为编译期常量，死分支连同本模块整体剔除。 */
 async function devFixture(): Promise<LiveFixtureApi | null> {
@@ -77,7 +96,12 @@ async function copyText(text: string): Promise<boolean> {
   } catch { return false; }
 }
 
-export function LiveFilesTab({ agentId, user }: { agentId: string; user: User }) {
+export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
+  agentId: string; user: User;
+  /** 跨 Tab 联动：实时进程抽屉「分析此文件」以绝对路径打开本 Tab 的文件抽屉 */
+  openPath?: string | null;
+  onOpenPathDone?: () => void;
+}) {
   const toast = useToast();
   const canBrowse = user.role !== 'viewer'; // /live/fs = analyst+（LIVE-TUNNEL §4）
 
@@ -90,6 +114,13 @@ export function LiveFilesTab({ agentId, user }: { agentId: string; user: User })
   const [loadErr, setLoadErr] = useState(''); // 通用错误（非隧道契约态）也内联呈现，不与"空目录"混淆
   const [freshAt, setFreshAt] = useState('');
   const [openFile, setOpenFile] = useState<{ entry: LiveFsEntry; dir: string } | null>(null);
+
+  /* v2：目录搜索状态（与目录浏览互斥呈现） */
+  const [pattern, setPattern] = useState('');
+  const [patternUsed, setPatternUsed] = useState('');
+  const [searchRes, setSearchRes] = useState<LiveSearchResult | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchErr, setSearchErr] = useState('');
 
   const canonical = list?.path || path;
   const atRoot = /^[A-Za-z]:\\?$/.test(canonical);
@@ -124,31 +155,95 @@ export function LiveFilesTab({ agentId, user }: { agentId: string; user: User })
 
   useEffect(() => {
     setList(null); setPath(INITIAL_PATH); setInput(INITIAL_PATH); setTunnelDown(false); setLoadErr(''); setOpenFile(null);
+    clearSearchState();
     if (canBrowse) void load(INITIAL_PATH);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
+
+  const clearSearchState = () => {
+    setSearchRes(null); setPattern(''); setPatternUsed(''); setSearchErr('');
+  };
+
+  /* 跨 Tab 联动：拿到目标路径后先 fs/stat 取元数据（条目字段才完整），
+     再以 {entry, dir} 形态复用文件抽屉；失败 Toast 透出原因 */
+  useEffect(() => {
+    if (!openPath) return;
+    let alive = true;
+    (async () => {
+      try {
+        const fx = await devFixture();
+        const st = fx ? await fx.stat(openPath) : await live.stat(agentId, openPath);
+        if (!alive) return;
+        const full = st.path || openPath;
+        setOpenFile({
+          entry: {
+            name: baseName(full), size: st.size, is_dir: st.is_dir, hidden: st.hidden,
+            system: st.system, readonly: st.readonly, reparse: st.reparse, mtime_unix: st.mtime_unix,
+          },
+          dir: parentPath(full),
+        });
+      } catch (ex) {
+        if (alive) toast(liveErrNote(ex) || (ex as Error).message, 'warn');
+      } finally {
+        if (alive) onOpenPathDone?.();
+      }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openPath, agentId]);
 
   /* 路径框跳转：容错正斜杠与结尾反斜杠；缺盘符直接提醒（探针侧会 400） */
   const submit = () => {
     let p = input.trim().replace(/\//g, '\\');
     if (!/^[A-Za-z]:/.test(p)) { toast('请输入以盘符开头的完整路径，例 C:\\Windows', 'warn'); return; }
     if (p.length > 3) p = p.replace(/\\+$/, '');
+    clearSearchState();
     void load(p);
   };
 
-  const enterRow = (en: LiveFsEntry) => {
-    if (en.is_dir) void load(joinPath(canonical, en.name));
+  /* 目录限深搜索：根 = 当前浏览目录（冻结进结果，浏览导航后结果仍在） */
+  const runSearch = async (root?: string) => {
+    const p = pattern.trim();
+    if (!p) return;
+    const at = root || canonical;
+    setSearching(true); setSearchErr('');
+    try {
+      const fx = await devFixture();
+      const r = fx ? await fx.search(at, p, SEARCH_DEPTH, SEARCH_LIMIT)
+        : await live.search(agentId, at, p, SEARCH_DEPTH, SEARCH_LIMIT);
+      setSearchRes(r); setPatternUsed(p);
+    } catch (ex) {
+      setSearchRes(null);
+      setSearchErr(featNote(ex));
+    } finally { setSearching(false); }
+  };
+
+  const enterRow = (en: LiveFsEntry & { dir?: string }) => {
+    if (searchRes) {
+      // 搜索结果模式：命中文件直接开抽屉；命中目录（且探针给了所在目录）进入
+      if (en.is_dir) {
+        if (en.dir) { clearSearchState(); void load(joinPath(en.dir, en.name)); }
+        else toast('探针未返回该目录的所在路径，无法进入；可到目录浏览中定位', 'warn');
+        return;
+      }
+      setOpenFile({ entry: en, dir: en.dir || searchRes.path });
+      return;
+    }
+    if (en.is_dir) { clearSearchState(); void load(joinPath(canonical, en.name)); }
     else setOpenFile({ entry: en, dir: canonical }); // 冻结点击时的目录，防浏览中途漂移
   };
+
+  /* 刷新语义随模式切换：搜索结果 → 重跑同参搜索；目录浏览 → 重列目录 */
+  const refresh = () => (searchRes ? void runSearch(searchRes.path) : void load(canonical));
 
   return (
     <>
       <Card className="p-4">
         {/* 工具行：上级 / 面包屑 / 路径输入 / 刷新 / 新鲜度 */}
         {canBrowse && (
-          <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
             <Button size="icon" aria-label="上一级目录" title="上一级" disabled={atRoot || loading}
-              onClick={() => void load(parentPath(canonical))}>
+              onClick={() => { clearSearchState(); void load(parentPath(canonical)); }}>
               <ChevronUp size={15} strokeWidth={1.8} />
             </Button>
             <nav aria-label="路径导航"
@@ -156,7 +251,7 @@ export function LiveFilesTab({ agentId, user }: { agentId: string; user: User })
               {crumbs(canonical).map((c, i, arr) => (
                 <span key={c.path} className="flex min-w-0 items-center">
                   {i > 0 && <span className="px-0.5 font-mono text-[11px] text-ghost" aria-hidden>\</span>}
-                  <button onClick={() => void load(c.path)} title={c.path}
+                  <button onClick={() => { clearSearchState(); void load(c.path); }} title={c.path}
                     className={cn('cursor-pointer rounded px-1 py-0.5 font-mono text-[12px] transition-colors hover:bg-accent hover:text-foreground',
                       i === arr.length - 1 ? 'font-medium text-foreground' : 'text-muted-foreground')}>
                     {c.label}
@@ -168,11 +263,30 @@ export function LiveFilesTab({ agentId, user }: { agentId: string; user: User })
               onKeyDown={(ev) => { if (ev.key === 'Enter') submit(); }}
               placeholder="输入完整路径，回车跳转" spellCheck={false} aria-label="路径输入框"
               className="h-8 w-[230px] font-mono text-[12px]" />
-            <Button size="icon" aria-label="刷新" title="刷新" disabled={loading}
-              onClick={() => void load(canonical)}>
-              <RefreshCw size={13} className={cn(loading && 'anim-spin')} />
+            <Button size="icon" aria-label="刷新" title="刷新" disabled={loading || searching}
+              onClick={() => void refresh()}>
+              <RefreshCw size={13} className={cn((loading || searching) && 'anim-spin')} />
             </Button>
             {freshAt && <span className="text-[11px] text-ghost">更新于 {freshAt}</span>}
+          </div>
+        )}
+
+        {/* v2 搜索行：文件名通配 → fs/search；清空恢复目录浏览 */}
+        {canBrowse && (
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[240px] flex-1">
+              <Search size={13} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ghost" />
+              <Input value={pattern} onChange={(ev) => setPattern(ev.target.value)}
+                onKeyDown={(ev) => { if (ev.key === 'Enter') { ev.preventDefault(); void runSearch(); } }}
+                placeholder={`在 ${canonical} 下搜索文件名（支持 * ? 通配），回车执行`} spellCheck={false}
+                aria-label="文件名搜索框" className="h-8 w-full pl-7 font-mono text-[12px]" />
+            </div>
+            <Button size="sm" disabled={!pattern.trim() || searching} onClick={() => void runSearch()}>
+              {searching ? '搜索中…' : '搜索'}
+            </Button>
+            {searchRes && (
+              <Button size="sm" variant="ghost" onClick={clearSearchState}>返回目录浏览</Button>
+            )}
           </div>
         )}
 
@@ -190,6 +304,75 @@ export function LiveFilesTab({ agentId, user }: { agentId: string; user: User })
         {!canBrowse ? (
           <EmptyState tone="info" icon={<FolderSearch size={20} />} title="实时文件浏览需要分析师及以上角色"
             sub="实时查询属于现场调查能力，只读角色不开放。如需使用，请联系管理员调整账号角色。" />
+        ) : searchRes || searchErr || searching ? (
+          /* ===== 搜索结果模式 ===== */
+          searchErr ? (
+            <EmptyState tone="warn" icon={<CircleAlert size={20} />} title="搜索失败" sub={searchErr}
+              action={<Button size="sm" onClick={() => void runSearch(searchRes ? searchRes.path : canonical)}>重试</Button>} />
+          ) : searching ? (
+            <SkeletonRows rows={6} />
+          ) : searchRes && (
+            <>
+              <div className="mb-2.5 flex flex-wrap items-center gap-2 rounded-md border border-border-soft bg-secondary/40 px-3 py-2 text-[12.5px]">
+                <Search size={13} className="shrink-0 text-ghost" />
+                <span>“<b className="font-mono">{patternUsed}</b>” 于 <code className="font-mono text-[11.5px]">{searchRes.path}</code>（深度 ≤{SEARCH_DEPTH}）</span>
+                <span className="font-mono text-[11px] text-ghost">{searchRes.entries.length} 项</span>
+                {searchRes.truncated && (
+                  <Badge tone="medium" title="探针侧预算用尽，返回已收集的部分">结果因超时截断</Badge>
+                )}
+              </div>
+              {!searchRes.entries.length ? (
+                <EmptyState tone="info" icon={<Search size={20} />} title="没有命中"
+                  sub={`在 ${searchRes.path} 以下 ${SEARCH_DEPTH} 层内没有匹配 “${patternUsed}” 的文件名。可放大通配范围（如 *.dll）或先进入更深的目录再搜。`} />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[12.5px]">
+                    <thead>
+                      <tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+                        <th className="px-3 py-2 font-semibold">名称</th>
+                        <th className="w-[100px] px-3 py-2 text-right font-semibold">大小</th>
+                        <th className="w-[170px] px-3 py-2 font-semibold">修改时间</th>
+                        <th className="w-[220px] px-3 py-2 font-semibold">属性</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {searchRes.entries.map((en, i) => {
+                        const full = en.dir ? joinPath(en.dir, en.name) : joinPath(searchRes.path, en.name);
+                        return (
+                          <tr key={`${en.dir || ''}-${en.name}-${i}`} tabIndex={0}
+                            title={full}
+                            onClick={() => enterRow(en)}
+                            onKeyDown={(ev) => { if (ev.key === 'Enter') enterRow(en); }}
+                            className="cursor-pointer border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                            <td className="px-3 py-1.5">
+                              {en.is_dir ? (
+                                <span className="flex items-center gap-2 font-medium" title={full}>
+                                  <Folder size={14} strokeWidth={1.8} className="shrink-0 text-muted-foreground" />
+                                  <span className="truncate">{en.name}</span>
+                                </span>
+                              ) : (
+                                <span className="block truncate pl-[22px] text-muted-foreground" title={full}>{en.name}</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 text-right font-mono text-[11.5px] tabular-nums text-muted-foreground">
+                              {en.is_dir ? '—' : fmtBytes(en.size)}
+                            </td>
+                            <td className="px-3 py-1.5 font-mono text-[11.5px] text-faint">
+                              {en.mtime_unix ? fmtTime(new Date(en.mtime_unix * 1000).toISOString()) : '-'}
+                            </td>
+                            <td className="px-3 py-1.5">{attrBadges(en)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <p className="mt-2.5 px-3.5 text-xs text-faint">
+                搜索由探针现场限深遍历（不落库）；quick 徽标来自文件头与流枚举速览，结论以文件抽屉的深度分析为准。
+              </p>
+            </>
+          )
         ) : loading ? (
           <SkeletonRows rows={8} />
         ) : tunnelDown ? (
@@ -254,7 +437,7 @@ export function LiveFilesTab({ agentId, user }: { agentId: string; user: User })
 
         {canBrowse && (
           <p className="mt-2.5 px-3.5 text-xs text-faint">
-            通过服务端代理向探针发起只读实时查询，不落库不缓存；点击目录进入，点击文件查看详情与文本预览。
+            通过服务端代理向探针发起只读实时查询，不落库不缓存；点击目录进入，点击文件查看详情、哈希与深度分析。
           </p>
         )}
       </Card>
@@ -265,7 +448,7 @@ export function LiveFilesTab({ agentId, user }: { agentId: string; user: User })
   );
 }
 
-/* ================= 文件抽屉 ================= */
+/* ================= 文件抽屉（v2：三哈希 + 深度分析 + MotW） ================= */
 
 type PrevState =
   | { state: 'loading' }
@@ -284,10 +467,23 @@ const AUTH_STATE: Record<string, [string, string]> = {
   untrusted: ['证书链不受信', 'medium'],
 };
 
-function attrBadges(en: LiveFsEntry): ReactNode {
+/* MotW ZoneId → 展示（zone_name 服务端/探针已给，这里只定徽标语义） */
+function zoneBadge(z: NonNullable<LiveAds['zone']>): ReactNode {
+  if (z.zone_id === 3) return <Badge tone="medium"><Globe size={11} /> Internet</Badge>;
+  if (z.zone_id === 4) return <Badge tone="critical">{z.zone_name || '受限'}</Badge>;
+  return <Badge tone="neutral">{z.zone_name || `区域 ${z.zone_id}`}</Badge>;
+}
+
+/* 属性徽标：常规条目用条目自身标志位；搜索结果追加 quick 速览（PE/ADS）。
+   常规列表不做逐文件 ADS 探测——200 次/页成本不可接受（v2 决策）。 */
+function attrBadges(en: LiveFsEntry & { quick?: LiveSearchEntry['quick'] }): ReactNode {
+  const hidden = en.hidden || !!en.quick?.hidden;
+  const system = en.system || !!en.quick?.system;
   const out: ReactNode[] = [];
-  if (en.hidden) out.push(<Badge key="h" tone="neutral">隐藏</Badge>);
-  if (en.system) out.push(<Badge key="s" tone="neutral">系统</Badge>);
+  if (en.quick?.pe) out.push(<Badge key="pe" tone="info" title="PE 可执行文件（MZ 头）">PE</Badge>);
+  if (en.quick?.ads) out.push(<Badge key="ads" tone="medium" title="含 NTFS 备用数据流（如 Zone.Identifier）">ADS</Badge>);
+  if (hidden) out.push(<Badge key="h" tone="neutral">隐藏</Badge>);
+  if (system) out.push(<Badge key="s" tone="neutral">系统</Badge>);
   if (en.readonly) out.push(<Badge key="r" tone="neutral">只读</Badge>);
   return out.length ? out : <span className="text-faint">—</span>;
 }
@@ -304,6 +500,13 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
   const [hashBusy, setHashBusy] = useState(false);
   const [hashErr, setHashErr] = useState('');
   const [busy, setBusy] = useState<'' | 'allow' | 'quar'>('');
+
+  /* v2：深度分析（按需）与 MotW（打开即查，10s 预算的轻量端点） */
+  const [ana, setAna] = useState<LiveAnalyze | null>(null);
+  const [anaBusy, setAnaBusy] = useState(false);
+  const [anaErr, setAnaErr] = useState('');
+  const [adsData, setAdsData] = useState<LiveAds | null>(null);
+  const [adsErr, setAdsErr] = useState('');
 
   /* 文本预览：fs/read 字节流直通，Content-Type 以 text/ 开头才渲染 */
   useEffect(() => {
@@ -334,6 +537,24 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel, previewTick]);
 
+  /* MotW：打开抽屉即查（轻量流枚举）；结果静默降级为区块内说明 */
+  useEffect(() => {
+    if (!sel || sel.entry.is_dir) return;
+    let alive = true;
+    setAdsData(null); setAdsErr('');
+    (async () => {
+      try {
+        const fx = await devFixture();
+        const d = fx ? await fx.ads(fullPath) : await live.ads(agentId, fullPath);
+        if (alive) setAdsData(d);
+      } catch (ex) {
+        if (alive) setAdsErr(featNote(ex));
+      }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sel]);
+
   const runHash = async () => {
     if (!sel) return;
     setHashBusy(true); setHashErr('');
@@ -347,9 +568,22 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
     } finally { setHashBusy(false); }
   };
 
-  /* 抽屉重开时清理上一次的哈希/预览（不同文件不共用结果） */
+  /* 深度分析按需执行：PE 解析 + 全文件三哈希 + 字符串采样有真实成本（≤64MB） */
+  const runAnalyze = async () => {
+    if (!sel) return;
+    setAnaBusy(true); setAnaErr('');
+    try {
+      const fx = await devFixture();
+      setAna(fx ? await fx.analyze(fullPath) : await live.analyze(agentId, fullPath));
+    } catch (ex) {
+      setAna(null);
+      setAnaErr(featNote(ex));
+    } finally { setAnaBusy(false); }
+  };
+
+  /* 抽屉重开时清理上一次的哈希/预览/分析（不同文件不共用结果） */
   useEffect(() => {
-    if (!sel) { setHash(null); setHashErr(''); setPreview({ state: 'loading' }); setPreviewTick((t) => t + 1); }
+    if (!sel) { setHash(null); setHashErr(''); setPreview({ state: 'loading' }); setPreviewTick((t) => t + 1); setAna(null); setAnaErr(''); setAdsData(null); setAdsErr(''); }
   }, [sel]);
 
   const doAllow = async () => {
@@ -392,6 +626,13 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
 
   const auth = hash?.authenticode;
   const [authLabel, authTone] = AUTH_STATE[auth?.state || ''] || [auth?.state || '-', 'neutral'];
+
+  /* 哈希区数据源：默认 fs/hash 只有 SHA256；深度分析后补齐三哈希
+     （MD5/SHA1 为旧情报源兼容，非替代 SHA256） */
+  const hashRows: [string, string][] = ana
+    ? [['MD5', ana.md5], ['SHA1', ana.sha1], ['SHA256', ana.sha256]]
+    : hash ? [['SHA256', hash.sha256]] : [];
+  const copyAll = hashRows.map(([k, v]) => `${k}: ${v}`).join('\n');
 
   return (
     <Drawer open={sel != null} onClose={onClose} width={680}
@@ -446,7 +687,7 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
             )}
             {preview.state === 'binary' && (
               <EmptyState tone="info" icon={<FileQuestion size={20} />} title="不支持预览（非文本文件）"
-                sub="内容预览只对文本文件开放。如需研判，可先计算哈希再联动情报与白名单。" />
+                sub="内容预览只对文本文件开放。如需研判，可计算哈希或执行深度分析，再联动情报与白名单。" />
             )}
             {preview.state === 'off' && (
               <EmptyState tone="info" icon={<EyeOff size={20} />} title="文件内容预览未启用"
@@ -458,25 +699,45 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
             )}
           </Section>
 
-          <Section title="文件哈希" extra={
-            <Button size="sm" variant="ghost" onClick={() => void runHash()} disabled={hashBusy}>
-              <Fingerprint size={13} /> {hashBusy ? '计算中…' : hash ? '重新计算' : '计算哈希'}
-            </Button>
+          <Section title="哈希与签名" extra={
+            <span className="flex items-center gap-1.5">
+              {hashRows.length >= 2 && (
+                <Button size="sm" variant="ghost" onClick={() => void copy(copyAll)} title="复制当前已知的全部哈希">
+                  <Copy size={13} /> 复制全部
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" onClick={() => void runHash()} disabled={hashBusy}>
+                <Fingerprint size={13} /> {hashBusy ? '计算中…' : hash ? '重新计算' : '计算哈希'}
+              </Button>
+            </span>
           }>
             {hashBusy && <Skeleton style={{ width: '72%', height: 12 }} />}
             {!hashBusy && hashErr && <div className="text-[12.5px] text-destructive">{hashErr}</div>}
-            {!hashBusy && !hashErr && !hash && (
-              <p className="text-xs leading-[1.8] text-faint">由探针现场流式计算 SHA256 并做 Authenticode 校验；结果可直接用于加白与情报联动。</p>
+            {!hashBusy && !hashErr && !hashRows.length && (
+              <p className="text-xs leading-[1.8] text-faint">由探针现场流式计算 SHA256 并做 Authenticode 校验；执行深度分析后补齐 MD5/SHA1（旧情报源兼容）。</p>
             )}
-            {!hashBusy && hash && (
+            {!hashBusy && !!hashRows.length && (
               <div className="rounded-md border border-border-soft bg-secondary/40 p-3 text-[12px]">
-                <div className="flex items-start gap-2">
-                  <span className="w-[72px] shrink-0 pt-0.5 text-faint">SHA256</span>
-                  <code className="min-w-0 flex-1 break-all font-mono text-[11.5px]">{hash.sha256}</code>
-                  <Button size="sm" variant="ghost" aria-label="复制哈希" title="复制" onClick={() => void copy(hash.sha256)}>
-                    <Copy size={13} />
-                  </Button>
-                </div>
+                {hashRows.map(([label, v]) => (
+                  <div key={label} className="flex items-start gap-2 [&+&]:mt-1.5">
+                    <span className="w-[58px] shrink-0 pt-0.5 text-faint">{label}</span>
+                    <code className="min-w-0 flex-1 break-all font-mono text-[11.5px]">{v}</code>
+                    <Button size="sm" variant="ghost" aria-label={`复制 ${label}`} title={`复制 ${label}`}
+                      onClick={() => void copy(v)}>
+                      <Copy size={13} />
+                    </Button>
+                  </div>
+                ))}
+                {ana?.pe?.imphash && (
+                  <div className="mt-1.5 flex items-start gap-2 border-t border-border-soft pt-1.5">
+                    <span className="w-[58px] shrink-0 pt-0.5 text-faint" title="VT 口径 imphash">imphash</span>
+                    <code className="min-w-0 flex-1 break-all font-mono text-[11.5px]">{ana.pe.imphash}</code>
+                    <Button size="sm" variant="ghost" aria-label="复制 imphash" title="复制 imphash"
+                      onClick={() => void copy(ana.pe!.imphash!)}>
+                      <Copy size={13} />
+                    </Button>
+                  </div>
+                )}
                 <dl className="mt-2 grid grid-cols-[72px_1fr] gap-x-2 gap-y-1.5">
                   <dt className="text-faint">签名</dt>
                   <dd className="m-0 flex flex-wrap items-center gap-1.5">
@@ -484,15 +745,233 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
                     {auth?.subject && <span className="text-muted-foreground">{auth.subject}</span>}
                     {auth?.issuer && <span className="text-faint">颁发：{auth.issuer}</span>}
                   </dd>
-                  <dt className="text-faint">大小</dt>
-                  <dd className="m-0 font-mono tabular-nums">{fmtBytes(hash.size)}（{hash.size} 字节）</dd>
                 </dl>
               </div>
             )}
           </Section>
+
+          <Section title="深度分析" extra={
+            <Button size="sm" variant="ghost" onClick={() => void runAnalyze()} disabled={anaBusy || sel.entry.is_dir}>
+              <ScanSearch size={13} /> {anaBusy ? '分析中…' : ana ? '重新分析' : '深度分析'}
+            </Button>
+          }>
+            {anaBusy && <SkeletonRows rows={4} />}
+            {!anaBusy && anaErr && (
+              <div className="text-[12.5px] text-destructive">{anaErr}</div>
+            )}
+            {!anaBusy && !anaErr && !ana && (
+              <p className="text-xs leading-[1.8] text-faint">
+                单遍流式计算三哈希，并对 PE 文件解析节区熵、导入表分类、版本资源与字符串线索（文件 ≤64MB）。解析有真实成本，按需执行。
+              </p>
+            )}
+            {!anaBusy && ana && <AnalyzeReport ana={ana} fileName={sel.entry.name} />}
+          </Section>
+
+          {!sel.entry.is_dir && (
+            <Section title="下载来源（MotW）">
+              {adsErr ? (
+                <p className="text-[12.5px] text-faint">{adsErr}</p>
+              ) : !adsData ? (
+                <Skeleton style={{ width: '48%', height: 12 }} />
+              ) : adsData.zone ? (
+                <div className="rounded-md border border-border-soft bg-secondary/40 p-3 text-[12px]">
+                  <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1.5">
+                    <dt className="text-faint">分区</dt>
+                    <dd className="m-0 flex flex-wrap items-center gap-1.5">{zoneBadge(adsData.zone)}</dd>
+                    {adsData.zone.referrer_url && (
+                      <>
+                        <dt className="text-faint">来源页面</dt>
+                        <dd className="m-0 break-all font-mono text-[11.5px]">{adsData.zone.referrer_url}</dd>
+                      </>
+                    )}
+                    {adsData.zone.host_url && (
+                      <>
+                        <dt className="text-faint">下载地址</dt>
+                        <dd className="m-0 break-all font-mono text-[11.5px]">{adsData.zone.host_url}</dd>
+                      </>
+                    )}
+                    {adsData.zone.download_time && (
+                      <>
+                        <dt className="text-faint">下载时间</dt>
+                        <dd className="m-0 font-mono">{fmtTime(adsData.zone.download_time)}</dd>
+                      </>
+                    )}
+                  </dl>
+                  {!!adsData.streams.length && (
+                    <p className="mt-2 border-t border-border-soft pt-1.5 font-mono text-[11px] text-ghost">
+                      备用数据流：{adsData.streams.map((s) => `${s.name}（${fmtBytes(s.size)}）`).join(' · ')}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-faint">无托管标记——文件未携带 Zone.Identifier（非浏览器下载或标记已被清除，不代表文件安全）。</p>
+              )}
+            </Section>
+          )}
         </div>
       )}
     </Drawer>
+  );
+}
+
+/* ================= 深度分析报告卡 ================= */
+
+type ImpCatKey = keyof NonNullable<NonNullable<LiveAnalyze['pe']>['imports']>['categories'];
+
+/* 第三位 = 是否值得警示 tone（注入/钩子/反调试是强信号；网络/执行/文件只是画像） */
+const IMP_CATS: [ImpCatKey, string, boolean][] = [
+  ['process_injection', '进程注入', true],
+  ['keyboard_hook', '键盘钩子', true],
+  ['anti_debug', '反调试', true],
+  ['network', '网络', false],
+  ['persistence', '持久化', false],
+  ['exec', '执行', false],
+  ['fs', '文件', false],
+];
+
+/* 熵条：上限 8.0，>7.2 走 crit 色阶（加壳/加密节信号） */
+function EntropyBar({ v }: { v: number }) {
+  const hot = v > 7.2;
+  return (
+    <span className="flex items-center gap-2">
+      <span className="h-1.5 w-20 overflow-hidden rounded-[3px] bg-border-soft">
+        <i className={cn('block h-full rounded-[3px]', hot ? 'bg-crit' : 'bg-foreground')}
+          style={{ width: `${Math.min(100, (v / 8) * 100)}%` }} />
+      </span>
+      <span className={cn('font-mono text-[11px] tabular-nums', hot ? 'text-crit' : 'text-muted-foreground')}>{v.toFixed(2)}</span>
+    </span>
+  );
+}
+
+function AnalyzeReport({ ana, fileName }: { ana: LiveAnalyze; fileName: string }) {
+  const pe = ana.pe;
+  const vr = ana.version_resource;
+  const strs = ana.strings;
+  return (
+    <div className="space-y-3">
+      {/* 伪装警示（version_resource.mismatch）——放最上，先看结论 */}
+      {vr?.mismatch && (
+        <div className="flex items-start gap-2 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
+          <TriangleAlert size={14} className="mt-px shrink-0" />
+          <span>声明原始文件名与实际不符（OriginalFilename：{vr.original_filename || '未知'}，实际：{fileName}）——常见于改名伪装，建议结合签名状态与下载来源进一步研判。</span>
+        </div>
+      )}
+      {!!ana.packer_hints?.length && (
+        <div className="flex items-start gap-2 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
+          <TriangleAlert size={14} className="mt-px shrink-0" />
+          <span>疑似加壳 / 高熵节：{ana.packer_hints.join('；')}</span>
+        </div>
+      )}
+
+      {/* PE 属性 + 节区表 */}
+      {pe ? (
+        <div className="rounded-md border border-border-soft bg-secondary/40 p-3 text-[12px]">
+          <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1.5">
+            <dt className="text-faint">架构 / 子系统</dt>
+            <dd className="m-0 font-mono">{pe.machine || '-'} · {pe.subsystem || '-'}{pe.is_dll ? ' · DLL' : ''}</dd>
+            <dt className="text-faint">编译时间</dt>
+            <dd className="m-0 font-mono">{pe.compile_ts_unix ? fmtTime(new Date(pe.compile_ts_unix * 1000).toISOString()) : '-'}</dd>
+            <dt className="text-faint">入口点</dt>
+            <dd className="m-0 font-mono">0x{pe.entry_point.toString(16)}</dd>
+            <dt className="text-faint">最高节熵</dt>
+            <dd className="m-0"><EntropyBar v={pe.max_section_entropy ?? 0} /></dd>
+          </dl>
+          {!!pe.sections?.length && (
+            <table className="mt-2.5 w-full border-t border-border-soft text-[11.5px]">
+              <thead>
+                <tr className="text-left text-[10.5px] tracking-[.06em] text-faint uppercase">
+                  <th className="py-1.5 pr-3 font-semibold">节区</th>
+                  <th className="py-1.5 pr-3 text-right font-semibold">大小</th>
+                  <th className="py-1.5 font-semibold">熵</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pe.sections.map((s, i) => (
+                  <tr key={`${s.name}-${i}`} className="border-t border-border-soft/60">
+                    <td className="py-1 pr-3 font-mono">{s.name || `#${i}`}</td>
+                    <td className="py-1 pr-3 text-right font-mono tabular-nums">{fmtBytes(s.size)}</td>
+                    <td className="py-1"><EntropyBar v={s.entropy} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {pe.imports && (
+            <div className="mt-2.5 border-t border-border-soft pt-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-faint">导入 {pe.imports.total} 个 · 分类：</span>
+                {IMP_CATS.filter(([k]) => (pe.imports!.categories[k] || 0) > 0).map(([k, label, hot]) => (
+                  <Badge key={k} tone={hot ? 'medium' : 'neutral'}>
+                    {label} {pe.imports!.categories[k]}
+                  </Badge>
+                ))}
+                {IMP_CATS.every(([k]) => !(pe.imports!.categories[k] || 0)) && (
+                  <span className="text-faint">未识别到显著类别</span>
+                )}
+              </div>
+              {!!pe.imports.notable?.length && (
+                <ul className="m-0 mt-1.5 max-h-[120px] list-none overflow-y-auto p-0 font-mono text-[11.5px] text-muted-foreground">
+                  {pe.imports.notable.slice(0, 10).map((f, i) => (
+                    <li key={i} className="truncate py-px" title={f}>{f}</li>
+                  ))}
+                  {pe.imports.notable.length > 10 && (
+                    <li className="py-px text-faint">…共 {pe.imports.notable.length} 条显著导入</li>
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-faint">非 PE 文件（无 MZ 头）——不解析结构，哈希与字符串线索照常可用。</p>
+      )}
+
+      {/* 版本资源 */}
+      {vr && (vr.company || vr.product || vr.description || vr.original_filename) && (
+        <div className="rounded-md border border-border-soft bg-secondary/40 p-3 text-[12px]">
+          <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1.5">
+            <dt className="text-faint">公司 / 产品</dt>
+            <dd className="m-0">{vr.company || '-'} · {vr.product || '-'}</dd>
+            <dt className="text-faint">描述</dt>
+            <dd className="m-0">{vr.description || '-'}</dd>
+            <dt className="text-faint">原始文件名</dt>
+            <dd className="m-0 font-mono text-[11.5px]">{vr.original_filename || '-'}<span className="ml-2 text-faint">（实际：{fileName}）</span></dd>
+          </dl>
+        </div>
+      )}
+
+      {/* 字符串线索：采样前 64KB + 尾 64KB，每类探针侧 ≤10 */}
+      {strs && <StringsBlock s={strs} />}
+    </div>
+  );
+}
+
+function StringsBlock({ s }: { s: LiveStrings }) {
+  const groups: [string, string[] | undefined][] = [
+    ['URL', s.urls], ['IP', s.ips], ['注册表路径', s.registry_paths],
+    ['文件路径', s.file_paths], ['互斥量', s.mutex],
+  ];
+  const present = groups.filter(([, items]) => !!items?.length);
+  if (!present.length) return <p className="text-xs text-faint">未提取到字符串线索。</p>;
+  return (
+    <div className="rounded-md border border-border-soft bg-secondary/40 p-3 text-[12px]">
+      <div className="grid gap-x-6 gap-y-2.5 sm:grid-cols-2">
+        {present.map(([label, items]) => (
+          <div key={label} className="min-w-0">
+            <div className="mb-1 flex items-center gap-1.5 text-[11px] tracking-[.05em] text-faint uppercase">
+              {label}
+              <span className="font-mono">{items!.length}</span>
+            </div>
+            <ul className="m-0 max-h-[104px] list-none overflow-y-auto p-0 font-mono text-[11.5px] text-muted-foreground">
+              {items!.map((it, i) => (
+                <li key={i} className="truncate py-px" title={it}>{it}</li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 border-t border-border-soft pt-1.5 text-[11px] text-faint">采样自文件头尾各 64 KB，仅作线索，不代表实际行为。</p>
+    </div>
   );
 }
 

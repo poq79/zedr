@@ -171,3 +171,180 @@ export interface LiveHash {
   size: number;
   authenticode: { state: string; subject?: string; issuer?: string };
 }
+
+/** GET /hosts/{id}/live/fs/stat —— 跨 Tab 以路径打开抽屉时先取元数据 */
+export interface LiveStat {
+  path: string;
+  exists: boolean;
+  size: number;
+  is_dir: boolean;
+  hidden: boolean;
+  system: boolean;
+  readonly: boolean;
+  reparse: boolean;
+  mtime_unix: number;
+}
+
+/* ---- v2 增量（docs/LIVE-TUNNEL.md §11，排查级深化）----
+   字段名与契约逐字对齐；老探针对 v2 字段可能缺省，因此新增字段一律可空。 */
+
+/** /live/netstat 富化行：连接五元组 + 归属进程 + 内外网分类。
+   exited=true = 连接还在而进程已没了（排查高价值信号）。 */
+export interface LiveNetConn {
+  proto: string;
+  local_ip: string;
+  local_port: number;
+  remote_ip: string;
+  remote_port: number;
+  state: string;
+  pid: number;
+  proc_name?: string;
+  proc_path?: string;
+  proc_user?: string;
+  proc_started_at?: string;
+  proc_cmdline?: string;
+  proc_elevated?: boolean;
+  exited?: boolean;
+  /** loopback | private | public | multicast | reserved（Go net 标准库划分） */
+  remote_class?: 'loopback' | 'private' | 'public' | 'multicast' | 'reserved' | string;
+}
+
+export interface LiveNetList { items: LiveNetConn[] }
+
+/** /live/processes 行 = 探针 state.ProcRow 镜像。
+   注意：ProcRow 没有 cpu_percent/mem_mb 字段——不要凭空渲染这两列。 */
+export interface LiveProcRow {
+  pid: number;
+  ppid: number;
+  name: string;
+  path: string;
+  cmdline: string;
+  user: string;
+  score: number;
+  verdict: string;
+  severity: string;
+  title: string;
+  /** 探针首次发现时间（不是进程启动时间） */
+  first_seen: string;
+  conn_count: number;
+  modules: number;
+  suppressed?: string;
+}
+
+export interface LiveProcList { items: LiveProcRow[] }
+
+export interface LiveModule { name: string; path: string }
+
+/** /live/procinfo —— 交叉动线中枢；modules 等字段可能缺省（可选渲染） */
+export interface LiveProcInfo {
+  pid: number;
+  exists: boolean;
+  name?: string;
+  path?: string;
+  cmdline?: string;
+  user?: string;
+  session_id?: number;
+  elevated?: boolean;
+  started_at?: string;
+  cpu_percent?: number;
+  mem_mb?: number;
+  connections?: LiveNetConn[];
+  modules?: LiveModule[];
+  unsigned_module_count?: number;
+  /** 模块列表是否因预算截断 */
+  truncated?: boolean;
+  exec_info?: { exists: boolean; signed_state?: string; ads_zone_id?: number | null };
+}
+
+/** fs/search 条目 = 常规条目 + quick 速览旗标（仅搜索结果携带）。
+   dir 为探针可选提供的命中目录：缺省时按搜索根拼接（depth=1 命中恒正确）。 */
+export interface LiveSearchEntry extends LiveFsEntry {
+  quick?: { pe: boolean; ads: boolean; hidden: boolean; system: boolean };
+  dir?: string;
+}
+
+export interface LiveSearchResult {
+  path: string;
+  pattern: string;
+  entries: LiveSearchEntry[];
+  /** 探针 30s 预算用尽：返回已收集部分 + truncated */
+  truncated: boolean;
+}
+
+/** /live/analyze PE 节区（熵 >7.2 前端按加壳信号渲染） */
+export interface LiveSection { name: string; size: number; entropy: number; flags?: string }
+
+export interface LivePeInfo {
+  machine: string;
+  subsystem: string;
+  is_dll: boolean;
+  compile_ts_unix: number;
+  entry_point: number;
+  sections: LiveSection[];
+  max_section_entropy: number;
+  /** VT 口径 imphash（小写 dll!func 排序拼接取 MD5） */
+  imphash?: string;
+  imports?: {
+    total: number;
+    categories: {
+      network: number; process_injection: number; persistence: number;
+      keyboard_hook: number; anti_debug: number; exec: number; fs: number;
+    };
+    notable: string[];
+  };
+}
+
+/** OriginalFilename 与实际文件名不符 = 伪装信号（mismatch） */
+export interface LiveVersionResource {
+  company?: string;
+  product?: string;
+  description?: string;
+  original_filename?: string;
+  mismatch?: boolean;
+}
+
+/** 采样前 64KB + 尾 64KB 的可打印串，每类 ≤10 */
+export interface LiveStrings {
+  urls?: string[];
+  ips?: string[];
+  registry_paths?: string[];
+  file_paths?: string[];
+  mutex?: string[];
+}
+
+export interface LiveAnalyze {
+  md5: string;
+  sha1: string;
+  sha256: string;
+  size: number;
+  /** 非 PE 文件为 null/缺省 */
+  pe?: LivePeInfo | null;
+  /** 加壳/高熵节提示（节名特征 + 节熵 >7.2），与 pe 平级——非 PE 文件也可能给出 */
+  packer_hints?: string[];
+  version_resource?: LiveVersionResource | null;
+  strings?: LiveStrings | null;
+}
+
+/** /live/ads —— NTFS 备用数据流 + MotW（Zone.Identifier） */
+export interface LiveAds {
+  streams: { name: string; size: number }[];
+  zone?: {
+    zone_id: number;
+    zone_name: string;
+    referrer_url?: string;
+    host_url?: string;
+    download_time?: string;
+  } | null;
+}
+
+/** /live/info —— 探针实时运行时（部分字段可能缺省） */
+export interface LiveInfo {
+  version?: string;
+  hostname?: string;
+  uptime_sec?: number;
+  proc_count?: number;
+  cpu_percent?: number;
+  mem_mb?: number;
+  scan_interval?: number;
+  collector?: string;
+}

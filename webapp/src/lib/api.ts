@@ -130,7 +130,7 @@ export function sseConnect(onEvent: (a: import('./types').Alert) => void): Event
    与上面 request() 的差异：隧道 503 tunnel_not_connected / 429 探针忙是
    即时确定性状态，5xx 退避重试只会把"未连接"的呈现拖慢近 2 秒，故不复用
    GET 重试循环；401 刷新重放语义保留。fs/read 为字节流直通（响应不包
-   {data}，元数据在 X-HG-File-Size / X-HG-Truncated 头），用带 Authorization
+   {data}，元数据在 X-ZEDR-File-Size / X-ZEDR-Truncated 头），用带 Authorization
    的 fetch 取 blob——不做下载，消费面只有文本预览。 */
 
 /** 规范错误解析（与 request 内部逻辑一致；单独成函数避免动既有代码路径） */
@@ -185,13 +185,13 @@ async function liveRead(path: string): Promise<LiveReadResult> {
   return {
     blob: await res.blob(),
     contentType: res.headers.get('Content-Type') || '',
-    size: Number(res.headers.get('X-HG-File-Size')) || 0,
+    size: Number(res.headers.get('X-ZEDR-File-Size')) || 0,
     // 探针侧发 "1"/"0"（liveapi/fs.go），契约文本为布尔——两种形态都认
-    truncated: ['1', 'true'].includes((res.headers.get('X-HG-Truncated') || '').toLowerCase()),
+    truncated: ['1', 'true'].includes((res.headers.get('X-ZEDR-Truncated') || '').toLowerCase()),
   };
 }
 
-/** 实时查询系列：路径与错误码以 LIVE-TUNNEL.md §5.1 为准 */
+/** 实时查询系列：路径与错误码以 LIVE-TUNNEL.md §5.1 / §11.3 为准 */
 export const live = {
   /** 目录列表；cursor 缺省 = 第一页，next_cursor 为空 = 结尾 */
   fs: (agentId: string, path: string, cursor?: string) =>
@@ -204,6 +204,34 @@ export const live = {
   /** SHA256 + Authenticode 现场计算 */
   hash: (agentId: string, path: string) =>
     liveJSON<import('./types').LiveHash>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/fs/hash?path=${encodeURIComponent(path)}`),
+
+  /* ---- v2 增量（LIVE-TUNNEL.md §11）---- */
+  /** 文件元数据（跨 Tab 以路径打开抽屉前先取） */
+  stat: (agentId: string, path: string) =>
+    liveJSON<import('./types').LiveStat>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/fs/stat?path=${encodeURIComponent(path)}`),
+  /** 实时进程表（state.ProcRow） */
+  processes: (agentId: string, limit = 2000) =>
+    liveJSON<import('./types').LiveProcList>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/processes?limit=${limit}`),
+  /** 实时连接表（v2 富化行：归属进程 + 内外网分类 + exited 信号） */
+  netstat: (agentId: string) =>
+    liveJSON<import('./types').LiveNetList>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/netstat`),
+  /** 进程详情：模块/未签名计数/可执行速览/该 PID 连接（交叉动线中枢） */
+  procinfo: (agentId: string, pid: number) =>
+    liveJSON<import('./types').LiveProcInfo>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/procinfo?pid=${pid}`),
+  /** 目录限深搜索（depth ≤4 默认 2，limit ≤200 默认 100，通配 *?） */
+  search: (agentId: string, path: string, pattern: string, depth = 2, limit = 100) =>
+    liveJSON<import('./types').LiveSearchResult>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/fs/search?path=${encodeURIComponent(path)}&pattern=${encodeURIComponent(pattern)}&depth=${depth}&limit=${limit}`,
+    ),
+  /** 二进制深度分析（≤64MB，PE 解析有成本——按需调用） */
+  analyze: (agentId: string, path: string) =>
+    liveJSON<import('./types').LiveAnalyze>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/analyze?path=${encodeURIComponent(path)}`),
+  /** NTFS 备用数据流 + MotW 下载来源 */
+  ads: (agentId: string, path: string) =>
+    liveJSON<import('./types').LiveAds>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/ads?path=${encodeURIComponent(path)}`),
+  /** 探针实时运行时（主机详情探针状态行轮询用） */
+  info: (agentId: string) =>
+    liveJSON<import('./types').LiveInfo>(`/api/v1/hosts/${encodeURIComponent(agentId)}/live/info`),
 };
 
 /** 隧道错误分类：供 UI 层映射专用状态（状态条/Toast/内联说明） */
