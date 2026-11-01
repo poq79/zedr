@@ -29,8 +29,8 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
   const [a, setA] = useState<Alert | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
-  /* 证据链 / AI 研判 / 自动调查三卡：抽屉一屏一屏看，不再一条滚到底 */
-  const [tab, setTab] = useState<'evidence' | 'ai' | 'investigate'>('evidence');
+  /* 证据链 / AI 研判 / 自动调查 / AI 调查 四卡：抽屉一屏一屏看 */
+  const [tab, setTab] = useState<'evidence' | 'ai' | 'investigate' | 'agent'>('evidence');
 
   useEffect(() => {
     if (alertId == null) { setA(null); setErr(''); return; }
@@ -100,8 +100,8 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
         <EmptyState tone="warn" icon={<ShieldBan size={20} />} title={err} sub="可关闭后重试，或刷新页面。" />
       ) : a && (
         <div className="space-y-5">
-          <Tabs className="mb-1" value={tab} onChange={(k) => setTab(k as 'evidence' | 'ai' | 'investigate')}
-            tabs={[{ key: 'evidence', label: '证据链' }, { key: 'ai', label: 'AI 研判' }, { key: 'investigate', label: '自动调查' }]} />
+          <Tabs className="mb-1" value={tab} onChange={(k) => setTab(k as 'evidence' | 'ai' | 'investigate' | 'agent')}
+            tabs={[{ key: 'evidence', label: '证据链' }, { key: 'ai', label: 'AI 研判' }, { key: 'investigate', label: '自动调查' }, { key: 'agent', label: 'AI 调查' }]} />
           {tab === 'evidence' && (
             <div key="ev" className="anim-page space-y-5">
           {a.summary && (
@@ -180,6 +180,9 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
           )}
           {tab === 'investigate' && (
             <div key="inv" className="anim-page"><InvestigatePanel alertId={a.id} /></div>
+          )}
+          {tab === 'agent' && (
+            <div key="agent" className="anim-page"><AgentPanel alertId={a.id} /></div>
           )}
         </div>
       )}
@@ -410,6 +413,130 @@ function InvestigatePanel({ alertId }: { alertId: string }) {
                   <b className="min-w-0 flex-1 truncate font-mono text-[11.5px]" title={a.target}>{a.target || '-'}</b>
                   <Badge tone={a.available ? 'resolved' : 'neutral'}>{a.available ? '可用' : '服务端开关未启用'}</Badge>
                   {a.reason && <span className="w-full text-[11px] text-faint">{a.reason}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Agentic 调查 v2 ---------------- */
+
+interface AgentStepRec {
+  step: number; tool: string; args?: string; result_preview?: string;
+  result_bytes?: number; err?: string; latency_ms?: number;
+}
+interface AgentReportResp {
+  summary: string; verdict: string; confidence: number;
+  findings: { text: string; citations?: string[] }[];
+  actions: { type: string; target?: string; detail?: string; requires_approval?: boolean }[];
+  steps: AgentStepRec[]; tool_calls: number; steps_limit_reached: boolean;
+  grounded: boolean; uncited: number; model?: string; engine: string;
+  latency_ms: number; degraded: boolean; degraded_reason?: string;
+}
+
+function AgentPanel({ alertId }: { alertId: string }) {
+  const toast = useToast();
+  const [rep, setRep] = useState<AgentReportResp | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    api.get<AgentReportResp>(`/api/v1/alerts/${encodeURIComponent(alertId)}/agent-investigation`)
+      .then(setRep).catch(() => { /* 无缓存是常态 */ });
+  }, [alertId]);
+
+  const run = async () => {
+    setBusy(true); setErr('');
+    try {
+      setRep(await api.post<AgentReportResp>(`/api/v1/alerts/${encodeURIComponent(alertId)}/investigate/agent`, {}));
+    } catch (e) {
+      setErr((e as Error).message);
+      toast((e as Error).message, 'err');
+    } finally { setBusy(false); }
+  };
+
+  const verdictTone = (v: string) => v === 'malicious' ? 'critical' : v === 'suspicious' ? 'medium' : v === 'benign' ? 'resolved' : 'info';
+
+  return (
+    <div>
+      {!rep && (
+        <div className="rounded-lg border border-border-soft bg-secondary/40 px-4 py-6 text-center">
+          <p className="m-0 text-[12.5px] leading-[1.8] text-muted-foreground">
+            AI 调查让模型自主决定查什么：同哈希是否跨主机、是否命中情报库、<br />
+            同指纹是否复发性误报、资产清单里有没有持久化痕迹——每一步工具调用都可见。<br />
+            <span className="text-faint">工具只有只读七件；未配置模型时自动回退确定性五步。</span>
+          </p>
+          <Button variant="primary" className="mt-3.5" onClick={run} disabled={busy}>
+            {busy ? '调查中…' : '开始 AI 调查'}
+          </Button>
+          {err && <div className="mt-2.5 text-xs text-destructive">{err}</div>}
+        </div>
+      )}
+
+      {rep && (
+        <div className="space-y-3">
+          {err && <div className="text-xs text-destructive">{err}</div>}
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border-soft bg-secondary/40 px-3.5 py-3">
+            <Badge tone={verdictTone(rep.verdict)}>{VERDICT_LABEL[rep.verdict] || rep.verdict}</Badge>
+            <span className="text-xs text-faint">置信度 <b className="font-mono text-foreground">{(rep.confidence * 100).toFixed(0)}%</b></span>
+            <Badge tone={rep.engine === 'llm' ? 'resolved' : 'info'}>{rep.engine === 'llm' ? 'Agent（模型）' : '确定性回退'}</Badge>
+            {rep.model && <Badge tone="info">{rep.model}</Badge>}
+            <Badge tone={rep.grounded ? 'resolved' : 'medium'}>{rep.grounded ? '结论全部可溯源' : `${rep.uncited} 条结论无引用`}</Badge>
+            {rep.steps_limit_reached && <Badge tone="medium" title="达到步数上限，模型用已有结果收尾">步数触顶</Badge>}
+            {rep.degraded && <Badge tone="medium" title={rep.degraded_reason}>降级</Badge>}
+            <span className="text-xs text-faint">{rep.tool_calls} 次工具调用 · {rep.latency_ms}ms</span>
+            <div className="flex-1" />
+            <Button size="sm" variant="ghost" onClick={run} disabled={busy}>{busy ? '重算中…' : '重新调查'}</Button>
+          </div>
+
+          {rep.degraded && rep.degraded_reason && (
+            <div className="rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[11.5px] text-warn">{rep.degraded_reason}</div>
+          )}
+
+          {rep.summary && <div className="text-[12.5px] leading-[1.8]">{rep.summary}</div>}
+
+          <div className="mb-1.5 text-xs text-faint">调查发现（括号内为引用）</div>
+          {rep.findings.map((f, i) => (
+            <div key={i} className="mb-1.5 flex items-start justify-between gap-2.5 rounded-lg border border-border-soft bg-secondary/60 px-3 py-2 text-[12.5px]">
+              <span className="min-w-0 flex-1">{f.text}</span>
+              <span className="shrink-0 font-mono text-[11px]">
+                {f.citations?.length
+                  ? f.citations.map((c) => <span key={c} className="mr-1 rounded border border-primary/30 bg-brand-soft px-1 py-px text-primary">{c}</span>)
+                  : <Badge tone="medium">无引用</Badge>}
+              </span>
+            </div>
+          ))}
+
+          <div className="mb-1.5 mt-3 text-xs text-faint">工具调用时间线</div>
+          <div className="flex flex-col gap-1.5">
+            {rep.steps.map((s, i) => (
+              <div key={i} className="rounded-md border border-border-soft bg-card px-3.5 py-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-[11px] text-ghost">{String(s.step).padStart(2, '0')}</span>
+                  <b className="font-mono text-[12px]">{s.tool}</b>
+                  {s.args && <span className="max-w-[280px] truncate font-mono text-[11px] text-faint" title={s.args}>{s.args}</span>}
+                  <span className="flex-1" />
+                  {s.result_bytes !== undefined && <span className="font-mono text-[10.5px] text-ghost">{s.result_bytes}B</span>}
+                  {s.err && <Badge tone="medium" title={s.err}>错误</Badge>}
+                </div>
+                {s.result_preview && <div className="mt-1 max-h-16 overflow-hidden text-[11.5px] leading-[1.6] text-muted-foreground">{s.result_preview}</div>}
+                {s.err && <div className="mt-1 text-[11.5px] text-destructive">{s.err}</div>}
+              </div>
+            ))}
+          </div>
+
+          {!!rep.actions.length && (
+            <div>
+              <div className="mb-1.5 text-xs text-faint">建议处置（全部需人工确认）</div>
+              {rep.actions.map((a, i) => (
+                <div key={i} className="mb-1.5 flex items-start gap-2.5 rounded-lg border border-border-soft bg-secondary/60 px-3 py-2 text-[12px]">
+                  <span className="mt-px shrink-0 rounded border border-border-soft bg-secondary px-1.5 py-0.5 text-[10px] tracking-[.4px] text-faint uppercase">{a.type}</span>
+                  <span className="min-w-0 flex-1"><b>{a.target || ''}</b><div className="mt-0.5 text-[11.5px] text-faint">{a.detail || ''}</div></span>
+                  <Badge tone="medium">需人工确认</Badge>
                 </div>
               ))}
             </div>
