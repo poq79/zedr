@@ -486,3 +486,17 @@ func decodeError(status int, body []byte) error {
 	}
 	return fmt.Errorf("服务端返回 HTTP %d", status)
 }
+
+// TunnelCreds 返回隧道拨号用的凭证快照（供 tunnel.Options.Creds 使用）。
+//
+// 为什么返回快照而不是暴露 creds 指针：隧道循环是独立的长生命周期
+// goroutine，若直接持有指针，重注册（Enroll 覆盖 creds）会与其读取
+// 形成数据竞争；在锁内完成拷贝则天然安全。
+func (c *Client) TunnelCreds() (agentID, secret string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.creds == nil {
+		return "", "", false
+	}
+	return c.creds.AgentID, c.creds.Secret, true
+}
