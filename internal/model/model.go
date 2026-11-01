@@ -113,6 +113,8 @@ type Evidence struct {
 	StaticScore  float64        `json:"static_score"`
 	KeywordScore float64        `json:"keyword_score"`
 	RuleScore    float64        `json:"rule_score"`
+	// DropScore 是"文件落地即执行"关联层的得分，单独列出便于事后审计
+	DropScore    float64        `json:"drop_score"`
 	Notes        []string       `json:"notes"`
 }
 
@@ -306,6 +308,9 @@ type RuleBundle struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	Rules       []RuleDTO `json:"rules"`
 	Allowlist   []AllowDTO `json:"allowlist"`
+	// Signature 是整包内容的 HMAC-SHA256（hex）。
+	// 终端验签通过才应用，防止下发链路被篡改导致检测被悄悄关掉。
+	Signature string `json:"signature,omitempty"`
 }
 
 // CommandResult 是终端回执。

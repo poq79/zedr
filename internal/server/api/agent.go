@@ -5,7 +5,9 @@ import (
 	"net/http"
 
 	"hostguard/internal/model"
+	"hostguard/internal/platform/apperr"
 	"hostguard/internal/platform/httpx"
+	"hostguard/internal/platform/rulehash"
 	"hostguard/internal/server/domain"
 )
 
@@ -81,6 +83,14 @@ func (h *agentHandler) rules(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
+	// 下发前签名：终端据此判断规则包是否被篡改。
+	// 放在 ETag 命中之后，避免 304 路径做无用计算。
+	if err := rulehash.Sign(bundle, h.deps.RuleSignKey); err != nil {
+		h.deps.Log.ErrorContext(r.Context(), "rule_sign_failed", "err", err)
+		httpx.WriteError(w, r, apperr.Internal(err))
+		return
+	}
+
 	w.Header().Set("ETag", etag)
 	httpx.WriteJSON(w, r, http.StatusOK, bundle)
 }

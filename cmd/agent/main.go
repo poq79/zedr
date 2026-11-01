@@ -151,6 +151,22 @@ func installService() error {
 		return err
 	}
 	defer s.Close()
+
+	// 恢复策略：异常终止后自动重启。
+	// 没有这一步，一次 taskkill /f 就能让防护永久失效，而系统看起来一切正常。
+	if err := setServiceRecovery(s.Handle); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"警告: %v\n  服务已安装，但异常终止后不会自动重启；\n"+
+				"  可手动设置: sc failure %s reset= 86400 actions= restart/5000/restart/10000/restart/30000\n",
+			err, serviceName)
+	}
+
+	// 配置来源提示：服务的工作目录是 System32，因此配置必须放在
+	// 可执行文件同目录（或系统环境变量）里，否则会静默使用默认值。
+	if _, err := config.LoadDotEnv(); err != nil {
+		fmt.Fprintf(os.Stderr, "警告: 读取 .env 失败: %v\n", err)
+	}
+
 	return s.Start()
 }
 

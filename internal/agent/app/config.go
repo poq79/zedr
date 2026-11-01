@@ -33,6 +33,15 @@ type Config struct {
 	BaselineLearn bool
 	Warmup        time.Duration
 	HeartbeatSec  int
+
+	// PersistCheck 是自启动项（持久化）扫描间隔。
+	// 比进程扫描慢一个数量级即可——自启动项的变化频率远低于进程创建。
+	PersistCheck time.Duration
+	// FileWatch 控制是否启用文件落地监控（落地即执行关联检测的依据）。
+	FileWatch bool
+	// RuleSignKey 非空时强制校验下发规则包的 HMAC 签名。
+	// 需与服务端 HG_SERVER_RULE_SIGN_KEY 一致；留空则不校验（仅记录告警）。
+	RuleSignKey string
 }
 
 // LoadConfig 读取并校验配置。
@@ -59,6 +68,9 @@ func LoadConfig(version string) (*Config, error) {
 	c.BaselineLearn = l.Bool("HG_AGENT_BASELINE_LEARN", true)
 	c.Warmup = l.DurationZeroOK("HG_AGENT_WARMUP", 5*time.Minute) // 允许 0 = 关闭静默期
 	c.HeartbeatSec = l.Int("HG_AGENT_HEARTBEAT_SEC", 30)
+	c.PersistCheck = l.Duration("HG_AGENT_PERSIST_INTERVAL", 5*time.Minute)
+	c.FileWatch = l.Bool("HG_AGENT_FILEWATCH", true)
+	c.RuleSignKey = l.Env("HG_AGENT_RULE_SIGN_KEY", "")
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
@@ -71,6 +83,7 @@ func LoadConfig(version string) (*Config, error) {
 	l.Check(c.FullRescan >= 1*time.Minute, "HG_AGENT_FULL_RESCAN 建议 >= 1m")
 	l.Check(c.OfflineQueue >= 100, "HG_AGENT_OFFLINE_QUEUE 至少 100")
 	l.Check(c.HeartbeatSec >= 5, "HG_AGENT_HEARTBEAT_SEC 至少 5 秒")
+	l.Check(c.PersistCheck >= 30*time.Second, "HG_AGENT_PERSIST_INTERVAL 至少 30s（枚举注册表本身有成本）")
 
 	if strings.EqualFold(c.Env, "production") && c.KillEnabled {
 		l.SecurityWarning(false, "已启用主动终止进程能力（HG_AGENT_KILL_ENABLED），请确认这是预期行为")

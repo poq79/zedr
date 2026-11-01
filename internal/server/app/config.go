@@ -20,6 +20,7 @@ type Config struct {
 	Addr            string
 	DBPath          string
 	CORSOrigins     []string
+	RuleSignKey  string // 规则包签名密钥；空则从 JWTSecret 派生
 	JWTSecret       string
 	AccessTTL       time.Duration
 	RefreshTTL      time.Duration
@@ -28,6 +29,8 @@ type Config struct {
 	BootstrapPass   string
 	EnrollToken     string
 	RateRPS         float64
+	LoginRPS    float64
+	LoginBurst  float64
 	RateBurst       float64
 	KillEnabled     bool
 	RetentionDays   int
@@ -49,6 +52,7 @@ func LoadConfig() (*Config, error) {
 	c.DBPath = l.Env("HG_SERVER_DB_PATH", "./data/secserver.db")
 	c.CORSOrigins = l.CSV("HG_SERVER_CORS_ORIGINS", []string{"http://localhost:8080", "http://127.0.0.1:8080"})
 	c.JWTSecret = l.Required("HG_SERVER_JWT_SECRET")
+	c.RuleSignKey = l.Env("HG_SERVER_RULE_SIGN_KEY", "")
 	c.AccessTTL = l.Duration("HG_SERVER_ACCESS_TTL", 15*time.Minute)
 	c.RefreshTTL = l.Duration("HG_SERVER_REFRESH_TTL", 168*time.Hour)
 	c.CookieSecure = l.Bool("HG_SERVER_COOKIE_SECURE", false)
@@ -57,6 +61,8 @@ func LoadConfig() (*Config, error) {
 	c.EnrollToken = l.Env("HG_SERVER_ENROLL_TOKEN", "")
 	c.RateRPS = l.Float("HG_SERVER_RATE_LIMIT_RPS", 20)
 	c.RateBurst = l.Float("HG_SERVER_RATE_LIMIT_BURST", 60)
+	c.LoginRPS = l.Float("HG_SERVER_LOGIN_RPS", 0.5)   // 登录：约每 2 秒 1 次
+	c.LoginBurst = float64(l.Int("HG_SERVER_LOGIN_BURST", 5))
 	c.KillEnabled = l.Bool("HG_SERVER_KILL_ENABLED", false)
 	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 30)
 	c.HeartbeatSec = l.Int("HG_SERVER_HEARTBEAT_SEC", 30)

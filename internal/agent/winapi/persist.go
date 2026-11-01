@@ -1,0 +1,415 @@
+// Package winapi 的持久化项枚举。
+//
+// 为什么需要它：现有检测只看"进程创建"这一个时刻，而入侵的实质是"驻留"。
+// 攻击者落地后几乎必然要建立一个开机自启点（注册表 Run 键、启动文件夹、
+// 计划任务、自启动服务），这些位置是入侵检测里信噪比最高的一类证据——
+// 正常软件很少新增自启动项，而新增项一定对应"有新东西要长期运行"。
+package winapi
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"golang.org/x/sys/windows/registry"
+)
+
+// PersistItem 是一个持久化（自启动）项。
+type PersistItem struct {
+	// Key 是跨采集周期稳定的唯一标识：同一位置同名项才视为同一对象。
+	Key string
+	// Type 取值见 PersistType* 常量。
+	Type string
+	// Location 是注册表路径 / 目录 / 任务路径。
+	Location string
+	Name     string
+	// Command 是原始命令行或镜像路径。
+	Command string
+	Enabled bool
+}
+
+// 持久化项类型。
+const (
+	PersistRegistryRun     = "registry_run"
+	PersistRegistryRunOnce = "registry_runonce"
+	PersistWinlogon        = "winlogon"
+	PersistStartupFolder   = "startup_folder"
+	PersistService         = "service"
+	PersistScheduledTask   = "scheduled_task"
+	PersistIFEO            = "ifeo"
+)
+
+// PersistLocationLabel 返回便于人读的位置描述。
+func PersistLocationLabel(typ string) string {
+	switch typ {
+	case PersistRegistryRun:
+		return "注册表 Run 键"
+	case PersistRegistryRunOnce:
+		return "注册表 RunOnce 键"
+	case PersistWinlogon:
+		return "Winlogon 登录脚本"
+	case PersistStartupFolder:
+		return "启动文件夹"
+	case PersistService:
+		return "自启动服务"
+	case PersistScheduledTask:
+		return "计划任务"
+	case PersistIFEO:
+		return "映像劫持(IFEO)"
+	default:
+		return typ
+	}
+}
+
+// EnumeratePersistence 枚举本机全部持久化项。
+//
+// 单个位置枚举失败不会中断整体流程——不同 Windows 版本、不同权限下
+// 某些位置可能读不到，这种情况记录到 errs 里交给上层打日志，
+// 而不是让整轮持久化监控失效。
+func EnumeratePersistence() (items []PersistItem, errs []string) {
+	collect := func(fn func() ([]PersistItem, error), what string) {
+		got, err := fn()
+		if err != nil {
+			errs = append(errs, what+": "+err.Error())
+			return
+		}
+		items = append(items, got...)
+	}
+
+	collect(enumerateRegistryRun, "注册表 Run 键")
+	collect(enumerateWinlogon, "Winlogon")
+	collect(enumerateStartupFolders, "启动文件夹")
+	collect(enumerateAutoServices, "自启动服务")
+	collect(enumerateScheduledTasks, "计划任务")
+	collect(enumerateIFEO, "IFEO 映像劫持")
+
+	// 去重（同一 Key 只保留一次）并稳定排序，便于基线 diff
+	seen := make(map[string]struct{}, len(items))
+	out := items[:0]
+	for _, it := range items {
+		if it.Key == "" {
+			continue
+		}
+		if _, dup := seen[it.Key]; dup {
+			continue
+		}
+		seen[it.Key] = struct{}{}
+		out = append(out, it)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, errs
+}
+
+// regRunRoot 描述一个 Run 键位置。
+type regRunRoot struct {
+	root    registry.Key
+	path    string
+	typ     string
+	label64 string
+}
+
+func enumerateRegistryRun() ([]PersistItem, error) {
+	roots := []regRunRoot{
+		{registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, PersistRegistryRun, "HKLM"},
+		{registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, PersistRegistryRunOnce, "HKLM"},
+		{registry.LOCAL_MACHINE, `SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run`, PersistRegistryRun, "HKLM(WOW64)"},
+		{registry.LOCAL_MACHINE, `SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce`, PersistRegistryRunOnce, "HKLM(WOW64)"},
+		{registry.CURRENT_USER, `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, PersistRegistryRun, "HKCU"},
+		{registry.CURRENT_USER, `SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, PersistRegistryRunOnce, "HKCU"},
+	}
+
+	var out []PersistItem
+	var firstErr error
+	for _, r := range roots {
+		items, err := readRunKey(r)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		out = append(out, items...)
+	}
+	if len(out) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return out, nil
+}
+
+func readRunKey(r regRunRoot) ([]PersistItem, error) {
+	k, err := registry.OpenKey(r.root, r.path, registry.QUERY_VALUE)
+	if err != nil {
+		return nil, err
+	}
+	defer k.Close()
+
+	names, err := k.ReadValueNames(-1)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PersistItem, 0, len(names))
+	for _, name := range names {
+		val, _, err := k.GetStringValue(name)
+		if err != nil {
+			continue // 非字符串值（极少见）跳过
+		}
+		loc := r.label64 + `\` + r.path
+		out = append(out, PersistItem{
+			Key:      r.typ + "|" + loc + "|" + name,
+			Type:     r.typ,
+			Location: loc,
+			Name:     name,
+			Command:  val,
+			Enabled:  true,
+		})
+	}
+	return out, nil
+}
+
+func enumerateWinlogon() ([]PersistItem, error) {
+	const path = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+	if err != nil {
+		return nil, err
+	}
+	defer k.Close()
+
+	var out []PersistItem
+	for _, name := range []string{"Shell", "Userinit", "Taskman", "AppSetup"} {
+		val, _, err := k.GetStringValue(name)
+		if err != nil || strings.TrimSpace(val) == "" {
+			continue
+		}
+		out = append(out, PersistItem{
+			Key:      PersistWinlogon + `|HKLM\` + path + "|" + name,
+			Type:     PersistWinlogon,
+			Location: `HKLM\` + path,
+			Name:     name,
+			Command:  val,
+			Enabled:  true,
+		})
+	}
+	return out, nil
+}
+
+func enumerateStartupFolders() ([]PersistItem, error) {
+	var dirs []string
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		dirs = append(dirs, filepath.Join(appData,
+			`Microsoft\Windows\Start Menu\Programs\Startup`))
+	}
+	if pd := os.Getenv("ProgramData"); pd != "" {
+		dirs = append(dirs, filepath.Join(pd,
+			`Microsoft\Windows\Start Menu\Programs\Startup`))
+	}
+
+	var out []PersistItem
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.EqualFold(e.Name(), "desktop.ini") {
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
+			// .lnk 只记录链接本身；解析目标需要 COM，成本高且价值有限，
+			// 因为"启动文件夹里出现新文件"本身就是足够强的信号。
+			out = append(out, PersistItem{
+				Key:      PersistStartupFolder + "|" + dir + "|" + e.Name(),
+				Type:     PersistStartupFolder,
+				Location: dir,
+				Name:     e.Name(),
+				Command:  full,
+				Enabled:  true,
+			})
+		}
+	}
+	return out, nil
+}
+
+// autoServiceStarts 是"会自启动"的服务启动类型：
+// 0=Boot 1=System 2=Auto。3=Manual 4=Disabled 不计入。
+var autoServiceStarts = map[uint64]bool{0: true, 1: true, 2: true}
+
+func enumerateAutoServices() ([]PersistItem, error) {
+	const path = `SYSTEM\CurrentControlSet\Services`
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.READ)
+	if err != nil {
+		return nil, err
+	}
+	defer k.Close()
+
+	names, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]PersistItem, 0, 64)
+	for _, name := range names {
+		sk, err := registry.OpenKey(k, name, registry.QUERY_VALUE)
+		if err != nil {
+			continue
+		}
+		start, _, err := sk.GetIntegerValue("Start")
+		if err != nil {
+			sk.Close()
+			continue
+		}
+		if !autoServiceStarts[start] {
+			sk.Close()
+			continue
+		}
+		image, _, err := sk.GetStringValue("ImagePath")
+		display, _, _ := sk.GetStringValue("DisplayName")
+		typ, _, _ := sk.GetIntegerValue("Type")
+		sk.Close()
+		if err != nil || strings.TrimSpace(image) == "" {
+			continue
+		}
+		// Type 的高位标记驱动/内核组件，跳过：它们不是普通自启动项，
+		// 且数量大、变化少，纳入基线只会增加噪声。
+		if typ&0x00000001 != 0 && typ&0x00000020 != 0 {
+			continue
+		}
+		nm := display
+		if nm == "" {
+			nm = name
+		}
+		out = append(out, PersistItem{
+			Key:      PersistService + "|" + strings.ToLower(name),
+			Type:     PersistService,
+			Location: `HKLM\` + path + `\` + name,
+			Name:     nm,
+			Command:  image,
+			Enabled:  true,
+		})
+	}
+	return out, nil
+}
+
+func enumerateScheduledTasks() ([]PersistItem, error) {
+	root := filepath.Join(os.Getenv("SystemRoot"), "System32", "Tasks")
+	if _, err := os.Stat(root); err != nil {
+		return nil, fmt.Errorf("任务目录不可读: %w", err)
+	}
+
+	var out []PersistItem
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil // 权限不足的子目录直接跳过
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return nil
+		}
+		taskName := `\` + strings.TrimSuffix(rel, filepath.Ext(rel))
+		out = append(out, PersistItem{
+			Key:      PersistScheduledTask + "|" + strings.ToLower(taskName),
+			Type:     PersistScheduledTask,
+			Location: `\` + rel,
+			Name:     taskName,
+			// 任务定义保存在 XML 文件里，这里只记路径与修改时间，
+			// 完整解析 XML 交给后续版本（当前用"新增任务"作为信号已足够）。
+			Command: fmt.Sprintf("%s (修改于 %s)", path, info.ModTime().Format("2006-01-02 15:04")),
+			Enabled: true,
+		})
+		return nil
+	})
+	if err != nil && len(out) == 0 {
+		return nil, err
+	}
+	return out, nil
+}
+
+// enumerateIFEO 检查映像劫持：Debugger 键被设置意味着某程序被替换执行。
+func enumerateIFEO() ([]PersistItem, error) {
+	const path = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options`
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.READ)
+	if err != nil {
+		return nil, err
+	}
+	defer k.Close()
+
+	subs, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []PersistItem
+	for _, sub := range subs {
+		sk, err := registry.OpenKey(k, sub, registry.QUERY_VALUE)
+		if err != nil {
+			continue
+		}
+		dbg, _, err := sk.GetStringValue("Debugger")
+		sk.Close()
+		if err != nil || strings.TrimSpace(dbg) == "" {
+			continue
+		}
+		out = append(out, PersistItem{
+			Key:      PersistIFEO + "|" + strings.ToLower(sub),
+			Type:     PersistIFEO,
+			Location: `HKLM\` + path + `\` + sub,
+			Name:     sub,
+			Command:  dbg,
+			Enabled:  true,
+		})
+	}
+	return out, nil
+}
+
+// PersistCommandPath 从命令行中解析出可执行文件路径。
+//
+// 自启动项的命令行格式五花八门：带引号、带参数、以环境变量开头、
+// 只有裸程序名（依赖 PATH）。这里尽量还原出磁盘路径，供信誉判定使用。
+func PersistCommandPath(cmd string) string {
+	s := strings.TrimSpace(cmd)
+	if s == "" {
+		return ""
+	}
+	// 去掉 Windows 命令行常见前缀
+	for {
+		lower := strings.ToLower(s)
+		switch {
+		case strings.HasPrefix(lower, `\??\`):
+			s = s[4:]
+			continue
+		case strings.HasPrefix(lower, `\\?\`):
+			s = s[4:]
+			continue
+		case strings.HasPrefix(lower, `system32\`):
+			s = filepath.Join(os.Getenv("SystemRoot"), s)
+			continue
+		}
+		break
+	}
+
+	// 展开 %VAR%
+	s = os.ExpandEnv(s)
+
+	// 带引号：取第一段
+	if strings.HasPrefix(s, `"`) {
+		if end := strings.Index(s[1:], `"`); end > 0 {
+			return s[1 : 1+end]
+		}
+		return strings.Trim(s, `"`)
+	}
+
+	// 无引号：以 .exe 为界截断（"C:\a b\svc.exe -k run" 这类）
+	lower := strings.ToLower(s)
+	if i := strings.Index(lower, ".exe"); i > 0 {
+		return s[:i+4]
+	}
+	if i := strings.Index(lower, ".com"); i > 0 {
+		return s[:i+4]
+	}
+	// 兜底：取第一个空格前
+	if i := strings.IndexAny(s, " \t"); i > 0 {
+		return s[:i]
+	}
+	return s
+}

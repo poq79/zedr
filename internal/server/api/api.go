@@ -27,12 +27,17 @@ type Deps struct {
 	AllowOrigins []string
 	RateRPS      float64
 	RateBurst    float64
+	// 登录接口独立配额：全站配额为了正常使用必须放宽，登录需要更紧的闸
+	LoginRPS     float64
+	LoginBurst   float64
 	Ready        func() error // /ready 探针
 	Version      string
 	StartedAt    time.Time
 	CookieSecure bool // 生产环境走 HTTPS 时必须为 true
 	Bus          *service.AlertBus
 	Tickets      *ticketStore
+	// RuleSignKey 是规则包签名密钥（由主密钥派生，见 rulehash.DeriveKey）
+	RuleSignKey []byte
 }
 
 // Router 构建完整路由。
@@ -62,7 +67,12 @@ func Router(d Deps) http.Handler {
 
 	// ---------------- 公开认证接口 ----------------
 	authH := &authHandler{deps: d}
-	mux.HandleFunc("POST /api/v1/auth/login", authH.login)
+	// 登录单独限流：与普通接口共用一个桶时，暴力破解只受"全站配额"约束，
+	// 而全站配额为了正常使用又必须放得比较宽。这里给登录再加一道更紧的闸。
+	loginLimiter := httpx.NewTokenBucket(d.LoginRPS, d.LoginBurst)
+	loginKey := func(r *http.Request) string { return httpx.ClientIP(r) }
+	mux.Handle("POST /api/v1/auth/login",
+		httpx.RateLimitMiddleware(loginLimiter, loginKey)(http.HandlerFunc(authH.login)))
 	mux.HandleFunc("POST /api/v1/auth/refresh", authH.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", authH.logout)
 

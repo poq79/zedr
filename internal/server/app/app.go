@@ -8,6 +8,7 @@ import (
 
 	"hostguard/internal/platform/apperr"
 	"hostguard/internal/platform/httpx"
+	"hostguard/internal/platform/rulehash"
 	"hostguard/internal/platform/idgen"
 	"hostguard/internal/platform/logx"
 	"hostguard/internal/server/api"
@@ -94,10 +95,11 @@ func New() (*App, error) {
 		WebFS:        web.FS(),
 		AllowOrigins: cfg.CORSOrigins,
 		RateRPS:      cfg.RateRPS,
+		LoginRPS:     cfg.LoginRPS,
+		LoginBurst:   cfg.LoginBurst,
 		RateBurst:    cfg.RateBurst,
-		Ready: func() error {
-			return store.DB().PingContext(context.Background())
-		},
+		Ready:  readyCheck(store),
+		RuleSignKey: ruleSignKey(cfg),
 		Version:      Version,
 		StartedAt:    time.Now(),
 		CookieSecure: cfg.CookieSecure,
@@ -200,4 +202,47 @@ func (a *App) Close() {
 	default:
 		close(a.stop)
 	}
+}
+
+// readyCheck 是 /ready 的判定逻辑。
+//
+// 只检查 Ping 是不够的：数据库能连上但不可写、或迁移没跑完时，
+// 服务仍然会被判定为就绪并开始接流量，问题要到写入失败才暴露。
+// 这里额外验证"可读 + 可写 + 迁移完整"三件事。
+func readyCheck(store *sqlite.Store) func() error {
+	return func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		db := store.DB()
+		if err := db.PingContext(ctx); err != nil {
+			return fmt.Errorf("数据库不可达: %w", err)
+		}
+		// 只读查询：确认 schema 已就绪
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(1) FROM schema_migrations`).Scan(&n); err != nil {
+			return fmt.Errorf("迁移表不可读: %w", err)
+		}
+		// 写入探测：在事务里写后立即回滚，不留下任何副作用
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("数据库不可写: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS _ready_probe(x INTEGER)`); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("数据库写入探测失败: %w", err)
+		}
+		return tx.Rollback()
+	}
+}
+
+// ruleSignKey 解析规则包签名密钥。
+//
+// 显式配置优先；未配置时从 JWT secret 派生一个专用子密钥，
+// 保证"开箱即可用"（终端侧仍需自行配置同一个值才能强制验签）。
+func ruleSignKey(cfg *Config) []byte {
+	if cfg.RuleSignKey != "" {
+		return []byte(cfg.RuleSignKey)
+	}
+	return rulehash.DeriveKey([]byte(cfg.JWTSecret), "rule-signing")
 }

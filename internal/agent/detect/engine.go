@@ -37,6 +37,10 @@ type Input struct {
 	ParentAlive bool
 	Connections []model.NetConn
 	Modules     []model.ModuleInfo
+	// LandedAt 是"该进程的镜像文件在磁盘上落地"的时间（由文件落地监控提供）。
+	// 零值表示未观测到落地——可能是监控启动前就存在的文件，也可能来自
+	// 未被监控的目录，两种情况都不应据此扣分或加分。
+	LandedAt time.Time
 }
 
 // Result 是融合后的判定结果。
@@ -126,6 +130,24 @@ func New(enr *enrich.Enricher, base *baseline.Model, alw *allow.List, cfg Config
 }
 
 // SetRules 加载服务端下发的规则（编译失败的单条规则会被跳过并计数）。
+// SetBuiltinRules 加载编译进二进制里的内置规则集。
+//
+// 作用是"兜底"：服务端不可达、或下发规则包验签失败时，行为检测层不能
+// 因此变成空的——否则防护会静默降级成只剩静态指纹，而这个降级过程
+// 在管理台上看不出来，是最危险的一类失效。
+func (e *Engine) SetBuiltinRules() int {
+	builtins := rules.Builtins()
+	dtos := make([]model.RuleDTO, 0, len(builtins))
+	for _, b := range builtins {
+		dtos = append(dtos, model.RuleDTO{
+			ID: b.ID, Name: b.Name, Severity: b.Severity, Score: b.Score,
+			MITRE: b.MITRE, Enabled: true, Definition: b.JSON(), Version: 1,
+		})
+	}
+	ok, _ := e.SetRules(dtos)
+	return ok
+}
+
 func (e *Engine) SetRules(list []model.RuleDTO) (ok int, bad []string) {
 	compiled := make([]compiledRule, 0, len(list))
 	for _, r := range list {
@@ -249,8 +271,11 @@ func (e *Engine) Analyze(in Input) *Result {
 		})
 	}
 
+	// ---- 第 4.5 层：文件落地关联 ----
+	dropScore := e.dropLayer(p, meta, in, &signals, &notes)
+
 	// ---- 第 5 层：融合定级 ----
-	total := staticScore + keywordScore + ruleScore + int(lineageScore)
+	total := staticScore + keywordScore + ruleScore + int(lineageScore) + dropScore
 	if total > 100 {
 		total = 100
 	}
@@ -285,6 +310,7 @@ func (e *Engine) Analyze(in Input) *Result {
 			KeywordScore: float64(keywordScore),
 			RuleScore:    float64(ruleScore),
 			LineageScore: lineageScore,
+			DropScore:    float64(dropScore),
 			Notes:        notes,
 		},
 	}
@@ -494,6 +520,68 @@ func (e *Engine) isDuplicate(fp string) bool {
 	}
 	e.recent[fp] = now
 	return false
+}
+
+// riskyDropDirs 是攻击者最常落地的目录。在这些目录"落地即执行"才是信号；
+// 在 Program Files 落地后运行是安装程序的正常行为，不能同等对待。
+var riskyDropDirs = []string{
+	`\temp\`, `\tmp\`, `\downloads\`, `\users\public\`,
+	`\appdata\local\`, `\appdata\roaming\`, `\programdata\`,
+	`\recycle`, `\perflogs\`, `\desktop\`, `\documents\`,
+}
+
+// dropLayer 把"文件落地 → 进程执行"关联成一个可解释的分数。
+//
+// 这是纯进程快照做不到的一层：只看进程创建，无法区分"用户双击了装了很久的
+// 程序"和"样本刚写进磁盘就被拉起"。落地监控补上了前半段证据。
+func (e *Engine) dropLayer(p ProcessInfo, meta enrich.Meta, in Input, signals *[]model.Signal, notes *[]string) int {
+	if in.LandedAt.IsZero() {
+		return 0
+	}
+	age := time.Since(in.LandedAt)
+	if age < 0 || age > 15*time.Minute {
+		return 0
+	}
+
+	lowPath := strings.ToLower(p.Path)
+	risky := false
+	for _, d := range riskyDropDirs {
+		if strings.Contains(lowPath, d) {
+			risky = true
+			break
+		}
+	}
+
+	score := 0
+	reason := ""
+	switch {
+	case !risky:
+		// 正常安装位置：只作为佐证，不加权
+		score = 5
+		reason = "镜像文件近期落地于常规安装位置"
+	case meta.Signed && meta.SignatureOK:
+		// 可写目录但签名有效：多为合法软件的临时解包，适度计分
+		score = 14
+		reason = "镜像文件近期落地于可写目录（有有效签名）"
+	default:
+		score = 32
+		reason = "镜像文件近期落地于可写目录且无有效签名"
+	}
+
+	// 落地后极短时间内被执行，更贴近"写盘即拉起"的行为链
+	if risky && score >= 32 && age < 90*time.Second {
+		score += 8
+		reason += "，且落地后立即执行"
+	}
+
+	*signals = append(*signals, model.Signal{
+		Layer: "behavior", ID: "DROP-001", Name: "文件落地即执行",
+		Score: score,
+		Note:  fmt.Sprintf("%s（落地于 %s，距今 %s）", reason, in.LandedAt.Format("15:04:05"), age.Round(time.Second)),
+		MITRE: "T1105",
+	})
+	*notes = append(*notes, "落地关联："+reason)
+	return score
 }
 
 // countUnsignedModules 统计"确实没有数字签名"的第三方模块数量。

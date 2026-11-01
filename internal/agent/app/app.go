@@ -18,6 +18,7 @@ import (
 	"hostguard/internal/agent/detect"
 	"hostguard/internal/agent/enrich"
 	"hostguard/internal/agent/localapi"
+	"hostguard/internal/agent/persist"
 	"hostguard/internal/agent/state"
 	"hostguard/internal/agent/uplink"
 	"hostguard/internal/agent/winapi"
@@ -40,6 +41,10 @@ type Agent struct {
 	eng  *detect.Engine
 	up   *uplink.Client
 	cpu  *winapi.CPUSampler
+
+	// 行为采集层：文件落地监控 + 持久化项监控
+	fw *winapi.FileWatcher
+	pm *persist.Monitor
 
 	local     *httpx.Server
 	localAPI  *localapi.Server
@@ -77,9 +82,22 @@ func New(version string) (*Agent, error) {
 		WarmupUntil: time.Now().Add(cfg.Warmup),
 	})
 
+	// 先用内置规则启动：即使服务端暂时不可达、或下发包验签失败，
+	// 行为检测层也不该是空的。
+	if n := eng.SetBuiltinRules(); n > 0 {
+		log.Info("builtin_rules_loaded", "rules", n, "note", "服务端规则下发成功后会整包替换")
+	}
+
 	up := uplink.New(cfg.ServerURL, cfg.EnrollToken, cfg.DataDir, cfg.OfflineQueue)
 	if up.LoadCredentials() {
 		log.Info("agent_credentials_loaded", "agent_id", up.AgentID())
+	}
+	if cfg.RuleSignKey != "" {
+		up.SetRuleSignKey([]byte(cfg.RuleSignKey))
+		log.Info("rule_signature_verification_enabled")
+	} else {
+		log.Warn("rule_signature_verification_disabled",
+			"hint", "未配置 HG_AGENT_RULE_SIGN_KEY，将信任服务端下发的任何规则包")
 	}
 
 	// 自豁免：安全产品不应把自己（安装目录、数据目录）当成可疑对象，
@@ -95,9 +113,16 @@ func New(version string) (*Agent, error) {
 		log.Warn("self_allow_failed", "err", err)
 	}
 
+	// 持久化项监控：首次只建基线不告警，避免一上线就刷几百条
+	pm := persist.New(cfg.Path("persist-baseline.json"), enr)
+	if err := pm.Load(); err != nil {
+		log.Warn("persist_baseline_load_failed", "err", err)
+	}
+
 	a := &Agent{
 		cfg: cfg, log: log, store: store,
 		coll: coll, enr: enr, base: base, alw: alw, eng: eng, up: up,
+		pm: pm,
 		cpu:       &winapi.CPUSampler{},
 		startedAt: time.Now(),
 		scanReq:   make(chan bool, 1),
@@ -135,17 +160,49 @@ func (a *Agent) Run(ctx context.Context) error {
 		_ = api.Shutdown(shutCtx)
 	}()
 
+	// 文件落地监控必须先于首轮扫描启动，否则启动瞬间落地的样本会被当成"老文件"
+	if a.cfg.FileWatch {
+		dirs := winapi.WatchDirs()
+		if fw, err := winapi.StartFileWatcher(dirs); err != nil {
+			a.log.Warn("file_watch_disabled", "err", err)
+		} else {
+			a.fw = fw
+			a.log.Info("file_watch_started", "dirs", len(fw.WatchedDirs()))
+		}
+	}
+	defer func() {
+		if a.fw != nil {
+			a.fw.Close()
+		}
+	}()
+
 	// 注册与规则同步在后台进行，不阻塞采集
 	go a.enrollLoop(ctx)
 	go a.scanLoop(ctx)
 	go a.heartbeatLoop(ctx)
 	go a.flushLoop(ctx)
 	go a.persistLoop(ctx)
+	go a.persistenceWatchLoop(ctx)
 
 	<-ctx.Done()
-	a.log.Info("agent_stopping")
-	_ = a.base.Save()
+	a.log.Info("agent_stopping", "pending_alerts", a.up.Pending())
 
+	// 优雅停机：退出前把队列里剩余的告警尽量送出去。
+	// 不做这一步的话，进程一停就等于丢掉最后一批告警——恰恰是最新、
+	// 最可能对应"正在发生"的那批。
+	if n := a.up.Pending(); n > 0 && a.up.Enrolled() {
+		fctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		sent, err := a.up.Flush(fctx)
+		cancel()
+		if err != nil {
+			a.log.Warn("alert_flush_on_exit_failed", "sent", sent, "remaining", a.up.Pending(), "err", err)
+		} else {
+			a.log.Info("alerts_flushed_on_exit", "count", sent, "remaining", a.up.Pending())
+		}
+	}
+
+	_ = a.base.Save()
+	_ = a.pm.Save()
 	a.store.SetRuntime(func(ri *state.RuntimeInfo) { ri.Online = false })
 	return nil
 }
@@ -300,6 +357,7 @@ func (a *Agent) scan(deep bool) {
 			ParentAlive: parentAlive,
 			Connections: conns,
 			Modules:     modules,
+			LandedAt:    a.landedAt(pi.Path),
 		}
 
 		res := a.eng.Analyze(in)
@@ -339,36 +397,24 @@ func (a *Agent) scan(deep bool) {
 		ri.BaselineSize = a.base.Len()
 		ri.Warmup = a.eng.IsWarmup(time.Now())
 		ri.RuleCount = a.eng.RuleCount()
+
+		// 这些字段只在扫描回调里维护：New() 里注册的回调会被这里覆盖，
+		// 放两处只会让其中一处永远不生效（UptimeSec 之前恒为 0 就是这么来的）。
+		ri.UptimeSec = int64(time.Since(a.startedAt).Seconds())
+		ri.PersistCount = a.pm.Size()
+		if a.fw != nil {
+			ri.FileWatch = true
+			ri.WatchedDirs = len(a.fw.WatchedDirs())
+			ri.DropEvents = a.fw.Events()
+		} else {
+			ri.FileWatch = false
+		}
 	})
 }
 
-// emit 生成告警：写入本地存储 + 入上报队列。
+// emit 生成进程类告警。
 func (a *Agent) emit(pi collect.ProcessInfo, res *detect.Result) {
-	now := time.Now()
-	local := &state.Alert{
-		ID:       idgen.Hex(8),
-		Title:    res.Title,
-		Summary:  res.Summary,
-		Verdict:  string(res.Verdict),
-		Severity: string(res.Severity),
-		Score:    res.Score,
-		PID:      pi.PID,
-		PPID:     pi.PPID,
-		ProcessName: pi.Name,
-		ImagePath:   pi.Path,
-		CmdLine:     pi.CmdLine,
-		User:        pi.User,
-		Hash:        res.Evidence.Process.HashSHA256,
-		Signer:      res.Evidence.Process.Signer,
-		Signed:      res.Evidence.Process.Signed,
-		RuleIDs:     res.RuleIDs,
-		MITRE:       res.MITRE,
-		Evidence:    res.Evidence,
-		OccurredAt:  now,
-	}
-	a.store.AddAlert(local)
-
-	a.up.Enqueue(model.AlertEnvelope{
+	a.emitAlert(model.AlertEnvelope{
 		Fingerprint: res.Fingerprint,
 		Title:       res.Title,
 		Summary:     res.Summary,
@@ -387,12 +433,125 @@ func (a *Agent) emit(pi collect.ProcessInfo, res *detect.Result) {
 		RuleIDs:     res.RuleIDs,
 		MITRE:       res.MITRE,
 		Evidence:    res.Evidence,
-		OccurredAt:  now,
+		OccurredAt:  time.Now(),
 	})
+}
+
+// emitAlert 是所有告警的统一出口：本地存储 + 上报队列 + 结构化日志。
+//
+// 之所以收敛成一个入口：告警来源已经不止"进程检测"（还有持久化变更），
+// 如果每个来源各自写一套入队逻辑，很容易漏掉去重、截断或日志字段。
+func (a *Agent) emitAlert(env model.AlertEnvelope) {
+	local := &state.Alert{
+		ID:          idgen.Hex(8),
+		Title:       env.Title,
+		Summary:     env.Summary,
+		Verdict:     string(env.Verdict),
+		Severity:    string(env.Severity),
+		Score:       env.Score,
+		PID:         env.PID,
+		PPID:        env.PPID,
+		ProcessName: env.ProcessName,
+		ImagePath:   env.ImagePath,
+		CmdLine:     env.CmdLine,
+		User:        env.ProcUser,
+		Hash:        env.HashSHA256,
+		Signer:      env.Signer,
+		Signed:      env.Signed,
+		RuleIDs:     env.RuleIDs,
+		MITRE:       env.MITRE,
+		Evidence:    env.Evidence,
+		OccurredAt:  env.OccurredAt,
+	}
+	a.store.AddAlert(local)
+	a.up.Enqueue(env)
 
 	a.log.Warn("alert_raised",
-		"title", res.Title, "verdict", res.Verdict, "severity", res.Severity,
-		"score", res.Score, "process", pi.Name, "pid", pi.PID, "rules", res.RuleIDs)
+		"title", env.Title, "verdict", env.Verdict, "severity", env.Severity,
+		"score", env.Score, "process", env.ProcessName, "pid", env.PID,
+		"rules", env.RuleIDs, "source", env.ProcUser)
+}
+
+// landedAt 查询镜像文件的落地时间（用于"落地即执行"关联）。
+func (a *Agent) landedAt(path string) time.Time {
+	if a.fw == nil || path == "" {
+		return time.Time{}
+	}
+	if d, ok := a.fw.Recent(path, 15*time.Minute); ok {
+		return d.When
+	}
+	return time.Time{}
+}
+
+// ---------------------------------------------------------------- 持久化监控
+
+// persistenceWatchLoop 周期性对比自启动项基线。
+func (a *Agent) persistenceWatchLoop(ctx context.Context) {
+	// 首轮建立基线（首次运行不产生任何告警）
+	a.scanPersistence()
+
+	ticker := time.NewTicker(a.cfg.PersistCheck)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.scanPersistence()
+		}
+	}
+}
+
+// scanPersistence 执行一轮持久化项扫描并产出告警。
+func (a *Agent) scanPersistence() {
+	start := time.Now()
+	res, err := a.pm.Scan()
+	if err != nil {
+		a.log.Warn("persist_scan_failed", "err", err)
+		return
+	}
+	for _, e := range res.Errs {
+		a.log.Debug("persist_scan_partial", "err", e)
+	}
+	if res.Initial {
+		a.log.Info("persist_baseline_built", "items", res.Total,
+			"note", "首次运行只建立基线，不产生告警")
+		return
+	}
+
+	seen := 0
+	for _, f := range res.Added {
+		seen += a.emitPersistFinding(f)
+	}
+	for _, f := range res.Changed {
+		seen += a.emitPersistFinding(f)
+	}
+	if seen > 0 || len(res.Removed) > 0 {
+		a.log.Info("persist_scan_done",
+			"added", len(res.Added), "changed", len(res.Changed),
+			"removed", len(res.Removed), "alerts", seen,
+			"elapsed_ms", time.Since(start).Milliseconds())
+	}
+}
+
+// emitPersistFinding 把一条持久化变更转成告警；返回是否真的产生了告警。
+func (a *Agent) emitPersistFinding(f persist.Finding) int {
+	// 白名单优先：用户明确信任的对象不再打扰
+	if hit, _ := a.alw.Match(f.Hash, f.Path, f.Signer, "", f.Item.Name, f.Item.Command); hit {
+		a.log.Debug("persist_whitelisted", "key", f.Item.Key)
+		return 0
+	}
+
+	// 低于阈值的变更只记录，不告警——否则"某个软件升级改了自启动参数"
+	// 这类事件会把队列刷满
+	if f.Score < 38 {
+		a.log.Info("persist_changed_low_score",
+			"type", f.Item.Type, "name", f.Item.Name, "score", f.Score)
+		return 0
+	}
+
+	a.emitAlert(f.ToAlert(winapi.Hostname()))
+	return 1
 }
 
 // shouldInspectModules 判断是否值得花成本枚举模块。

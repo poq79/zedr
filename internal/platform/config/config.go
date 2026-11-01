@@ -160,17 +160,39 @@ func (l *Loader) SecurityWarning(cond bool, msg string) {
 
 // LoadDotEnv 从当前目录向上查找 .env 并注入进程环境（不覆盖已存在的真实环境变量）。
 // 找不到文件不算错误，方便容器/服务场景直接用系统环境变量。
+// LoadDotEnv 查找并加载 .env。
+//
+// 查找顺序刻意先看"可执行文件所在目录"，再看"当前工作目录"：
+// 作为 Windows 服务运行时，工作目录是 C://Windows//System32，
+// 只按 cwd 向上找永远是找不到配置的——而这会导致所有 HG_* 变量静默失效，
+// 服务用一个完全默认的配置跑起来，排查起来极其隐蔽。
 func LoadDotEnv() (string, error) {
+	if exe, err := os.Executable(); err == nil {
+		if p, err := findDotEnv(filepath.Dir(exe)); p != "" || err != nil {
+			if p != "" {
+				return p, injectDotEnv(p)
+			}
+			return "", err
+		}
+	}
+
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
+	p, err := findDotEnv(dir)
+	if p == "" || err != nil {
+		return p, err
+	}
+	return p, injectDotEnv(p)
+}
+
+// findDotEnv 从 start 开始向上最多 5 层查找 .env。
+func findDotEnv(start string) (string, error) {
+	dir := start
 	for i := 0; i < 5; i++ {
 		p := filepath.Join(dir, ".env")
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			if err := injectDotEnv(p); err != nil {
-				return p, err
-			}
 			return p, nil
 		}
 		parent := filepath.Dir(dir)

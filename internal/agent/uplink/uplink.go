@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"hostguard/internal/model"
+	"hostguard/internal/platform/redact"
+	"hostguard/internal/platform/rulehash"
 )
 
 // Credentials 是注册后持久化的凭证。
@@ -46,6 +48,17 @@ type Client struct {
 	dropped  int64
 
 	lastRuleETag string
+	// ruleSignKey 非空时强制校验规则包签名（HG_AGENT_RULE_SIGN_KEY）
+	ruleSignKey []byte
+	// lastRuleVersion 用于版本单调性检查，防止规则包被回滚到更宽松的历史版本
+	lastRuleVersion int
+}
+
+// SetRuleSignKey 设置规则包验签密钥。空值表示不校验（仅记录告警日志）。
+func (c *Client) SetRuleSignKey(key []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ruleSignKey = key
 }
 
 // New 创建客户端。
@@ -158,12 +171,40 @@ func (c *Client) Heartbeat(ctx context.Context, req model.HeartbeatRequest) (*mo
 func (c *Client) Enqueue(env model.AlertEnvelope) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// 统一出口脱敏：命令行可能带安装参数里的密码/令牌，
+	// 一旦入队就等于会被写进服务端数据库、管理台页面与导出文件。
+	sanitize(&env)
 	if len(c.queue) >= c.maxQueue {
 		// 丢弃最旧的一条，保留最近的告警
 		c.queue = c.queue[1:]
 		c.dropped++
 	}
 	c.queue = append(c.queue, env)
+}
+
+// sanitize 对告警内容做脱敏与截断。
+//
+// 放在入队这个唯一出口，而不是各个检测层：告警来源会越来越多
+// （进程检测、持久化变更、后续的文件/网络行为），分散处理必然漏。
+func sanitize(env *model.AlertEnvelope) {
+	env.CmdLine = redact.CmdLine(env.CmdLine)
+	env.ImagePath = redact.Path(env.ImagePath)
+	env.Summary = redact.Text(env.Summary)
+	env.Title = redact.Text(env.Title)
+
+	env.Evidence.Process.CmdLine = redact.CmdLine(env.Evidence.Process.CmdLine)
+	env.Evidence.Process.Path = redact.Path(env.Evidence.Process.Path)
+	for i := range env.Evidence.Ancestry {
+		env.Evidence.Ancestry[i].Path = redact.Path(env.Evidence.Ancestry[i].Path)
+		env.Evidence.Ancestry[i].Cmd = redact.CmdLine(env.Evidence.Ancestry[i].Cmd)
+	}
+	for i := range env.Evidence.Signals {
+		env.Evidence.Signals[i].Note = redact.CmdLine(env.Evidence.Signals[i].Note)
+	}
+	for i := range env.Evidence.Notes {
+		env.Evidence.Notes[i] = redact.Text(env.Evidence.Notes[i])
+	}
 }
 
 // Pending 返回队列长度。
@@ -256,8 +297,29 @@ func (c *Client) FetchRules(ctx context.Context) (*model.RuleBundle, bool, error
 	if err := json.Unmarshal(body, &wrap); err != nil {
 		return nil, false, fmt.Errorf("规则包解析失败: %w", err)
 	}
+
+	c.mu.Lock()
+	key := c.ruleSignKey
+	localVer := c.lastRuleVersion
+	c.mu.Unlock()
+
+	// 完整性校验：配置了密钥就强制验签，验不过直接拒绝应用。
+	// 这一层防的是"下发链路被篡改后悄悄关掉检测"。
+	if len(key) > 0 {
+		if err := rulehash.Verify(&wrap.Data, key); err != nil {
+			return nil, false, fmt.Errorf("规则包校验失败，已拒绝应用: %w", err)
+		}
+	}
+
+	// 版本单调：拒绝比本地更旧的规则包（重放旧版宽松规则是常见绕过手法）
+	if localVer > 0 && wrap.Data.Version < localVer {
+		return nil, false, fmt.Errorf("规则包版本回退（本地 %d，收到 %d），已拒绝",
+			localVer, wrap.Data.Version)
+	}
+
 	c.mu.Lock()
 	c.lastRuleETag = res.Header.Get("ETag")
+	c.lastRuleVersion = wrap.Data.Version
 	c.mu.Unlock()
 	return &wrap.Data, false, nil
 }

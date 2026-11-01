@@ -81,6 +81,12 @@ type RuntimeInfo struct {
 	WarmupUntil  time.Time `json:"warmup_until"`
 	Stats        detect.Stats `json:"stats"`
 	Whitelist    map[string]int `json:"whitelist"`
+
+	// 行为采集层状态：文件落地监控与持久化项监控。
+	FileWatch    bool  `json:"file_watch"`
+	WatchedDirs  int   `json:"watched_dirs"`
+	DropEvents   int64 `json:"drop_events"`
+	PersistCount int   `json:"persist_count"`
 }
 
 // Store 是线程安全的内存视图。

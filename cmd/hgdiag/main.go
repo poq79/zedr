@@ -27,6 +27,7 @@ func main() {
 	hold := flag.Duration("hold", 0, "输出结果后保持存活的时长，例如 15s")
 	spawn := flag.String("spawn", "", "拉起一个子进程（空格分隔的命令行），用于模拟父子链攻击场景")
 	compare := flag.Bool("compare", false, "对比两种进程枚举引擎的耗时与结果差异")
+	etwWatch := flag.Duration("etw", 0, "实测 ETW 实时进程事件采集（需 -tags etw 编译）")
 	flag.Parse()
 
 	fmt.Println("=== HostGuard 采集层自检 ===")
@@ -145,6 +146,9 @@ func main() {
 	if *compare {
 		compareCollectors()
 	}
+	if *etwWatch > 0 {
+		testETW(*etwWatch)
+	}
 
 	fmt.Println("\n自检完成。")
 
@@ -216,4 +220,11 @@ func compareCollectors() {
 	if ntAvg > 0 {
 		fmt.Printf("加速比                  : %.1fx\n", float64(toolAvg)/float64(ntAvg))
 	}
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
