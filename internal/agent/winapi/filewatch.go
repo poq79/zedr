@@ -40,6 +40,13 @@ const (
 	fileActionRenamedNew  = 5
 )
 
+// dropKey 是淘汰队列里的一项。
+// 带上时间戳是为了准确判断"这条记录是否已经被后来的写入覆盖"。
+type dropKey struct {
+	key  string
+	when time.Time
+}
+
 // Drop 是一条文件落地记录。
 type Drop struct {
 	Path string
@@ -60,9 +67,9 @@ var interestingExt = map[string]bool{
 // FileWatcher 监控若干目录的文件落地事件。
 type FileWatcher struct {
 	mu     sync.Mutex
-	recent map[string]Drop   // 规范化完整路径 -> 记录
-	byBase map[string]Drop   // 小写文件名 -> 最近一条
-	order  []string
+	recent map[string]Drop // 规范化完整路径 -> 记录
+	byBase map[string]Drop // 小写文件名 -> 最近一条
+	order  []dropKey
 	max    int
 
 	handles []syscall.Handle
@@ -255,19 +262,24 @@ func (w *FileWatcher) record(full string) {
 	norm := NormalizePath(full)
 	w.recent[norm] = d
 	w.byBase[strings.ToLower(filepath.Base(full))] = d
-	w.order = append(w.order, norm)
+	w.order = append(w.order, dropKey{key: norm, when: d.When})
 	w.events.Add(1)
 
-	// FIFO 淘汰，防止长时间运行内存无界增长
+	// FIFO 淘汰，防止长时间运行内存无界增长。
+	//
+	// 淘汰必须比对时间戳：同一路径可能被反复写入（编译器、下载器、解包工具），
+	// 早期条目被淘汰时如果直接按 key 删除，会把**最新**的那条记录一起删掉，
+	// 于是"刚落地的文件"反而查不到——这个 bug 只在同名文件重复落地时才暴露，
+	// 极难复现，但会让检测在最关键的时刻失效。
 	if len(w.order) > w.max {
 		drop := len(w.order) - w.max
 		for i := 0; i < drop; i++ {
-			k := w.order[i]
-			if cur, ok := w.recent[k]; ok && cur.Path == w.recent[k].Path {
-				delete(w.recent, k)
+			e := w.order[i]
+			if cur, ok := w.recent[e.key]; ok && cur.When.Equal(e.when) {
+				delete(w.recent, e.key)
 			}
 		}
-		w.order = append([]string(nil), w.order[drop:]...)
+		w.order = append([]dropKey(nil), w.order[drop:]...)
 	}
 }
 

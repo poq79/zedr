@@ -44,19 +44,84 @@ function fullTime(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+// ---- 本地接口访问令牌 ----
+// 桌面宿主会把令牌放在首屏 URL 里传进来；这里立刻存起来并从地址栏抹掉，
+// 避免留在浏览器历史记录、书签或截图里。
+const TOKEN_KEY = 'hg_local_token';
+
+function bootstrapToken() {
+  const params = new URLSearchParams(location.search);
+  const fromURL = params.get('token');
+  if (fromURL) {
+    localStorage.setItem(TOKEN_KEY, fromURL);
+    params.delete('token');
+    const q = params.toString();
+    history.replaceState(null, '', location.pathname + (q ? '?' + q : ''));
+    return fromURL;
+  }
+  return localStorage.getItem(TOKEN_KEY) || '';
+}
+
+let LOCAL_TOKEN = bootstrapToken();
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    method: opts.method || 'GET',
-    headers: { Accept: 'application/json', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  const headers = { Accept: 'application/json' };
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  if (LOCAL_TOKEN) headers['X-HG-Token'] = LOCAL_TOKEN;
+
+  let res;
+  try {
+    res = await fetch(path, {
+      method: opts.method || 'GET',
+      headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (e) {
+    throw new Error('无法连接本地探针服务，请确认探针进程正在运行');
+  }
+
   if (res.status === 204) return null;
   const data = await res.json().catch(() => null);
+
+  if (res.status === 401) {
+    promptForToken();
+    throw new Error('需要访问令牌');
+  }
   if (!res.ok) {
-    const msg = (data && data.error && data.error.message) || `请求失败 (${res.status})`;
+    // 错误体可能是 { error: { message } } 或 { error: "字符串" }
+    const e = data && data.error;
+    const msg = (e && e.message) || (typeof e === 'string' ? e : '') || `请求失败 (${res.status})`;
     throw new Error(msg);
   }
   return data && Object.prototype.hasOwnProperty.call(data, 'data') ? data.data : data;
+}
+
+// promptForToken 在缺少令牌时提供一次性输入入口。
+// 浏览器直接访问时需要；桌面宿主会自动带上，不会走到这里。
+function promptForToken() {
+  if (document.getElementById('tokenGate')) return;
+  const box = document.createElement('div');
+  box.id = 'tokenGate';
+  box.style.cssText = 'position:fixed;inset:0;background:rgba(8,12,20,.92);display:flex;align-items:center;justify-content:center;z-index:9999';
+  box.innerHTML = `
+    <div style="max-width:460px;padding:28px;border-radius:14px;background:#111a26;border:1px solid #22303f;color:#dbe6f2;font-size:14px;line-height:1.7">
+      <div style="font-size:16px;font-weight:600;margin-bottom:10px">需要访问令牌</div>
+      <div style="color:#8ba0b6;margin-bottom:14px">
+        本地接口已启用访问控制，防止网页/其它程序调用。令牌由探针自动生成，位于数据目录的
+        <code style="color:#5eead4">local.token</code> 文件。
+      </div>
+      <input id="tokenInput" placeholder="粘贴令牌" style="width:100%;padding:9px 11px;border-radius:8px;border:1px solid #22303f;background:#0b1220;color:#dbe6f2;margin-bottom:12px;box-sizing:border-box" />
+      <button id="tokenSave" style="padding:9px 18px;border-radius:8px;border:0;background:#2563eb;color:#fff;cursor:pointer">保存并重新加载</button>
+    </div>`;
+  document.body.appendChild(box);
+  document.getElementById('tokenSave').addEventListener('click', () => {
+    const v = document.getElementById('tokenInput').value.trim();
+    if (!v) return;
+    localStorage.setItem(TOKEN_KEY, v);
+    LOCAL_TOKEN = v;
+    location.reload();
+  });
+  document.getElementById('tokenInput').focus();
 }
 
 /* ------------------------------------------------------------ 渲染 */
@@ -92,6 +157,20 @@ function renderCards(s) {
       label: '资源占用',
       value: `${(s.cpu_percent || 0).toFixed(1)}%`,
       sub: `${(s.mem_mb || 0).toFixed(0)} MB · 平均检测 ${stat.avg_latency_ms || 0} ms`,
+    },
+    {
+      cls: s.file_watch ? 'ok' : 'warn',
+      label: '落地监控',
+      value: s.file_watch ? `${s.watched_dirs} 个目录` : '未启用',
+      sub: s.file_watch
+        ? `已捕获 ${s.drop_events || 0} 次文件落地`
+        : '落地即执行关联不可用',
+    },
+    {
+      cls: '',
+      label: '自启动基线',
+      value: String(s.persist_count || 0),
+      sub: '对比新增/改写，变更才告警',
     },
   ];
 

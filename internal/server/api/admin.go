@@ -58,8 +58,8 @@ func (h *adminHandler) listAlerts(w http.ResponseWriter, r *http.Request) {
 		AgentID: q.Get("agent_id"),
 		Query:   q.Get("q"),
 		Sort:    q.Get("sort"),
-		Page:    atoiDefault(q.Get("page"), 1),
-		PageSize: atoiDefault(q.Get("page_size"), 20),
+		Page:     clampInt(atoiDefault(q.Get("page"), 1), 1, 10000),
+		PageSize: clampInt(atoiDefault(q.Get("page_size"), 20), 1, 200),
 	}
 	for _, s := range splitParam(q.Get("status")) {
 		st := domain.AlertStatus(s)
@@ -381,6 +381,20 @@ func splitParam(s string) []string {
 		}
 	}
 	return out
+}
+
+// clampInt 把参数钳制在合理区间。
+//
+// 分页参数来自 URL，必须假设它是恶意的：`page_size=1000000` 会让服务端
+// 一次性把整张告警表读进内存并序列化，既是内存风险也是响应时间风险。
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func atoiDefault(s string, def int) int {

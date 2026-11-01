@@ -37,6 +37,8 @@ type Deps struct {
 	Backend Backend
 	Log     *slog.Logger
 	Addr    string
+	// Token 是本地接口的访问令牌；为空表示不做令牌校验（仅保留 Origin 防护）。
+	Token string
 }
 
 // Server 是本地 API 服务。
@@ -92,29 +94,37 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
+	// api 给需要保护的接口统一套上访问控制。
+	// 集中在一个地方注册，避免以后新增接口时忘记加防护——
+	// 这类"漏掉一个就全盘失效"的保护，靠人记是记不住的。
+	api := func(pattern string, h http.HandlerFunc) {
+		mux.Handle(pattern, s.guard(h))
+	}
+
+	// /health 放行：桌面端与运维探活需要在没有令牌时也能判断进程是否活着
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteRaw(w, r, http.StatusOK, map[string]any{"status": "ok"})
 	})
 
-	mux.HandleFunc("GET /api/local/status", func(w http.ResponseWriter, r *http.Request) {
+	api("GET /api/local/status", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, r, http.StatusOK, s.deps.Backend.Runtime())
 	})
 
-	mux.HandleFunc("GET /api/local/processes", func(w http.ResponseWriter, r *http.Request) {
+	api("GET /api/local/processes", func(w http.ResponseWriter, r *http.Request) {
 		limit := intParam(r, "limit", 300)
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
 			"items": s.deps.Backend.Procs(limit),
 		})
 	})
 
-	mux.HandleFunc("GET /api/local/alerts", func(w http.ResponseWriter, r *http.Request) {
+	api("GET /api/local/alerts", func(w http.ResponseWriter, r *http.Request) {
 		limit := intParam(r, "limit", 200)
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
 			"items": s.deps.Backend.Alerts(limit),
 		})
 	})
 
-	mux.HandleFunc("GET /api/local/alerts/{id}", func(w http.ResponseWriter, r *http.Request) {
+	api("GET /api/local/alerts/{id}", func(w http.ResponseWriter, r *http.Request) {
 		a := s.deps.Backend.AlertByID(r.PathValue("id"))
 		if a == nil {
 			httpx.WriteError(w, r, apperr.NotFound("告警"))
@@ -123,14 +133,14 @@ func (s *Server) routes() http.Handler {
 		httpx.WriteJSON(w, r, http.StatusOK, a)
 	})
 
-	mux.HandleFunc("GET /api/local/allowlist", func(w http.ResponseWriter, r *http.Request) {
+	api("GET /api/local/allowlist", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
 			"items": s.deps.Backend.Allowlist(),
 			"size":  s.deps.Backend.WhitelistSize(),
 		})
 	})
 
-	mux.HandleFunc("POST /api/local/allowlist", func(w http.ResponseWriter, r *http.Request) {
+	api("POST /api/local/allowlist", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Type  string `json:"type"`
 			Value string `json:"value"`
@@ -156,7 +166,7 @@ func (s *Server) routes() http.Handler {
 		httpx.WriteNoContent(w)
 	})
 
-	mux.HandleFunc("DELETE /api/local/allowlist", func(w http.ResponseWriter, r *http.Request) {
+	api("DELETE /api/local/allowlist", func(w http.ResponseWriter, r *http.Request) {
 		typ := r.URL.Query().Get("type")
 		value := r.URL.Query().Get("value")
 		if err := s.deps.Backend.RemoveAllow(typ, value); err != nil {
@@ -166,7 +176,7 @@ func (s *Server) routes() http.Handler {
 		httpx.WriteNoContent(w)
 	})
 
-	mux.HandleFunc("POST /api/local/rescan", func(w http.ResponseWriter, r *http.Request) {
+	api("POST /api/local/rescan", func(w http.ResponseWriter, r *http.Request) {
 		s.deps.Backend.Rescan()
 		httpx.WriteNoContent(w)
 	})

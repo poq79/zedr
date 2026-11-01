@@ -244,6 +244,18 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `,
 	},
+	{
+		name: "002_indexes",
+		sql: `
+-- 告警列表的主查询是 "status IN (...) ORDER BY created_at DESC"，
+-- 原有的 (status, severity) 复合索引对排序没有帮助，会退化成临时排序。
+CREATE INDEX IF NOT EXISTS idx_alerts_status_created ON alerts(status, created_at DESC);
+-- 主机列表按最后心跳排序/过滤
+CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen_at DESC);
+-- 按主机+状态统计未处置告警
+CREATE INDEX IF NOT EXISTS idx_alerts_agent_status ON alerts(agent_id, status);
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

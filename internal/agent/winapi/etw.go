@@ -176,8 +176,21 @@ type ETWProcessWatcher struct {
 	traceHandle uint64 // StartTrace 得到的控制句柄
 	consumeHandle uint64 // OpenTrace 得到的消费句柄
 
+	// lf 与 namePtr 必须比 ProcessTrace 活得久：
+	// OpenTrace 会保存结构体指针，ProcessTrace 期间仍会访问它们。
+	// 放在局部变量里会被 GC 回收，导致回调读到野内存。
+	lf      *eventTraceLogfileW
+	namePtr *uint16
+
 	closeOnce sync.Once
 	closed    atomic.Bool
+
+	// 诊断计数：用于区分"事件根本没到"和"到了但解析丢了"
+	diagCalls    atomic.Int64 // 回调被调用次数
+	diagProvider atomic.Int64 // provider 匹配次数
+	diagEventID  atomic.Int64 // EventID==1 次数
+	diagNoData   atomic.Int64 // UserData 为空次数
+	diagParsed   atomic.Int64 // 解析成功次数
 	lostCount uint64
 	errOnce   sync.Once
 	lastErr   error
@@ -201,7 +214,18 @@ func NewETWProcessWatcher(sessionName string) (*ETWProcessWatcher, error) {
 	w.stopLeftover(sessionName)
 
 	if err := w.startSession(sessionName); err != nil {
-		return nil, err
+		// 上一次进程异常退出会留下同名会话，此时 StartTrace 返回 183。
+		// 不处理的话，探针重启后将永久失去 ETW 能力——而这种"能力静默消失"
+		// 比直接报错更危险，所以这里强制清理后重试一次。
+		if strings.Contains(err.Error(), "183") {
+			w.stopLeftover(sessionName)
+			time.Sleep(150 * time.Millisecond)
+			if err2 := w.startSession(sessionName); err2 != nil {
+				return nil, err2
+			}
+		} else {
+			return nil, err
+		}
 	}
 	if err := w.enableProvider(); err != nil {
 		w.stopSession()
@@ -225,6 +249,13 @@ func (w *ETWProcessWatcher) Name() string { return "etw-kernel-process" }
 
 // Events 返回事件通道。通道在 Close 后关闭。
 func (w *ETWProcessWatcher) Events() <-chan ProcEvent { return w.ch }
+
+// Diag 返回诊断计数，格式为 "calls/provider/eventid/nodata/parsed"。
+func (w *ETWProcessWatcher) Diag() string {
+	return fmt.Sprintf("%d/%d/%d/%d/%d",
+		w.diagCalls.Load(), w.diagProvider.Load(), w.diagEventID.Load(),
+		w.diagNoData.Load(), w.diagParsed.Load())
+}
 
 // Err 返回记录到的首个错误（用于 UI 展示降级原因）。
 func (w *ETWProcessWatcher) Err() error { return w.lastErr }
@@ -308,13 +339,25 @@ func (w *ETWProcessWatcher) openConsumerLocked(name string) error {
 		return err
 	}
 	lf := &eventTraceLogfileW{
-		LoggerName:       namePtr,
+		LoggerName: namePtr,
+		// LogFileName 必须非 NULL —— 这是本实现最反直觉的一处。
+		//
+		// 按文档，实时消费只需设 LoggerName；但实测（Windows Server 2022）
+		// 只设 LoggerName 时 OpenTrace 恒返回 ERROR_INVALID_NAME(123)，
+		// 它会退回"打开日志文件"的分支并抱怨名字不是合法路径。
+		// 把 LogFileName 指向同一个会话名后即成功（realtime 模式下并不会真的写文件）。
+		// 对照实验：两者都留空时正确返回 ERROR_BAD_PATHNAME(161)，
+		// 说明结构体布局本身没问题，就是这一项被当成了必填。
+		LogFileName:      namePtr,
 		ProcessTraceMode: processTraceModeRealTime | processTraceModeEventRecord,
 		EventRecordCallback: syscall.NewCallback(func(ptr uintptr) uintptr {
 			w.onEvent(ptr)
 			return 0
 		}),
 	}
+	// 长期持有，直到 Close
+	w.lf = lf
+	w.namePtr = namePtr
 	h, _, e := procOpenTraceW.Call(uintptr(unsafe.Pointer(lf)))
 	if h == ^uintptr(0) || h == 0 {
 		return fmt.Errorf("OpenTraceW 失败(%v)", e)
@@ -323,6 +366,11 @@ func (w *ETWProcessWatcher) openConsumerLocked(name string) error {
 	return nil
 }
 
+// stopSession 停止跟踪会话。
+//
+// 刻意用会话名（handle=0）而不是保存的句柄：Close 与 ProcessTrace 是并发的，
+// 句柄此时可能已失效，用名字更可靠——否则会留下僵尸会话，
+// 导致下次启动 StartTrace 返回 ERROR_ALREADY_EXISTS。
 func (w *ETWProcessWatcher) stopSession() {
 	namePtr, err := syscall.UTF16PtrFromString(w.name)
 	if err != nil {
@@ -332,8 +380,13 @@ func (w *ETWProcessWatcher) stopSession() {
 	props := (*eventTraceProperties)(unsafe.Pointer(&buf[0]))
 	props.Wnode.BufferSize = uint32(len(buf))
 	props.LoggerNameOffset = uint32(unsafe.Sizeof(eventTraceProperties{}))
-	_, _, _ = procControlTraceW.Call(uintptr(w.traceHandle), uintptr(unsafe.Pointer(namePtr)),
+	_, _, _ = procControlTraceW.Call(0, uintptr(unsafe.Pointer(namePtr)),
 		uintptr(unsafe.Pointer(props)), eventTraceControlStop)
+	// 等待消费协程真正退出，避免会话仍被引用
+	select {
+	case <-w.done:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // consume 阻塞消费事件，直到会话被关闭。
@@ -342,6 +395,7 @@ func (w *ETWProcessWatcher) consume(name string, ready chan<- error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(w.ch)
+	defer close(w.done)
 
 	if err := w.openConsumerLocked(name); err != nil {
 		ready <- err
@@ -364,12 +418,19 @@ func (w *ETWProcessWatcher) onEvent(ptr uintptr) {
 		return
 	}
 	rec := (*eventRecord)(unsafe.Pointer(ptr))
+	w.diagCalls.Add(1)
 
 	// 只关心 Kernel-Process 的 ProcessStart（EventID=1）
 	if rec.EventHeader.ProviderID != kernelProcessGUID {
 		return
 	}
-	if rec.EventHeader.EventID != 1 || rec.UserDataLength == 0 || rec.UserData == nil {
+	w.diagProvider.Add(1)
+	if rec.EventHeader.EventID != 1 {
+		return
+	}
+	w.diagEventID.Add(1)
+	if rec.UserDataLength == 0 || rec.UserData == nil {
+		w.diagNoData.Add(1)
 		return
 	}
 
@@ -378,6 +439,7 @@ func (w *ETWProcessWatcher) onEvent(ptr uintptr) {
 	if !ok || ev.PID == 0 {
 		return
 	}
+	w.diagParsed.Add(1)
 	if rec.EventHeader.TimeStamp > 0 {
 		ev.Time = time.Unix(0, rec.EventHeader.TimeStamp)
 	} else {

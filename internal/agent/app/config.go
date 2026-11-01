@@ -39,6 +39,8 @@ type Config struct {
 	PersistCheck time.Duration
 	// FileWatch 控制是否启用文件落地监控（落地即执行关联检测的依据）。
 	FileWatch bool
+	// LocalToken 是本地接口（桌面 UI 对接）的访问令牌，启动时自动生成。
+	LocalToken string
 	// RuleSignKey 非空时强制校验下发规则包的 HMAC 签名。
 	// 需与服务端 HG_SERVER_RULE_SIGN_KEY 一致；留空则不校验（仅记录告警）。
 	RuleSignKey string

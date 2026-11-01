@@ -28,6 +28,7 @@ func main() {
 	spawn := flag.String("spawn", "", "拉起一个子进程（空格分隔的命令行），用于模拟父子链攻击场景")
 	compare := flag.Bool("compare", false, "对比两种进程枚举引擎的耗时与结果差异")
 	etwWatch := flag.Duration("etw", 0, "实测 ETW 实时进程事件采集（需 -tags etw 编译）")
+	persistCheck := flag.Bool("persist", false, "枚举持久化项（自启动）并输出分类统计")
 	flag.Parse()
 
 	fmt.Println("=== HostGuard 采集层自检 ===")
@@ -143,6 +144,9 @@ func main() {
 		}
 	}
 
+	if *persistCheck {
+		checkPersistence()
+	}
 	if *compare {
 		compareCollectors()
 	}
@@ -227,4 +231,47 @@ func truncateStr(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// checkPersistence 枚举本机持久化项并输出分类统计。
+//
+// 用途：在目标机器上确认"能枚举到哪些位置"。不同 Windows 版本、
+// 不同权限下某些位置可能读不到（例如无管理员权限看不到部分服务），
+// 这个命令能把差异直接摆出来，而不是等到线上发现基线项数明显偏少。
+func checkPersistence() {
+	fmt.Println("\n--- 持久化项（自启动）枚举 ---")
+	start := time.Now()
+	items, errs := winapi.EnumeratePersistence()
+	elapsed := time.Since(start)
+
+	byType := make(map[string]int, 8)
+	for _, it := range items {
+		byType[it.Type]++
+	}
+
+	fmt.Printf("共 %d 项，耗时 %v\n", len(items), elapsed)
+	keys := make([]string, 0, len(byType))
+	for k := range byType {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("  %-22s %4d 项  (%s)\n", k, byType[k], winapi.PersistLocationLabel(k))
+	}
+	if len(errs) > 0 {
+		fmt.Println("  部分位置枚举失败：")
+		for _, e := range errs {
+			fmt.Printf("    - %s\n", e)
+		}
+	}
+
+	// 采样几条，确认命令行解析正确
+	fmt.Println("  样例（前 3 条）：")
+	for i, it := range items {
+		if i >= 3 {
+			break
+		}
+		p := winapi.PersistCommandPath(it.Command)
+		fmt.Printf("    %-30s -> %s\n", truncateStr(it.Name, 30), truncateStr(p, 70))
+	}
 }

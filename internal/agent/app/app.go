@@ -69,6 +69,8 @@ func New(version string) (*Agent, error) {
 	// 采集引擎可插拔：默认 auto（NtQuery 优先、失败回退 Toolhelp32）
 	// 之所以保留两套实现，是因为不同 Windows 版本 / 安全软件干预下
 	// 某一种枚举方式可能失效，需要能不改代码就切回去。
+	cfg.LocalToken = loadOrCreateLocalToken(cfg.Path("local.token"), log)
+
 	coll, err := collect.New(cfg.Collector, cfg.FullRescan)
 	if err != nil {
 		return nil, fmt.Errorf("初始化采集引擎失败: %w", err)
@@ -149,6 +151,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		Backend: a,
 		Log:     a.log,
 		Addr:    a.cfg.LocalAddr,
+		Token:   a.cfg.LocalToken,
 	})
 	a.localAPI = api
 	if err := api.Start(); err != nil {
@@ -205,6 +208,27 @@ func (a *Agent) Run(ctx context.Context) error {
 	_ = a.pm.Save()
 	a.store.SetRuntime(func(ri *state.RuntimeInfo) { ri.Online = false })
 	return nil
+}
+
+// loadOrCreateLocalToken 读取或生成本地接口访问令牌。
+//
+// 令牌写进数据目录、权限 0600：同机其它用户的进程读不到。
+// 同用户的进程仍可读——这在用户态无法彻底解决（那是操作系统的信任边界），
+// 但配合 Origin 校验已经切断了"浏览器里的恶意网页调本地接口"这条最现实的路径。
+func loadOrCreateLocalToken(path string, log *slog.Logger) string {
+	if raw, err := os.ReadFile(path); err == nil {
+		if t := strings.TrimSpace(string(raw)); t != "" {
+			return t
+		}
+	}
+	t := idgen.Hex(24)
+	if err := os.WriteFile(path, []byte(t), 0o600); err != nil {
+		log.Warn("local_token_write_failed", "err", err,
+			"hint", "本地接口将只保留 Origin 防护，不带令牌校验")
+		return ""
+	}
+	log.Info("local_token_created", "path", path)
+	return t
 }
 
 // ---------------------------------------------------------------- 注册
@@ -333,6 +357,13 @@ func (a *Agent) scan(deep bool) {
 		alive[pid] = struct{}{}
 	}
 
+	// 模块枚举是整轮扫描里最贵的操作（每个进程一次快照）。
+	// 给每轮一个预算：正常情况远用不满，但遇到"大量进程同时从可写目录启动"
+	// （安装器、解包、恶意批量释放）时不会把一轮扫描拖到分钟级。
+	// 超出预算的进程其模块信息留空，其余各层照常判定——
+	// 少一个证据维度，好过整轮卡死导致后续进程全部漏检。
+	moduleBudget := maxModuleInspectPerScan
+
 	for _, pi := range newProcs {
 		if pi.PID == uint32(os.Getpid()) {
 			continue // 不检测自己
@@ -343,8 +374,9 @@ func (a *Agent) scan(deep bool) {
 
 		// 模块枚举成本高：只对"有网络连接"或"位于可写目录"的进程做
 		var modules []model.ModuleInfo
-		if len(conns) > 0 || shouldInspectModules(pi) {
+		if moduleBudget > 0 && (len(conns) > 0 || shouldInspectModules(pi)) {
 			modules = a.coll.Modules(pi.PID)
+			moduleBudget--
 		}
 
 		in := detect.Input{
@@ -380,6 +412,14 @@ func (a *Agent) scan(deep bool) {
 	}
 
 	a.store.Reap(alive)
+
+	// 慢扫描告警：一轮扫描耗时明显超过间隔，说明采集或富化出了问题
+	// （大文件哈希、模块枚举、安全软件拦截系统调用等）。
+	// 不记录的话，表现就是"检测越来越迟钝"，却没有任何线索。
+	if elapsed := time.Since(start); elapsed > a.cfg.ScanInterval*3 {
+		a.log.Warn("scan_slow", "elapsed_ms", elapsed.Milliseconds(),
+			"interval_ms", a.cfg.ScanInterval.Milliseconds(), "new_procs", len(newProcs))
+	}
 
 	cpu := a.cpu.Sample()
 	var mem runtime.MemStats
@@ -553,6 +593,9 @@ func (a *Agent) emitPersistFinding(f persist.Finding) int {
 	a.emitAlert(f.ToAlert(winapi.Hostname()))
 	return 1
 }
+
+// maxModuleInspectPerScan 是单轮扫描允许枚举模块的进程数上限。
+const maxModuleInspectPerScan = 30
 
 // shouldInspectModules 判断是否值得花成本枚举模块。
 func shouldInspectModules(pi collect.ProcessInfo) bool {

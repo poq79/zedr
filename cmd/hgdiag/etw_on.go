@@ -56,7 +56,8 @@ func testETW(d time.Duration) {
 				matched++
 			}
 		case <-deadline:
-			fmt.Printf("\n共捕获 %d 条进程创建事件\n", seen)
+			fmt.Printf("\n诊断计数 calls/provider/eventid/nodata/parsed = %s\n", w.Diag())
+			fmt.Printf("共捕获 %d 条进程创建事件\n", seen)
 			fmt.Printf("其中「瞬间退出」的测试进程: %d / 3\n", matched)
 			return
 		}

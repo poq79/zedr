@@ -43,6 +43,15 @@ func (h *adminHandler) streamAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 并发上限：每个 SSE 连接都占一个 goroutine + 定时器 + 连接，
+	// 不设上限时，客户端反复建连（或恶意脚本刷连接）会把服务端资源吃干净。
+	// 达上限时明确返回 503，让客户端退避重连，而不是让服务端慢慢耗尽。
+	if !h.deps.acquireSSE() {
+		httpx.WriteError(w, r, apperr.Unavailable("实时流连接数已达上限，请稍后重试"))
+		return
+	}
+	defer h.deps.releaseSSE()
+
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
 	hdr.Set("Cache-Control", "no-cache, no-transform")

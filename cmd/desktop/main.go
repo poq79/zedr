@@ -15,9 +15,11 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	webview2 "github.com/jchv/go-webview2"
@@ -54,6 +56,17 @@ func main() {
 			addr = "127.0.0.1:8843"
 		}
 		target = "http://" + addr + "/"
+	}
+
+	// 附带本地接口访问令牌。本地 API 已启用访问控制，
+	// 不带令牌会拿到 401——宿主进程负责把令牌交给页面，
+	// 页面存进 localStorage 后即从地址栏抹掉。
+	if tok := readLocalToken(); tok != "" {
+		sep := "?"
+		if strings.Contains(target, "?") {
+			sep = "&"
+		}
+		target = target + sep + "token=" + url.QueryEscape(tok)
 	}
 
 	if !waitAgent(target, 3*time.Second) && *startAgent {
@@ -138,4 +151,22 @@ func openBrowser(url string) {
 	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "打开浏览器失败: %v\n请手动访问 %s\n", err, url)
 	}
+}
+
+// readLocalToken 从数据目录读取本地接口访问令牌。
+// 数据目录与探针保持一致：优先 HG_AGENT_DATA_DIR，否则 %LOCALAPPDATA%\HostGuard。
+func readLocalToken() string {
+	dir := os.Getenv("HG_AGENT_DATA_DIR")
+	if dir == "" {
+		if v := os.Getenv("LOCALAPPDATA"); v != "" {
+			dir = filepath.Join(v, "HostGuard")
+		} else {
+			dir = `C://ProgramData//HostGuard`
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "local.token"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }

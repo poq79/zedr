@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"hostguard/internal/platform/apperr"
@@ -38,10 +39,45 @@ type Deps struct {
 	Tickets      *ticketStore
 	// RuleSignKey 是规则包签名密钥（由主密钥派生，见 rulehash.DeriveKey）
 	RuleSignKey []byte
+
+	// sseActive 是当前活跃的实时流连接数。
+	// 用指针而非值：Deps 是按值传递的，而 atomic.Int64 内含 noCopy，
+	// 放进结构体再拷贝会触发 vet 的 copylocks 检查（也确实是隐患）。
+	sseActive *atomic.Int64
 }
 
 // Router 构建完整路由。
+// maxSSEConns 是实时流的最大并发连接数。
+// 管理台通常只有个位数标签页；给到 64 已足够宽裕，
+// 同时把最坏情况下的资源占用钉死。
+const maxSSEConns = 64
+
+// acquireSSE 尝试占用一个实时流名额。
+func (d *Deps) acquireSSE() bool {
+	if d.sseActive == nil {
+		return true
+	}
+	for {
+		cur := d.sseActive.Load()
+		if cur >= maxSSEConns {
+			return false
+		}
+		if d.sseActive.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// releaseSSE 释放名额。
+func (d *Deps) releaseSSE() {
+	if d.sseActive != nil {
+		d.sseActive.Add(-1)
+	}
+}
+
 func Router(d Deps) http.Handler {
+	d.sseActive = new(atomic.Int64)
+
 	mux := http.NewServeMux()
 	d.Tickets = newTicketStore(60 * time.Second)
 
