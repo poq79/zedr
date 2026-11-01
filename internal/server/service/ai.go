@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -187,16 +188,82 @@ func (s *AIService) buildInput(ctx context.Context, a *domain.Alert) (*ai.Triage
 	}
 
 	// ---- 主机上下文 ----
+	osVersion := ""
 	if ag, err := s.repos.Agents.ByID(ctx, a.AgentID); err == nil && ag != nil {
 		in.Host.OS = ag.OSVersion
+		osVersion = ag.OSVersion
 	}
 	if cnt, err := s.repos.Alerts.CountOpenByAgent(ctx); err == nil {
 		in.Host.RecentAlertCount = cnt[a.AgentID]
+	}
+	// 资产摘要拼进 Host.OS：HostContext 是 internal/ai 的共享输入契约
+	// （本层不得改共享包），OS 是其中唯一的自由文本行，提示词里恰好
+	// 独占一行"系统: ..."，一行放得下且模型读起来是自然连贯的。
+	// 摘要缺席时 Host.OS 保持终端心跳上报的 OS 版本，不受影响。
+	if sum := s.assetSummary(ctx, a.AgentID, osVersion); sum != "" {
+		in.Host.OS = sum
 	}
 	// BaselineSamples 暂不填充：探针心跳里虽有 Samples 字段，但未落库。
 	// 保持 0 是安全的——启发式只在"已知且样本不足"时才下调置信度。
 
 	return in, nil
+}
+
+// assetSummary 从资产清单拼一行资产摘要，形如
+// "Windows 11 专业版 / 监听 35 / 服务 247 / 任务 18"，让模型知道
+// "这台机器长什么样"——监听面大小与服务规模会改变可疑行为的解释方式
+// （一台 247 个服务的服务器上多一个服务不稀奇，在一台裸机上就是信号）。
+//
+// 静默失败是硬约定：清单缺失、需要的节没采上来（探针采集失败时该节
+// 整体缺席）、payload 为空/解析失败、解析出 0 条（真实 Windows 主机
+// 不可能枚举到 0 个服务/任务，出现 0 只说明采集侧有别的毛病——给模型
+// "服务 0" 只会诱导误判，比不给更糟）。以上任一情况都返回 "" 整体跳过，
+// 绝不能因为资产上下文缺失让研判降级。
+//
+// 边界说明：这里只读仓储、只把计数拼进摘要字符串，payload 原文不进
+// 提示词（清单内容是终端可控的，计数是标量、无从当注入载体），
+// 模型依旧接触不到 SQL。
+func (s *AIService) assetSummary(ctx context.Context, agentID, osVersion string) string {
+	secs, err := s.repos.Inventory.ListByAgent(ctx, agentID)
+	if err != nil || len(secs) == 0 {
+		return ""
+	}
+	var listeners, services, tasks string
+	for _, sec := range secs {
+		switch sec.Name {
+		case "listeners":
+			listeners = sec.Payload
+		case "services":
+			services = sec.Payload
+		case "tasks":
+			tasks = sec.Payload
+		}
+	}
+	if listeners == "" || services == "" || tasks == "" {
+		return ""
+	}
+
+	// 只取计数不展开明细：json.RawMessage 让 payload 字段怎么漂移都不影响解析
+	var lis struct {
+		TCP []json.RawMessage `json:"tcp"`
+		UDP []json.RawMessage `json:"udp"`
+	}
+	var svcList, taskList []json.RawMessage
+	if json.Unmarshal([]byte(listeners), &lis) != nil ||
+		json.Unmarshal([]byte(services), &svcList) != nil ||
+		json.Unmarshal([]byte(tasks), &taskList) != nil {
+		return ""
+	}
+	nSvc, nTask := len(svcList), len(taskList)
+	if nSvc == 0 || nTask == 0 {
+		return "" // 见函数头"解析出 0 条"的取舍
+	}
+
+	os := osVersion
+	if os == "" {
+		os = "-"
+	}
+	return fmt.Sprintf("%s / 监听 %d / 服务 %d / 任务 %d", os, len(lis.TCP)+len(lis.UDP), nSvc, nTask)
 }
 
 func atoiSafe(s string) (int, bool) {

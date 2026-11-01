@@ -10,6 +10,14 @@ import (
 
 type statsRepo struct{ s *Store }
 
+// Dashboard 返回管理台首页聚合。
+//
+// 口径分两类，改字段前先确认属于哪类：
+//   - 窗口内（created_at >= since，管理台默认传 24h）：告警量/未处置/MTTR、
+//     时间轴、主机排行、规则命中、MITRE 排行。这些查询必须带时间下界——
+//     告警表只增不减，无下界的聚合是全表扫，是服务端越跑越慢的主因之一。
+//   - 全量：主机总数/在线数（agents 是小表）；严重度分布 SeverityDist 是
+//     "库存"语义（全部历史告警的构成），刻意不随窗口收敛，见查询处注释。
 func (r *statsRepo) Dashboard(ctx context.Context, since time.Time, bucketMinutes int) (*domain.DashboardSummary, error) {
 	if bucketMinutes <= 0 {
 		bucketMinutes = 60
@@ -55,7 +63,9 @@ func (r *statsRepo) Dashboard(ctx context.Context, since time.Time, bucketMinute
 		return nil, fmt.Errorf("统计 MTTR 失败: %w", err)
 	}
 
-	// 严重度分布
+	// 严重度分布（全量口径，刻意不加时间下界）：这是"库存"语义——
+	// 管理台要回答的是"库里所有告警的严重度构成"，与排行类查询的
+	// 窗口语义不同；加下界反而会让分布随时间漂移，失去库存含义。
 	rows, err := r.s.db.QueryContext(ctx, `SELECT severity, COUNT(1) FROM alerts GROUP BY severity`)
 	if err != nil {
 		return nil, fmt.Errorf("统计严重度失败: %w", err)
@@ -99,11 +109,13 @@ func (r *statsRepo) Dashboard(ctx context.Context, since time.Time, bucketMinute
 	}
 	rowsl.Close()
 
-	// 主机排行
+	// 主机排行（窗口内）：排行关心的是"最近谁在报警"，全量口径没有运营价值；
+	// 不带时间下界就是全表扫，库越大越慢，故随 since 收敛。
 	rowsh, err := r.s.db.QueryContext(ctx,
 		`SELECT agent_id, hostname, COUNT(1) AS c,
 		        COALESCE(SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END), 0)
-		 FROM alerts GROUP BY agent_id ORDER BY c DESC LIMIT 8`)
+		 FROM alerts WHERE created_at >= ?
+		 GROUP BY agent_id ORDER BY c DESC LIMIT 8`, sinceMs)
 	if err != nil {
 		return nil, fmt.Errorf("统计主机排行失败: %w", err)
 	}
@@ -117,8 +129,11 @@ func (r *statsRepo) Dashboard(ctx context.Context, since time.Time, bucketMinute
 	}
 	rowsh.Close()
 
-	// 规则排行：rule_ids 是逗号分隔串，在应用层聚合
-	rowsr, err := r.s.db.QueryContext(ctx, `SELECT rule_ids FROM alerts WHERE rule_ids <> ''`)
+	// 规则排行（窗口内）：rule_ids 是逗号分隔串，在应用层聚合。
+	// 这条本来就逐行扫 rule_ids 列，加时间下界后扫描量随窗口收敛，
+	// 老库上曾是无界全扫（规模债）。
+	rowsr, err := r.s.db.QueryContext(ctx,
+		`SELECT rule_ids FROM alerts WHERE rule_ids <> '' AND created_at >= ?`, sinceMs)
 	if err != nil {
 		return nil, fmt.Errorf("统计规则命中失败: %w", err)
 	}
@@ -155,8 +170,10 @@ func (r *statsRepo) Dashboard(ctx context.Context, since time.Time, bucketMinute
 	}
 	out.TopRules = sortRuleStats(out.TopRules, 10)
 
-	// MITRE 排行
-	rowsm, err := r.s.db.QueryContext(ctx, `SELECT mitre FROM alerts WHERE mitre <> ''`)
+	// MITRE 排行（窗口内）：与 MitreAgg 同口径（created_at >= since），
+	// 老的无界扫描同样随库增长退化成全表扫。
+	rowsm, err := r.s.db.QueryContext(ctx,
+		`SELECT mitre FROM alerts WHERE mitre <> '' AND created_at >= ?`, sinceMs)
 	if err != nil {
 		return nil, fmt.Errorf("统计 MITRE 失败: %w", err)
 	}
