@@ -1,23 +1,33 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, CheckCircle2, History, Pencil, Plus, Save, XCircle, FlaskConical, KeyRound } from 'lucide-react';
+import { Bot, CheckCircle2, ChevronDown, History, KeyRound, Pencil, Plus, Save, XCircle, FlaskConical } from 'lucide-react';
 import { api } from '../lib/api';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useConfirm, useToast } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
 import { relTime } from '../lib/format';
 
-/* AI 平台：模型接入（任务槽位）/ 成本上限 / 提示词模板 / 技能包。
-   全部 admin-only；保存即时热生效（引擎热重载，无需重启服务）。 */
+/* AI 平台：统一模型服务接入（Provider）+ 任务槽位差异 + 成本上限
+   + 提示词模板 + 技能包。全部 admin-only；保存即时热生效（引擎热重载）。
 
-interface SlotView {
-  provider: string; base_url: string; model: string; effort: string;
-  temperature: number; max_tokens: number; timeout_sec: number; enabled: boolean;
+   人性化口径：同一个模型服务只配一次（URL / Key / 默认模型 / 参数），
+   任务槽位只声明差异（专用模型 / 专用思考强度 / 开关），留空跟随默认。
+   "调查走另一家服务商"这类少数场景走槽位高级覆盖（默认折叠）。 */
+
+interface ProviderView {
+  base_url: string; model: string; effort: string;
+  temperature: number; max_tokens: number; timeout_sec: number;
   has_key: boolean; key_hint?: string; source: string;
-  // 仅前端编辑态：key_draft 是正在输入的新密钥（空=保留旧值），
-  // clear_key 标记本次保存要删除已存密钥。不回传给 GET 结构。
-  key_draft?: string; clear_key?: boolean;
+}
+interface SlotView {
+  enabled: boolean;
+  model: string; effort: string;
+  effective_model: string; effective_effort: string;
+  override_base_url?: string; override_key_hint?: string;
+  override_temperature?: number; override_max_tokens?: number; override_timeout_sec?: number;
+  override_has_key?: boolean;
 }
 interface AIConfigView {
+  provider: ProviderView;
   slots: Record<string, SlotView>;
   hourly_tokens: number; cache_ttl_sec: number;
   engine: string; engine_model: string;
@@ -33,116 +43,203 @@ interface AISkill {
 interface ProbeResult { ok: boolean; latency_ms: number; models?: string[]; detail: string }
 
 const SLOT_META: Record<string, { label: string; desc: string }> = {
-  triage: { label: '研判', desc: '告警研判：快模型控成本，逐条结论带证据引用' },
-  hunt: { label: '狩猎', desc: '自然语言查告警：翻译为受控查询，值可变、结构不可变' },
-  investigate: { label: '调查', desc: '自动调查编排；未单独配置时自动使用研判槽位' },
+  triage: { label: '研判', desc: '告警研判：逐条结论带证据引用' },
+  hunt: { label: '狩猎', desc: '自然语言查告警，翻译为受控查询' },
+  investigate: { label: '调查', desc: '自动调查编排' },
 };
-
 const SLOT_KEYS = ['triage', 'hunt', 'investigate'];
-const EMPTY_SLOT: SlotView = {
-  provider: 'openai', base_url: '', model: '', effort: 'off',
-  temperature: 0.1, max_tokens: 1400, timeout_sec: 45,
-  enabled: false, has_key: false, source: 'db',
-};
 
-/* ---------------- 槽位卡片 ---------------- */
-function SlotCard({ task, slot, onChange, onTest, testing, probe }: {
-  task: string; slot: SlotView; onChange: (s: SlotView) => void;
-  onTest: () => void; testing: boolean; probe: ProbeResult | null;
+/* 槽位前端草稿：主面（enabled/model/effort）+ 高级覆盖。
+   key_draft 是正在输入的新密钥（空=保留旧值）；clear_key 标记删除已存密钥。 */
+interface SlotDraft {
+  enabled: boolean;
+  model: string; effort: string;
+  ov_base_url: string; ov_key_draft: string; ov_clear_key: boolean;
+  ov_temperature: number | ''; ov_max_tokens: number | ''; ov_timeout_sec: number | '';
+}
+
+function slotToDraft(sv: SlotView): SlotDraft {
+  return {
+    enabled: sv.enabled, model: sv.model, effort: sv.effort,
+    ov_base_url: sv.override_base_url || '', ov_key_draft: '', ov_clear_key: false,
+    ov_temperature: sv.override_temperature ?? '',
+    ov_max_tokens: sv.override_max_tokens ?? '',
+    ov_timeout_sec: sv.override_timeout_sec ?? '',
+  };
+}
+
+/* ---------------- 统一服务接入卡片 ---------------- */
+function ProviderCard({ p, onTest, testing, probe }: {
+  p: ProviderView; onTest: () => void; testing: boolean; probe: ProbeResult | null;
 }) {
-  const meta = SLOT_META[task];
-  const set = (patch: Partial<SlotView>) => onChange({ ...slot, ...patch });
-
   return (
     <Card className="p-4">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="flex items-center gap-2">
-            <b className="text-[13px] text-foreground">{meta.label}</b>
-            <Badge tone={slot.source === 'env' ? 'medium' : 'info'}>
-              {slot.source === 'env' ? '环境变量引导' : '后台配置'}
+            <b className="text-[13px] text-foreground">模型服务（统一接入）</b>
+            <Badge tone={p.source === 'db' ? 'info' : p.source === 'env' ? 'medium' : 'neutral'}>
+              {p.source === 'db' ? '后台配置' : p.source === 'env' ? '环境变量引导' : '未配置'}
             </Badge>
           </div>
-          <p className="mt-0.5 text-[11.5px] text-faint">{meta.desc}</p>
+          <p className="mt-0.5 text-[11.5px] text-faint">
+            兼容任何 OpenAI 协议服务（OpenAI / DeepSeek / 通义 / Kimi / vLLM / Ollama）。
+            配置一次，全部任务槽位共用；调用失败自动降级到确定性分析。
+          </p>
         </div>
-        <Switch checked={slot.enabled} onChange={(v) => set({ enabled: v })} label={slot.enabled ? '已启用' : '已停用'} />
+        <Button size="sm" onClick={onTest} disabled={testing || !p.base_url}>
+          <FlaskConical size={12} /> {testing ? '测试中…' : '测试连接'}
+        </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2.5">
+      <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
         <label className="col-span-2">
           <span className="mb-1 block text-[11px] text-faint">服务地址（OpenAI 兼容 /v1）</span>
-          <Input value={slot.base_url} onChange={(e) => set({ base_url: e.target.value })}
+          <Input data-provider="base_url" defaultValue={p.base_url}
             placeholder="https://api.deepseek.com" spellCheck={false} />
         </label>
-        <label className="col-span-2">
+        <label>
           <span className="mb-1 flex items-center gap-1 text-[11px] text-faint">
             <KeyRound size={11} /> API Key
-            {slot.has_key && <span className="text-ok">已配置 {slot.key_hint}</span>}
+            {p.has_key && <span className="text-ok">已配置 {p.key_hint}</span>}
           </span>
-          <Input type="password" value={slot.key_draft ?? ''} autoComplete="new-password"
-            onChange={(e) => set({ ...slot, key_draft: e.target.value })}
-            placeholder={slot.has_key ? '留空保留现有密钥' : 'sk-…'} spellCheck={false} />
+          <Input data-provider="api_key" type="password" autoComplete="new-password"
+            placeholder={p.has_key ? '留空保留现有密钥' : 'sk-…'} spellCheck={false} />
         </label>
         <label>
-          <span className="mb-1 block text-[11px] text-faint">模型名称</span>
-          <Input value={slot.model} onChange={(e) => set({ model: e.target.value })}
-            placeholder="deepseek-chat" spellCheck={false} list={`models-${task}`} />
-          <datalist id={`models-${task}`}>
+          <span className="mb-1 block text-[11px] text-faint">默认模型（槽位留空时跟随）</span>
+          <Input data-provider="model" defaultValue={p.model} placeholder="deepseek-chat"
+            spellCheck={false} list="models-provider" />
+          <datalist id="models-provider">
             {(probe?.models || []).slice(0, 50).map((m) => <option key={m} value={m} />)}
           </datalist>
         </label>
         <label>
-          <span className="mb-1 block text-[11px] text-faint">思考强度（仅推理模型）</span>
-          <Select value={slot.effort} onChange={(e) => set({ effort: e.target.value })}>
+          <span className="mb-1 block text-[11px] text-faint">默认思考强度（仅推理模型）</span>
+          <Select data-provider="effort" defaultValue={p.effort}>
             {['off', 'low', 'medium', 'high'].map((v) => <option key={v} value={v}>{v}</option>)}
           </Select>
         </label>
         <label>
           <span className="mb-1 block text-[11px] text-faint">温度（0-2）</span>
-          <Input type="number" step="0.05" min="0" max="2" value={slot.temperature}
-            onChange={(e) => set({ temperature: Number(e.target.value) || 0 })} />
+          <Input data-provider="temperature" type="number" step="0.05" min="0" max="2"
+            defaultValue={p.temperature} />
         </label>
         <label>
           <span className="mb-1 block text-[11px] text-faint">超时（秒）</span>
-          <Input type="number" min="3" max="300" value={slot.timeout_sec}
-            onChange={(e) => set({ timeout_sec: Number(e.target.value) || 45 })} />
+          <Input data-provider="timeout_sec" type="number" min="3" max="300" defaultValue={p.timeout_sec} />
+        </label>
+        <label>
+          <span className="mb-1 block text-[11px] text-faint">单次输出上限（tokens）</span>
+          <Input data-provider="max_tokens" type="number" min="100" max="32000" step="100"
+            defaultValue={p.max_tokens} />
         </label>
       </div>
 
-      <div className="mt-3 flex items-center gap-2.5">
-        <Button size="sm" onClick={onTest} disabled={testing || !slot.base_url}>
-          <FlaskConical size={12} /> {testing ? '测试中…' : '测试连接'}
-        </Button>
-        {slot.has_key && (
-          <Button size="sm" variant="ghost"
-            onClick={() => onChange({ ...slot, clear_key: true })}
-            title="删除已保存的密钥">清除密钥</Button>
-        )}
-        {probe && (
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[11.5px]">
-            {probe.ok
-              ? <CheckCircle2 size={13} className="shrink-0 text-ok" />
-              : <XCircle size={13} className="shrink-0 text-destructive" />}
-            <span className="truncate text-muted-foreground" title={probe.detail}>
-              {probe.detail} · {probe.latency_ms}ms
-            </span>
+      {probe && (
+        <div className="mt-3 flex items-center gap-1.5 text-[11.5px]">
+          {probe.ok
+            ? <CheckCircle2 size={13} className="shrink-0 text-ok" />
+            : <XCircle size={13} className="shrink-0 text-destructive" />}
+          <span className={probe.ok ? 'text-muted-foreground' : 'text-destructive'}>
+            {probe.detail} · {probe.latency_ms}ms
           </span>
-        )}
-      </div>
+        </div>
+      )}
     </Card>
   );
 }
 
-/* ---------------- 开关 ---------------- */
-function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+/* ---------------- 任务槽位行 ---------------- */
+function SlotRow({ task, draft, sv, onChange }: {
+  task: string; draft: SlotDraft; sv: SlotView; onChange: (d: SlotDraft) => void;
+}) {
+  const meta = SLOT_META[task];
+  const set = (patch: Partial<SlotDraft>) => onChange({ ...draft, ...patch });
+  const hasOverride = !!(draft.ov_base_url || draft.ov_key_draft || draft.ov_clear_key ||
+    draft.ov_temperature !== '' || draft.ov_max_tokens !== '' || draft.ov_timeout_sec !== '' ||
+    sv.override_has_key);
+
   return (
-    <button type="button" role="switch" aria-checked={checked} aria-label={label}
+    <div className="border-b border-border-soft px-3.5 py-3 last:border-b-0">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Switch checked={draft.enabled} onChange={(v) => set({ enabled: v })}
+          label={meta.label} title={meta.desc} />
+        <label className="min-w-[220px] flex-1">
+          <Input value={draft.model} onChange={(e) => set({ model: e.target.value })}
+            placeholder={`留空跟随默认（${sv.effective_model || '未配置'}）`} spellCheck={false}
+            list="models-provider" className="h-8" />
+        </label>
+        <label>
+          <Select value={draft.effort} onChange={(e) => set({ effort: e.target.value })} className="h-8">
+            <option value="">强度跟随默认（{sv.effective_effort}）</option>
+            {['off', 'low', 'medium', 'high'].map((v) => <option key={v} value={v}>{v}</option>)}
+          </Select>
+        </label>
+        <span className="min-w-[180px] flex-1 truncate text-[11px] text-faint" title={meta.desc}>
+          生效：{sv.effective_model ? `${sv.effective_model} · 强度 ${sv.effective_effort}` : '未配置，走确定性分析'}
+        </span>
+      </div>
+
+      {/* 高级覆盖：默认折叠。覆盖项非空 = 使用槽位专属值。 */}
+      <details className="mt-1.5" open={hasOverride}>
+        <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-[11px] text-faint hover:text-muted-foreground">
+          <ChevronDown size={11} /> 高级覆盖{hasOverride && '（已设置）'}
+        </summary>
+        <div className="mt-2 grid grid-cols-2 gap-2 xl:grid-cols-4">
+          <label>
+            <span className="mb-1 block text-[10.5px] text-faint">覆盖服务地址（空=统一接入）</span>
+            <Input value={draft.ov_base_url} onChange={(e) => set({ ov_base_url: e.target.value })}
+              placeholder={p_placeholder(sv)} spellCheck={false} className="h-8 font-mono text-[11.5px]" />
+          </label>
+          <label>
+            <span className="mb-1 flex items-center gap-1 text-[10.5px] text-faint">
+              覆盖 API Key {sv.override_has_key && <span className="text-ok">已配置 {sv.override_key_hint}</span>}
+            </span>
+            <Input type="password" autoComplete="new-password" value={draft.ov_key_draft}
+              onChange={(e) => set({ ov_key_draft: e.target.value, ov_clear_key: false })}
+              placeholder={sv.override_has_key ? '留空保留' : '空=用统一 Key'} spellCheck={false} className="h-8" />
+          </label>
+          <label>
+            <span className="mb-1 block text-[10.5px] text-faint">覆盖温度（空=默认）</span>
+            <Input type="number" step="0.05" min="0" max="2" value={draft.ov_temperature}
+              onChange={(e) => set({ ov_temperature: e.target.value === '' ? '' : Number(e.target.value) })}
+              className="h-8" />
+          </label>
+          <label>
+            <span className="mb-1 block text-[10.5px] text-faint">覆盖超时（空=默认）</span>
+            <Input type="number" min="3" max="300" value={draft.ov_timeout_sec}
+              onChange={(e) => set({ ov_timeout_sec: e.target.value === '' ? '' : Number(e.target.value) })}
+              className="h-8" />
+          </label>
+        </div>
+        {sv.override_has_key && !draft.ov_key_draft && (
+          <button type="button" className="mt-1.5 cursor-pointer text-[11px] text-destructive hover:underline"
+            onClick={() => set({ ov_clear_key: true })}>
+            清除此槽位的覆盖密钥（改用统一 Key）
+          </button>
+        )}
+      </details>
+    </div>
+  );
+}
+
+function p_placeholder(sv: SlotView) {
+  return sv.override_base_url || 'https://other-provider.example.com';
+}
+
+/* ---------------- 开关 ---------------- */
+function Switch({ checked, onChange, label, title }: {
+  checked: boolean; onChange: (v: boolean) => void; label: string; title?: string;
+}) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} aria-label={label} title={title}
       onClick={() => onChange(!checked)}
-      className="flex cursor-pointer items-center gap-2 text-[11.5px] text-muted-foreground">
+      className="flex shrink-0 cursor-pointer items-center gap-2 text-[12px] text-foreground">
       <span className={`relative inline-block h-4.5 w-8 rounded-full border transition-colors duration-150 ${checked ? 'border-ok/40 bg-ok-soft' : 'border-border bg-secondary'}`}>
         <span className={`absolute top-[1px] h-3.5 w-3.5 rounded-full transition-all duration-150 ${checked ? 'left-[16px] bg-ok' : 'left-[1px] bg-muted-foreground'}`} />
       </span>
-      {label}
+      <b className="font-semibold">{label}</b>
     </button>
   );
 }
@@ -155,11 +252,13 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
   const isAdmin = user.role === 'admin';
 
   const [cfg, setCfg] = useState<AIConfigView | null>(null);
-  const [slots, setSlots] = useState<Record<string, SlotView>>({});
-  const [budget, setBudget] = useState({ hourly_tokens: 200000, cache_ttl_sec: 300 });
-  const [probes, setProbes] = useState<Record<string, ProbeResult>>({});
-  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [providerKeyDraft, setProviderKeyDraft] = useState('');
+  const [providerClearKey, setProviderClearKey] = useState(false);
+  const [slotDrafts, setSlotDrafts] = useState<Record<string, SlotDraft>>({});
+  const [probe, setProbe] = useState<ProbeResult | null>(null);
+  const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [budget, setBudget] = useState({ hourly_tokens: 200000, cache_ttl_sec: 300 });
 
   const [prompts, setPrompts] = useState<Record<string, AIPrompt> | null>(null);
   const [promptTab, setPromptTab] = useState('triage');
@@ -177,7 +276,9 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
         api.get<AISkill[]>('/api/v1/ai/skills'),
       ]);
       setCfg(c);
-      setSlots({ ...c.slots });
+      setProviderKeyDraft('');
+      setProviderClearKey(false);
+      setSlotDrafts(Object.fromEntries(SLOT_KEYS.map((t) => [t, slotToDraft(c.slots[t])])));
       setBudget({ hourly_tokens: c.hourly_tokens, cache_ttl_sec: c.cache_ttl_sec });
       setPrompts(p);
       setPromptDraft(p.triage?.content ?? '');
@@ -193,43 +294,61 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
   }
   if (err.rendered) return err.rendered;
 
-  /* 保存槽位 + 预算：api_key 留空 = 保留旧值（服务端合并语义） */
+  const providerEl = (name: string) =>
+    document.querySelector<HTMLInputElement>(`[data-provider="${name}"]`);
+
+  /* 保存：Provider（含未受控输入框的现值）+ 槽位差异 + 预算。
+     api_key 留空 = 保留旧值；clear_key = 显式清除。 */
   const saveConfig = async () => {
+    if (!cfg) return;
     setSaving(true);
     try {
-      const body: { slots: Record<string, unknown>; hourly_tokens: number; cache_ttl_sec: number } = {
-        slots: {}, hourly_tokens: budget.hourly_tokens, cache_ttl_sec: budget.cache_ttl_sec,
+      const body = {
+        provider: {
+          base_url: providerEl('base_url')?.value.trim() ?? cfg.provider.base_url,
+          model: providerEl('model')?.value.trim() ?? cfg.provider.model,
+          effort: providerEl('effort')?.value ?? cfg.provider.effort,
+          temperature: Number(providerEl('temperature')?.value) || 0,
+          max_tokens: Number(providerEl('max_tokens')?.value) || 0,
+          timeout_sec: Number(providerEl('timeout_sec')?.value) || 0,
+          api_key: providerKeyDraft, clear_key: providerClearKey,
+        },
+        slots: Object.fromEntries(SLOT_KEYS.map((t) => {
+          const d = slotDrafts[t];
+          return [t, {
+            enabled: d.enabled, model: d.model.trim(), effort: d.effort,
+            base_url: d.ov_base_url.trim(), api_key: d.ov_key_draft, clear_key: d.ov_clear_key,
+            temperature: d.ov_temperature === '' ? 0 : d.ov_temperature,
+            max_tokens: d.ov_max_tokens === '' ? 0 : d.ov_max_tokens,
+            timeout_sec: d.ov_timeout_sec === '' ? 0 : d.ov_timeout_sec,
+          }];
+        })),
+        hourly_tokens: budget.hourly_tokens, cache_ttl_sec: budget.cache_ttl_sec,
       };
-      for (const task of SLOT_KEYS) {
-        const s = slots[task] as (SlotView & { key_draft?: string; clear_key?: boolean }) | undefined;
-        if (!s) continue;
-        body.slots[task] = {
-          provider: s.provider || 'openai', base_url: s.base_url?.trim(), model: s.model?.trim(),
-          effort: s.effort, temperature: s.temperature, max_tokens: s.max_tokens, timeout_sec: s.timeout_sec,
-          enabled: s.enabled, api_key: s.key_draft ?? '', clear_key: !!s.clear_key,
-        };
-      }
       const next = await api.put<AIConfigView>('/api/v1/ai/config', body);
       setCfg(next);
-      setSlots({ ...next.slots });
+      setProviderKeyDraft('');
+      setProviderClearKey(false);
+      setSlotDrafts(Object.fromEntries(SLOT_KEYS.map((t) => [t, slotToDraft(next.slots[t])])));
+      setProbe(null); // 配置可能已变，旧拨测结论不再可信
       toast('AI 配置已保存并热生效');
     } catch (e) { toast((e as Error).message, 'err'); }
     finally { setSaving(false); }
   };
 
-  const testSlot = async (task: string) => {
-    const s = slots[task] as (SlotView & { key_draft?: string }) | undefined;
-    if (!s?.base_url) { toast('先填写服务地址', 'err'); return; }
-    setTesting((t) => ({ ...t, [task]: true }));
+  const testProvider = async () => {
+    const base = providerEl('base_url')?.value.trim();
+    if (!base) { toast('先填写服务地址', 'err'); return; }
+    setTesting(true);
     try {
       const res = await api.post<ProbeResult>('/api/v1/ai/config/test', {
-        task, base_url: s.base_url.trim(), api_key: s.key_draft ?? '',
-        model: s.model, timeout_sec: s.timeout_sec,
+        base_url: base, api_key: providerKeyDraft,
+        model: providerEl('model')?.value.trim(), timeout_sec: Number(providerEl('timeout_sec')?.value) || 45,
       });
-      setProbes((p) => ({ ...p, [task]: res }));
+      setProbe(res);
       if (!res.ok) toast(res.detail, 'err');
     } catch (e) { toast((e as Error).message, 'err'); }
-    finally { setTesting((t) => ({ ...t, [task]: false })); }
+    finally { setTesting(false); }
   };
 
   /* 提示词 */
@@ -242,8 +361,7 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
     try {
       await api.put(`/api/v1/ai/prompts/${promptTab}`, { content: promptDraft });
       toast('提示词已保存并热生效');
-      const p = await api.get<Record<string, AIPrompt>>('/api/v1/ai/prompts');
-      setPrompts(p);
+      setPrompts(await api.get<Record<string, AIPrompt>>('/api/v1/ai/prompts'));
     } catch (e) { toast((e as Error).message, 'err'); }
     finally { setPromptBusy(false); }
   };
@@ -300,7 +418,7 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
   return (
     <div>
       {/* 引擎状态行 */}
-      <div className="mb-3.5 flex items-center gap-2 text-[12px] text-muted-foreground">
+      <div className="mb-3.5 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
         <Bot size={14} />
         <span>当前引擎：</span>
         <Badge tone={cfg?.engine === 'llm' ? 'info' : 'neutral'}>
@@ -311,43 +429,45 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
         )}
       </div>
 
-      {/* 模型槽位 */}
+      {/* 统一服务接入 + 任务槽位 */}
       <div className="mb-1.5 flex items-center justify-between">
-        <CardTitle>模型接入（任务槽位）</CardTitle>
+        <CardTitle>模型接入</CardTitle>
         <Button variant="primary" size="sm" onClick={saveConfig} disabled={saving}>
           <Save size={12} /> {saving ? '保存中…' : '保存全部并热生效'}
         </Button>
       </div>
-      <p className="mb-2.5 text-[11.5px] text-faint">
-        兼容任何 OpenAI 协议服务（OpenAI / DeepSeek / 通义 / Kimi / vLLM / Ollama）。
-        保存前可逐槽位拨测；调用失败会自动降级到确定性分析，判定不会中断。
-      </p>
-      <div className="mb-4 grid grid-cols-1 gap-3 xl:grid-cols-3">
-        {!cfg ? (
-          <Card className="col-span-full px-2 pb-2"><SkeletonRows rows={3} /></Card>
-        ) : SLOT_KEYS.map((task) => (
-          <SlotCard key={task} task={task} slot={slots[task] || EMPTY_SLOT}
-            onChange={(s) => setSlots((prev) => ({ ...prev, [task]: s }))}
-            onTest={() => testSlot(task)} testing={!!testing[task]} probe={probes[task] || null} />
-        ))}
-      </div>
-
-      {/* 成本与缓存 */}
-      <Card className="mb-4 p-4">
-        <CardTitle>成本与缓存</CardTitle>
-        <div className="mt-3 grid max-w-[560px] grid-cols-2 gap-2.5">
-          <label>
-            <span className="mb-1 block text-[11px] text-faint">每小时 token 硬上限（触顶自动降级）</span>
-            <Input type="number" min="1000" step="1000" value={budget.hourly_tokens}
-              onChange={(e) => setBudget((b) => ({ ...b, hourly_tokens: Number(e.target.value) || 1000 }))} />
-          </label>
-          <label>
-            <span className="mb-1 block text-[11px] text-faint">研判结果缓存（秒）</span>
-            <Input type="number" min="0" max="3600" step="30" value={budget.cache_ttl_sec}
-              onChange={(e) => setBudget((b) => ({ ...b, cache_ttl_sec: Number(e.target.value) || 0 }))} />
-          </label>
+      {!cfg ? (
+        <Card className="mb-4 px-2 pb-2"><SkeletonRows rows={4} /></Card>
+      ) : (
+        <div className="mb-4 grid gap-3">
+          <ProviderCard p={cfg.provider} onTest={testProvider} testing={testing} probe={probe} />
+          <Card>
+            <div className="border-b border-border-soft px-3.5 pb-2 pt-3">
+              <CardTitle>任务槽位（留空即跟随统一接入）</CardTitle>
+            </div>
+            {SLOT_KEYS.map((task) => (
+              <SlotRow key={task} task={task} sv={cfg.slots[task]}
+                draft={slotDrafts[task] ?? slotToDraft(cfg.slots[task])}
+                onChange={(d) => setSlotDrafts((prev) => ({ ...prev, [task]: d }))} />
+            ))}
+          </Card>
+          <Card className="p-4">
+            <CardTitle>成本与缓存</CardTitle>
+            <div className="mt-3 grid max-w-[560px] grid-cols-2 gap-2.5">
+              <label>
+                <span className="mb-1 block text-[11px] text-faint">每小时 token 硬上限（触顶自动降级）</span>
+                <Input type="number" min="1000" step="1000" value={budget.hourly_tokens}
+                  onChange={(e) => setBudget((b) => ({ ...b, hourly_tokens: Number(e.target.value) || 1000 }))} />
+              </label>
+              <label>
+                <span className="mb-1 block text-[11px] text-faint">研判结果缓存（秒）</span>
+                <Input type="number" min="0" max="3600" step="30" value={budget.cache_ttl_sec}
+                  onChange={(e) => setBudget((b) => ({ ...b, cache_ttl_sec: Number(e.target.value) || 0 }))} />
+              </label>
+            </div>
+          </Card>
         </div>
-      </Card>
+      )}
 
       {/* 提示词模板 */}
       <Card className="mb-4 p-4">
