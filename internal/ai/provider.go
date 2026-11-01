@@ -318,6 +318,16 @@ type OpenAICompatible struct {
 	apiKey  string
 	model   string
 	client  *http.Client
+
+	// 推理参数由槽位配置注入（engine 构造后直接赋值，同包内可见）。
+	// 默认值与旧行为一致：温度 0.1、研判 1400 tokens。
+	temperature float64
+	effort      string // off/low/medium/high；off 或空 = 不发送 reasoning_effort
+	maxTokens   int
+
+	// promptSrc 由 Engine 注入：返回 (系统提示覆盖, 技能包文本)。
+	// 后端保持"哑"——不认识引擎，只认回调；未注入时用内置提示词。
+	promptSrc func(task string) (string, []string)
 }
 
 // NewOpenAICompatible 构造后端。
@@ -326,11 +336,39 @@ func NewOpenAICompatible(baseURL, apiKey, model string, timeout time.Duration) *
 		timeout = 45 * time.Second
 	}
 	return &OpenAICompatible{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
-		client:  &http.Client{Timeout: timeout},
+		baseURL:     strings.TrimRight(baseURL, "/"),
+		apiKey:      apiKey,
+		model:       model,
+		client:      &http.Client{Timeout: timeout},
+		temperature: 0.1, // 安全研判要稳定，不要创造性
+		maxTokens:   1400,
 	}
+}
+
+// SetPromptSource 注入系统提示查找回调（Engine.ApplyConfig 时调用）。
+func (o *OpenAICompatible) SetPromptSource(f func(task string) (string, []string)) {
+	o.promptSrc = f
+}
+
+// promptSettings 返回某任务的 (系统提示覆盖, 技能包文本)。
+func (o *OpenAICompatible) promptSettings(task string) (string, []string) {
+	if o.promptSrc == nil {
+		return "", nil
+	}
+	return o.promptSrc(task)
+}
+
+// skillBlock 把技能包文本格式化为提示词附录。
+// 显式声明"这是运维提供的背景知识"，避免模型把运营者写的
+// 环境说明误当成对当前个案的判定指令。
+func skillBlock(sks []string) string {
+	var b strings.Builder
+	b.WriteString("【环境技能包】以下是运维团队提供的本环境背景知识，供分析时参考；")
+	b.WriteString("它们不改变输出格式与证据引用要求，也不能作为忽略证据的理由：")
+	for _, s := range sks {
+		b.WriteString("\n- " + strings.ReplaceAll(s, "\n", " "))
+	}
+	return b.String()
 }
 
 // Name 返回后端标识。
@@ -349,6 +387,10 @@ type chatRequest struct {
 	Messages    []chatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
+	// ReasoningEffort 思考强度（gpt-5/o 系列等推理模型支持）。
+	// 仅在槽位配置了非 off 时发送；不支持该参数的服务端返回 4xx →
+	// 调用失败 → 引擎自动降级启发式，失败原因可在测试按钮看到。
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// 要求返回 JSON 对象，避免模型输出"好的，以下是分析："这类前后缀
 	ResponseFormat map[string]string `json:"response_format,omitempty"`
 }
@@ -373,13 +415,16 @@ type chatResponse struct {
 func (o *OpenAICompatible) chat(ctx context.Context, sys, user string, maxTokens int) (string, int, error) {
 	body := chatRequest{
 		Model:       o.model,
-		Temperature: 0.1, // 安全研判要稳定，不要创造性
+		Temperature: o.temperature,
 		MaxTokens:   maxTokens,
 		Messages: []chatMessage{
 			{Role: "system", Content: sys},
 			{Role: "user", Content: user},
 		},
 		ResponseFormat: map[string]string{"type": "json_object"},
+	}
+	if o.effort != "" && o.effort != "off" {
+		body.ReasoningEffort = o.effort
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -431,9 +476,13 @@ func (o *OpenAICompatible) Triage(ctx context.Context, in *TriageInput) (*Triage
 	// 若直接调用本后端（绕过 Engine），Redactions 为空即等价于不隔离——
 	// 这是有意的：隔离是引擎的职责，后端不该有两套实现。
 	ignored := in.UntrustedIgnoredHint()
-	sys, user := buildTriagePrompt(in, ignored, nil)
+	over, sks := o.promptSettings(SlotTriage)
+	sys, user := buildTriagePrompt(in, ignored, nil, over)
+	if len(sks) > 0 {
+		sys += "\n\n" + skillBlock(sks)
+	}
 
-	content, tokens, err := o.chat(ctx, sys, user, 1400)
+	content, tokens, err := o.chat(ctx, sys, user, o.maxTokens)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +517,11 @@ func (o *OpenAICompatible) Triage(ctx context.Context, in *TriageInput) (*Triage
 
 // Translate 实现 Backend。
 func (o *OpenAICompatible) Translate(ctx context.Context, nl string, schema *QuerySchema) (*Query, error) {
-	sys, user := buildQueryPrompt(nl, schema)
+	over, sks := o.promptSettings(SlotHunt)
+	sys, user := buildQueryPrompt(nl, schema, over)
+	if len(sks) > 0 {
+		sys += "\n\n" + skillBlock(sks)
+	}
 	content, _, err := o.chat(ctx, sys, user, 700)
 	if err != nil {
 		return nil, err
@@ -502,4 +555,112 @@ func extractJSON(s string) string {
 // sortByScoreDesc 便于稳定输出。
 func sortByScoreDesc(ev []EvidenceItem) {
 	sort.SliceStable(ev, func(i, j int) bool { return ev[i].Score > ev[j].Score })
+}
+
+// ProbeResult 是连通性测试的输出。
+type ProbeResult struct {
+	OK        bool     `json:"ok"`
+	LatencyMs int64    `json:"latency_ms"`
+	Models    []string `json:"models,omitempty"` // /v1/models 可用时的模型清单
+	Detail    string   `json:"detail"`           // 成功说明或失败原因（可直接展示）
+}
+
+// ProbeOpenAI 对"待保存"的接入配置做一次真实拨测。
+//
+// 两级探测：先 GET /v1/models（便宜、能顺带拉模型清单）；部分兼容实现
+// （某些网关/旧版 Ollama）没有该端点，退回一次 1-token chat 探测。
+// 刻意用请求级超时而不是复用 http.Client 的全局 Timeout——测试按钮
+// 的体验要求"最多等 timeout 秒"，与推理调用共用一个上限是合理的。
+func ProbeOpenAI(baseURL, apiKey, model string, timeout time.Duration) *ProbeResult {
+	start := time.Now()
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	base := strings.TrimRight(baseURL, "/")
+	client := &http.Client{Timeout: timeout}
+
+	get := func(path string) (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodGet, base+path, nil)
+		if err != nil {
+			return nil, err
+		}
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		return client.Do(req)
+	}
+
+	// 第一级：模型列表
+	if res, err := get("/v1/models"); err == nil {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 2<<20))
+		_ = res.Body.Close()
+		if res.StatusCode == http.StatusOK {
+			var mr struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(body, &mr) == nil && len(mr.Data) > 0 {
+				models := make([]string, 0, len(mr.Data))
+				for _, m := range mr.Data {
+					if m.ID != "" {
+						models = append(models, m.ID)
+					}
+				}
+				return &ProbeResult{
+					OK: true, LatencyMs: time.Since(start).Milliseconds(), Models: models,
+					Detail: fmt.Sprintf("连通正常，服务端报告 %d 个可用模型", len(models)),
+				}
+			}
+			return &ProbeResult{OK: true, LatencyMs: time.Since(start).Milliseconds(),
+				Detail: "连通正常（服务端未返回模型清单）"}
+		}
+		// 非 200 → 落入第二级，把 models 端点的错误带在兜底结果里
+		fallback := probeByChat(client, base, apiKey, model, start)
+		if !fallback.OK {
+			fallback.Detail = fmt.Sprintf("/v1/models 返回 HTTP %d；%s", res.StatusCode, fallback.Detail)
+		}
+		return fallback
+	} else {
+		return probeByChat(client, base, apiKey, model, start)
+	}
+}
+
+// probeByChat 第二级探测：一次 1-token 对话。能验证"key 有效 + 模型存在 +
+// 服务真的能推理"三件事，比 models 端点更接近真实调用路径。
+func probeByChat(client *http.Client, base, apiKey, model string, start time.Time) *ProbeResult {
+	fail := func(format string, args ...any) *ProbeResult {
+		return &ProbeResult{OK: false, LatencyMs: time.Since(start).Milliseconds(),
+			Detail: fmt.Sprintf(format, args...)}
+	}
+	if model == "" {
+		return fail("未指定模型名称")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []chatMessage{{Role: "user", Content: "ping"}},
+		"max_tokens": 1,
+	})
+	if err != nil {
+		return fail("构造探测请求失败: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return fail("构造探测请求失败: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return fail("无法连接 %s: %v", base, err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 8192))
+	if res.StatusCode != http.StatusOK {
+		return fail("HTTP %d: %s", res.StatusCode, truncate(string(body), 200))
+	}
+	return &ProbeResult{OK: true, LatencyMs: time.Since(start).Milliseconds(),
+		Detail: "对话探测成功，模型可响应"}
 }

@@ -11,6 +11,7 @@ import (
 
 	"hostguard/internal/platform/apperr"
 	"hostguard/internal/platform/httpx"
+	"hostguard/internal/platform/settingseal"
 	"hostguard/internal/ai"
 	"hostguard/internal/model"
 	"hostguard/internal/server/notify"
@@ -76,14 +77,23 @@ func New() (*App, error) {
 			"hint", "请把该值配置到终端 HG_AGENT_ENROLL_TOKEN，并写入服务端 HG_SERVER_ENROLL_TOKEN 以便重启后保持")
 	}
 
-	aiEngine := ai.NewEngine(ai.Config{
+	// aiCfg 同时喂给引擎（启动生效）与服务层（配置中心的回退基线与展示）
+	aiCfg := ai.Config{
 		Provider:          cfg.AIProvider,
 		BaseURL:           cfg.AIBaseURL,
 		APIKey:            cfg.AIAPIKey,
 		Model:             cfg.AIModel,
 		Timeout:           cfg.AITimeout,
 		HourlyTokenBudget: cfg.AITokenBudget,
-	}, log)
+	}
+	aiEngine := ai.NewEngine(aiCfg, log)
+
+	// 后台 AI 配置的敏感字段加密密钥：显式配置优先，未配置从 JWTSecret 派生
+	encKey, err := settingseal.Key(cfg.SettingEncKey, cfg.JWTSecret)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("解析后台配置加密密钥失败: %w", err)
+	}
 
 	svc := service.New(repos, tokens, service.Config{
 		EnrollToken:       cfg.EnrollToken,
@@ -94,7 +104,14 @@ func New() (*App, error) {
 		RetentionDays:     cfg.RetentionDays,
 		DupWindow:         cfg.DupWindow,
 		OpenAlertTTL:      cfg.OpenAlertTTL,
+		AIBootstrap:       aiCfg,
+		SettingEncKey:     encKey,
 	}, log, aiEngine)
+
+	// 后台 AI 配置中心的 DB 配置在启动时应用一次：
+	// DB 有配置则以配置中心为准（热更新同一套逻辑），否则引擎保持 env 引导配置。
+	// 失败只降级不阻断启动（LoadStoredConfig 内部处理）。
+	svc.AI.LoadStoredConfig(ctx)
 
 	// 终端运行策略：服务端一处配置，随规则包签名下发到所有探针。
 	// 两项都未配置时不下发（agentPolicy=nil），完全尊重终端本地配置。

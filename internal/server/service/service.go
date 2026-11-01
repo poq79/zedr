@@ -25,6 +25,14 @@ type Config struct {
 	// OpenAlertTTL 是超期 open 告警自动归档为 acknowledged 的时限。
 	// 0 = 禁用（默认）：自动替值班人员做"不重要"的决定必须显式打开。
 	OpenAlertTTL time.Duration
+
+	// AIBootstrap 是环境变量引导的 AI 引擎配置：后台未保存过配置时它是
+	// 生效配置，保存过则以配置中心为准。传进来只为展示与回退，不改写。
+	AIBootstrap ai.Config
+
+	// SettingEncKey 是后台配置敏感字段的静态加密密钥（AES-256-GCM）。
+	// 为 nil 时后台无法保存含密钥的配置（Get/Save 返回明确错误）。
+	SettingEncKey []byte
 }
 
 // Services 汇总所有业务服务。
@@ -56,6 +64,6 @@ func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Log
 		Stats:    &StatsService{repos: repos},
 		Incident: &IncidentService{repos: repos, cfg: cfg, log: log},
 		Bus:      bus,
-		AI:       &AIService{repos: repos, eng: aiEngine, log: log, cfg: cfg},
+		AI:       &AIService{repos: repos, eng: aiEngine, log: log, cfg: cfg, bootstrap: cfg.AIBootstrap, encKey: cfg.SettingEncKey},
 	}
 }

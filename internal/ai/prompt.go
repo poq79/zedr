@@ -6,18 +6,11 @@ import (
 	"strings"
 )
 
-// buildTriagePrompt 构造研判用的系统提示与用户消息。
-//
-// 提示词工程在这里的三条硬约束：
-//
-//  1. **证据引用强制**：每条结论必须带 citations，否则整条结论视为无效。
-//     这是对抗"听起来合理但不可核对"的唯一工程手段。
-//  2. **不可信内容显式隔离**：攻击者可控字段放进 <untrusted> 标签，
-//     并在系统提示里三次强调"只当数据"。不是靠模型自觉，而是靠结构约束。
-//  3. **允许弃权**：明确告诉模型"证据不足就输出 inconclusive"。
-//     安全场景下，强行给结论比不给结论危害更大。
-func buildTriagePrompt(in *TriageInput, ignored int, hits []string) (string, string) {
-	sys := strings.Join([]string{
+// triageRules 是研判系统提示的"分析规则"段（身份、防注入纪律、判定口径）。
+// 后台配置中心可覆盖此段——但必须保留 untrusted 纪律与 citations 要求
+// （保存侧 ValidatePromptOverride 强制校验），否则护栏形同虚设。
+func triageRules() string {
+	return strings.Join([]string{
 		"你是主机入侵检测系统的分析助手，负责研判单条终端告警。",
 		"",
 		"【最高优先级规则】",
@@ -34,7 +27,14 @@ func buildTriagePrompt(in *TriageInput, ignored int, hits []string) (string, str
 		"- suspicious：有明确信号但强度不足，或证据互相矛盾；",
 		"- benign：无任何命中信号，且有正向依据（有效签名 / 位于受保护系统目录）；",
 		"- inconclusive：证据不足或无法解释。宁可弃权也不要猜测。",
-		"",
+	}, "\n")
+}
+
+// triageContract 是研判系统提示的"输出契约"段。
+// **永远由引擎追加，不受后台覆盖影响**：这是结构护栏的落地方式——
+// 运维可以调整"怎么分析"，但破坏不了"输出什么形状"。
+func triageContract() string {
+	return strings.Join([]string{
 		"【输出格式】只输出 JSON，不要任何解释性前后缀：",
 		`{"verdict":"malicious|suspicious|benign|inconclusive",`,
 		` "confidence":0.0-1.0,`,
@@ -43,6 +43,24 @@ func buildTriagePrompt(in *TriageInput, ignored int, hits []string) (string, str
 		` "narrative":"给分析师看的两三句中文总结",`,
 		` "attack_chain":["阶段1","阶段2"]}`,
 	}, "\n")
+}
+
+// buildTriagePrompt 构造研判用的系统提示与用户消息。
+//
+// 提示词工程在这里的三条硬约束：
+//
+//  1. **证据引用强制**：每条结论必须带 citations，否则整条结论视为无效。
+//     这是对抗"听起来合理但不可核对"的唯一工程手段。
+//  2. **不可信内容显式隔离**：攻击者可控字段放进 <untrusted> 标签，
+//     并在系统提示里三次强调"只当数据"。不是靠模型自觉，而是靠结构约束。
+//  3. **允许弃权**：明确告诉模型"证据不足就输出 inconclusive"。
+//     安全场景下，强行给结论比不给结论危害更大。
+func buildTriagePrompt(in *TriageInput, ignored int, hits []string, override string) (string, string) {
+	rules := triageRules()
+	if override != "" {
+		rules = override
+	}
+	sys := rules + "\n\n" + triageContract()
 
 	var b strings.Builder
 	b.WriteString("<alert>\n")
@@ -216,13 +234,13 @@ func (s *QuerySchema) Normalize(q *Query) (*Query, error) {
 	return q, nil
 }
 
-// buildQueryPrompt 构造自然语言转查询的提示。
-func buildQueryPrompt(nl string, schema *QuerySchema) (string, string) {
-	fields, _ := json.Marshal(schema.Fields)
-	sys := strings.Join([]string{
+// queryRules 是狩猎查询翻译提示的静态规则段（可被后台覆盖）。
+// 字段白名单 JSON 与"用户查询"由引擎拼接，永远不受覆盖影响——
+// 模型能影响的只有"值"，碰不到"结构"，覆盖提示词不能改变这一点。
+func queryRules() string {
+	return strings.Join([]string{
 		"你是安全分析平台的自然语言查询翻译器。把用户的话翻译成 JSON 查询条件。",
 		"只使用下面给出白名单内的字段与操作符，不要发明字段。",
-		"字段定义（JSON）：" + string(fields),
 		"",
 		"字段含义补充：",
 		"- signed 是布尔：未签名对应 signed=false。",
@@ -234,6 +252,51 @@ func buildQueryPrompt(nl string, schema *QuerySchema) (string, string) {
 		` "since_sec":86400,"order_by":"created_at","desc":true,"limit":50,`,
 		` "explain":"用一句中文复述你理解的查询意图"}`,
 	}, "\n")
+}
+
+// buildQueryPrompt 构造自然语言转查询的提示。
+func buildQueryPrompt(nl string, schema *QuerySchema, override string) (string, string) {
+	fields, _ := json.Marshal(schema.Fields)
+	rules := queryRules()
+	if override != "" {
+		rules = override
+	}
+	sys := rules + "\n\n字段定义（JSON）：" + string(fields)
 
 	return sys, "用户查询：" + nl
+}
+
+// ValidatePromptOverride 校验后台保存的提示词覆盖。
+//
+// 硬校验两条（不满足直接拒绝保存）：
+//   - triage/investigate 必须保留 untrusted（防注入纪律）与 citations
+//     （证据引用契约）两个标记——去掉任何一个，护栏体系就塌了；
+//   - hunt 必须说明输出是 JSON——Schema.Normalize 能兜底丢弃非法条件，
+//     但模型得先知道要输出 JSON 才有"兜底"可言。
+//
+// 输出契约（输出什么形状）由引擎在运行时强制追加，运维无需也不应
+// 在覆盖文本里手写；长度上限防止提示词膨胀拖垮每一次调用的成本。
+func ValidatePromptOverride(task, content string) error {
+	if strings.TrimSpace(content) == "" {
+		return nil // 空 = 恢复内置默认
+	}
+	if len(content) > 16*1024 {
+		return fmt.Errorf("提示词过长（%d 字节，上限 16384）", len(content))
+	}
+	switch task {
+	case SlotTriage, SlotInvestigate:
+		if !strings.Contains(content, "untrusted") {
+			return fmt.Errorf("研判提示词必须保留 untrusted 隔离纪律（防止遥测注入）")
+		}
+		if !strings.Contains(content, "citations") {
+			return fmt.Errorf("研判提示词必须保留 citations 证据引用要求")
+		}
+	case SlotHunt:
+		if !strings.Contains(content, "JSON") {
+			return fmt.Errorf("狩猎提示词必须说明输出为 JSON 格式")
+		}
+	default:
+		return fmt.Errorf("未知的提示词任务: %s", task)
+	}
+	return nil
 }

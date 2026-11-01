@@ -24,6 +24,11 @@ type AIService struct {
 	eng   *ai.Engine
 	log   *slog.Logger
 	cfg   Config
+
+	// bootstrap 是环境变量引导的 AI 配置（后台配置中心的回退基线）；
+	// encKey 是后台配置敏感字段的静态加密密钥（见 service.Config）。
+	bootstrap ai.Config
+	encKey    []byte
 }
 
 // Triage 研判一条告警。

@@ -2,6 +2,7 @@
 package app
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/mail"
 	"os"
@@ -64,12 +65,16 @@ type Config struct {
 	AgentPolicyCollector    string
 
 	// AI 推理后端配置。Provider=none 时只用确定性启发式分析。
+	// 后台配置中心保存过配置后，DB 配置优先于这里的引导值。
 	AIProvider    string
 	AIBaseURL     string
 	AIAPIKey      string
 	AIModel       string
 	AITimeout     time.Duration
 	AITokenBudget int
+	// SettingEncKey 是后台配置敏感字段（模型 API Key）的静态加密密钥，
+	// 64 位 hex（32 字节）。空则从 JWTSecret 派生子密钥（与规则签名同策略）。
+	SettingEncKey string
 	JWTSecret       string
 	AccessTTL       time.Duration
 	RefreshTTL      time.Duration
@@ -141,6 +146,7 @@ func LoadConfig() (*Config, error) {
 	c.AIModel = l.Env("HG_AI_MODEL", "")
 	c.AITimeout = l.Duration("HG_AI_TIMEOUT", 45*time.Second)
 	c.AITokenBudget = l.Int("HG_AI_HOURLY_TOKEN_BUDGET", 200000)
+	c.SettingEncKey = l.Env("HG_SERVER_SETTING_ENC_KEY", "")
 	c.AccessTTL = l.Duration("HG_SERVER_ACCESS_TTL", 15*time.Minute)
 	c.RefreshTTL = l.Duration("HG_SERVER_REFRESH_TTL", 168*time.Hour)
 	c.CookieSecure = l.Bool("HG_SERVER_COOKIE_SECURE", false)
@@ -163,6 +169,13 @@ func LoadConfig() (*Config, error) {
 	l.Check(c.WebhookMinSeverity == "low" || c.WebhookMinSeverity == "medium" ||
 		c.WebhookMinSeverity == "high" || c.WebhookMinSeverity == "critical",
 		"HG_SERVER_WEBHOOK_MIN_SEVERITY 只能是 low/medium/high/critical")
+
+	// 后台配置加密密钥：显式配置必须是 64 位 hex；空值合法（从 JWTSecret 派生）
+	if ek := strings.TrimSpace(c.SettingEncKey); ek != "" {
+		_, err := hex.DecodeString(ek)
+		l.Check(err == nil && len(ek) == 64,
+			"HG_SERVER_SETTING_ENC_KEY 必须是 64 个 hex 字符（32 字节）")
+	}
 
 	// IM 卡片与邮件渠道校验
 	l.Check(c.DingTalkSecret == "" || c.DingTalkWebhookURL != "",

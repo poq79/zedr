@@ -9,14 +9,48 @@ import (
 	"time"
 )
 
+
+// 任务槽：一次 AI 能力调用走哪个槽位的模型。
+// 研判要快、狩猎要稳、调查与叙事要强——不同任务的成本/质量取舍不同，
+// 分槽配置是成本精细化的前提。investigate/narrative v1 预留，
+// 未单独配置时自动回落 triage 槽。
+const (
+	SlotTriage      = "triage"
+	SlotHunt        = "hunt"
+	SlotInvestigate = "investigate"
+	SlotNarrative   = "narrative"
+)
+
+// SlotConfig 是一个任务槽的模型接入配置。
+type SlotConfig struct {
+	// Provider 当前仅 openai（OpenAI 兼容协议，覆盖 OpenAI/DeepSeek/通义/
+	// Kimi/vLLM/Ollama 等）。Anthropic 的 /v1/messages 协议列入 TODO。
+	Provider    string
+	BaseURL     string
+	APIKey      string
+	Model       string
+	// Effort 是思考强度：off/low/medium/high。off 不发送 reasoning_effort
+	// 参数；其余原样透传，服务端不认时调用失败 → 自动降级启发式，
+	// 失败原因在研判面板与测试按钮里可见（诚实暴露，不做静默兼容）。
+	Effort      string
+	Temperature float64
+	MaxTokens   int
+	Timeout     time.Duration
+	Enabled     bool
+}
+
 // Config 是分析引擎的配置。
 type Config struct {
-	// Provider 取值 none / openai。none 表示只用确定性启发式。
+	// Provider/BaseURL/APIKey/Model/Timeout 是环境变量引导配置（单模型）。
+	// 后台配置中心（Slots）存在时以它为准；两者都空 = 纯启发式。
 	Provider string
 	BaseURL  string
 	APIKey   string
 	Model    string
 	Timeout  time.Duration
+
+	// Slots 是任务槽配置（键见 Slot* 常量），优先于上面的单模型配置。
+	Slots map[string]SlotConfig
 
 	// HourlyTokenBudget 是每小时的 token 上限。
 	//
@@ -57,12 +91,18 @@ type cacheEntry struct {
 // Engine 是 AI 能力门面：统一调度推理后端、预算、缓存与护栏。
 type Engine struct {
 	log   *slog.Logger
-	cfg   Config
-	llm   Backend
 	heur  Backend
 	start time.Time
 
-	mu         sync.Mutex
+	// cfg/llms/prompts/skills 全部受 mu 保护：配置中心要求运行中热更新，
+	// 而它们又同时被请求路径读取。锁粒度是可接受的——这些读都是
+	// O(1) 的 map/字段访问，不会与模型调用的长耗时区间重叠。
+	mu      sync.Mutex
+	cfg     Config
+	llms    map[string]Backend // 槽位 → 后端（nil 缺席 = 该槽未配置）
+	prompts map[string]string  // 任务 → 系统提示覆盖（空 = 内置）
+	skills  map[string][]string
+
 	windowFrom time.Time
 	tokens     int
 	cache      map[string]cacheEntry
@@ -94,30 +134,163 @@ func NewEngine(cfg Config, log *slog.Logger) *Engine {
 
 	e := &Engine{
 		log:        log,
-		cfg:        cfg,
 		heur:       NewHeuristic(),
 		start:      time.Now(),
 		windowFrom: time.Now(),
 		cache:      make(map[string]cacheEntry, 256),
+		prompts:    map[string]string{},
+		skills:     map[string][]string{},
 	}
+	e.llms = buildBackends(cfg, log)
+	e.cfg = cfg
 
-	if cfg.Provider == "openai" && cfg.BaseURL != "" && cfg.Model != "" {
-		e.llm = NewOpenAICompatible(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Timeout)
-		if log != nil {
-			log.Info("ai_engine_ready", "provider", cfg.Provider, "model", cfg.Model,
-				"base_url", cfg.BaseURL, "budget_per_hour", cfg.HourlyTokenBudget)
-		}
-	} else {
-		if cfg.Provider != "none" && log != nil {
-			log.Warn("ai_llm_not_configured",
-				"provider", cfg.Provider, "hint", "缺少 base_url 或 model，已回退到确定性分析")
-		}
+	if len(e.llms) == 0 && cfg.Provider != "none" && log != nil {
+		log.Warn("ai_llm_not_configured",
+			"provider", cfg.Provider, "hint", "缺少 base_url 或 model，已回退到确定性分析")
 	}
 	return e
 }
 
+// buildBackends 按配置构造槽位后端表。
+// Slots 非空时以槽位为准；否则把环境变量单模型配置镜像到
+// triage/hunt 两个槽（保持既有部署行为完全不变）。
+func buildBackends(cfg Config, log *slog.Logger) map[string]Backend {
+	configure := func(sc SlotConfig) Backend {
+		if sc.Provider != "openai" || sc.BaseURL == "" || sc.Model == "" {
+			return nil
+		}
+		if sc.Timeout <= 0 {
+			sc.Timeout = 45 * time.Second
+		}
+		if sc.Temperature <= 0 {
+			sc.Temperature = 0.1 // 安全研判要稳定，不要创造性
+		}
+		if sc.MaxTokens <= 0 {
+			sc.MaxTokens = 1400
+		}
+		b := NewOpenAICompatible(sc.BaseURL, sc.APIKey, sc.Model, sc.Timeout)
+		b.temperature = sc.Temperature
+		b.effort = sc.Effort
+		b.maxTokens = sc.MaxTokens
+		return b
+	}
+
+	llms := make(map[string]Backend, 4)
+	if len(cfg.Slots) > 0 {
+		for slot, sc := range cfg.Slots {
+			if !sc.Enabled {
+				continue
+			}
+			if b := configure(sc); b != nil {
+				llms[slot] = b
+			}
+		}
+		return llms
+	}
+	if cfg.Provider == "openai" && cfg.BaseURL != "" && cfg.Model != "" {
+		b := configure(SlotConfig{
+			Provider: cfg.Provider, BaseURL: cfg.BaseURL, APIKey: cfg.APIKey,
+			Model: cfg.Model, Timeout: cfg.Timeout, Enabled: true,
+		})
+		if b != nil {
+			llms[SlotTriage] = b
+			llms[SlotHunt] = b
+		}
+		if log != nil {
+			log.Info("ai_engine_ready", "provider", cfg.Provider, "model", cfg.Model,
+				"base_url", cfg.BaseURL, "budget_per_hour", cfg.HourlyTokenBudget)
+		}
+	}
+	return llms
+}
+
+// backend 取槽位后端；investigate/narrative 未单独配置时回落 triage
+// （这两个槽 v1 由研判链路代跑，独立配置的入口已在配置模型里预留）。
+func (e *Engine) backend(slot string) Backend {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if b, ok := e.llms[slot]; ok {
+		return b
+	}
+	if slot == SlotInvestigate || slot == SlotNarrative {
+		return e.llms[SlotTriage]
+	}
+	return nil
+}
+
+// promptFor 返回某任务的系统提示覆盖与启用的技能包文本。
+func (e *Engine) promptFor(task string) (string, []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.prompts[task], e.skills[task]
+}
+
+// ApplyConfig 热更新引擎配置（配置中心保存后调用，无需重启）。
+//
+// prompts 的键是任务名（triage/hunt/investigate），值为空串表示用内置；
+// skills 的键同为任务名，值是该任务启用的技能包文本列表（服务层已把
+// task=all 的技能包展开合并）。换后端时旧后端直接丢弃——Backend 无状态，
+// 在途请求持有旧引用自然完成，不需要优雅停机协议。
+func (e *Engine) ApplyConfig(cfg Config, prompts map[string]string, skills map[string][]string) {
+	if cfg.Provider == "" && len(cfg.Slots) == 0 {
+		cfg.Provider = "none"
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 45 * time.Second
+	}
+	if cfg.HourlyTokenBudget <= 0 {
+		cfg.HourlyTokenBudget = 200_000
+	}
+	if cfg.CacheTTL <= 0 {
+		cfg.CacheTTL = 5 * time.Minute
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// 重算预算窗口：预算值变更后，旧窗口的已用量按旧口径保留可能
+	// 立刻触顶或远未触顶；重置窗口是唯一口径一致的选择。
+	e.cfg = cfg
+	e.windowFrom = time.Now()
+	e.tokens = 0
+	e.cache = make(map[string]cacheEntry, 256)
+	e.llms = buildBackends(cfg, e.log)
+
+	e.prompts = map[string]string{}
+	for task, p := range prompts {
+		if p != "" {
+			e.prompts[task] = p
+		}
+	}
+	e.skills = map[string][]string{}
+	for task, list := range skills {
+		if len(list) > 0 {
+			e.skills[task] = list
+		}
+	}
+	// 把提示词查找回调挂到每个新后端上：后端保持"哑"，
+	// 不持有引擎引用，测试里单构造的后端不受影响。
+	for _, b := range e.llms {
+		if ob, ok := b.(*OpenAICompatible); ok {
+			ob.SetPromptSource(e.promptFor)
+		}
+	}
+	if e.log != nil {
+		slots := make([]string, 0, len(e.llms))
+		for slot := range e.llms {
+			slots = append(slots, slot)
+		}
+		e.log.Info("ai_config_applied", "active_slots", strings.Join(slots, ","),
+			"prompt_overrides", len(e.prompts), "skill_tasks", len(e.skills))
+	}
+}
+
 // Enabled 返回是否配置了外部模型。
-func (e *Engine) Enabled() bool { return e.llm != nil }
+func (e *Engine) Enabled() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.llms) > 0
+}
 
 // Triage 研判一条告警。
 //
@@ -161,8 +334,9 @@ func (e *Engine) Triage(ctx context.Context, in *TriageInput) *TriageResult {
 		degReason string
 	)
 
-	if e.llm != nil && e.budgetLeft() > 0 {
-		r, err := e.llm.Triage(ctx, in)
+	be := e.backend(SlotTriage)
+	if be != nil && e.budgetLeft() > 0 {
+		r, err := be.Triage(ctx, in)
 		if err == nil {
 			res = r
 			e.bump(func(s *Engine) { s.stLLM++ })
@@ -173,9 +347,9 @@ func (e *Engine) Triage(ctx context.Context, in *TriageInput) *TriageResult {
 				e.log.Warn("ai_triage_llm_failed", "err", err)
 			}
 		}
-	} else if e.llm != nil {
+	} else if be != nil {
 		degraded = true
-		degReason = fmt.Sprintf("本小时 token 预算已用尽（上限 %d）", e.cfg.HourlyTokenBudget)
+		degReason = fmt.Sprintf("本小时 token 预算已用尽（上限 %d）", e.budgetCap())
 	} else {
 		degraded = true
 		degReason = "未配置外部模型，使用确定性分析"
@@ -236,8 +410,8 @@ func (e *Engine) Translate(ctx context.Context, nl string) (*Query, error) {
 	}
 	schema := AlertQuerySchema()
 
-	if e.llm != nil && e.budgetLeft() > 0 {
-		q, err := e.llm.Translate(ctx, nl, schema)
+	if hb := e.backend(SlotHunt); hb != nil && e.budgetLeft() > 0 {
+		q, err := hb.Translate(ctx, nl, schema)
 		if err == nil {
 			e.bump(func(s *Engine) { s.stLLM++ })
 			return q, nil
@@ -272,11 +446,22 @@ func (e *Engine) Stats() Stats {
 		st.AvgLatencyMs = e.stLatSum / e.stTriaged
 		st.GroundedRate = round2(float64(e.stGrounded) / float64(e.stTriaged))
 	}
-	if e.llm != nil {
+	if tb, ok := e.llms[SlotTriage]; ok {
 		st.Engine = "llm"
-		st.Model = e.cfg.Model
+		st.Model = tb.Name()
+	} else if hb, ok := e.llms[SlotHunt]; ok {
+		// 只有狩猎槽时如实标注：引擎可用，但研判模型未配置
+		st.Engine = "llm"
+		st.Model = hb.Name()
 	}
 	return st
+}
+
+// budgetCap 返回当前配置的小时 token 上限。
+func (e *Engine) budgetCap() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg.HourlyTokenBudget
 }
 
 func (e *Engine) record(res *TriageResult) {
