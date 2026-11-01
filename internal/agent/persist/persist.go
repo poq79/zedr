@@ -26,8 +26,14 @@ import (
 )
 
 // record 是基线里的一条记录。
+//
+// Type/Location 是 v2 schema 之后补充的字段（omitempty）：老基线没有这两列，
+// 加载后 Type/Location 为空，读取方（Items()）用 key 前缀兜底解析 kind。
+// 只增不改语义，不需要递增 baselineSchema——变更判定仍只看 Command。
 type record struct {
 	Command   string    `json:"command"`
+	Type      string    `json:"type,omitempty"`     // 持久化类型（winapi.Persist* 常量）
+	Location  string    `json:"location,omitempty"` // 注册表路径 / 目录 / 任务路径
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
 }
@@ -184,16 +190,26 @@ func (m *Monitor) Scan() (*Result, error) {
 		switch {
 		case !exists:
 			added = append(added, it)
-			m.items[it.Key] = record{Command: it.Command, FirstSeen: now, LastSeen: now}
+			m.items[it.Key] = record{
+				Command: it.Command, Type: it.Type, Location: it.Location,
+				FirstSeen: now, LastSeen: now,
+			}
 		case !sameCommand(old.Command, it.Command):
 			changed = append(changed, struct {
 				item winapi.PersistItem
 				old  string
 			}{it, old.Command})
-			m.items[it.Key] = record{Command: it.Command, FirstSeen: old.FirstSeen, LastSeen: now}
+			m.items[it.Key] = record{
+				Command: it.Command, Type: it.Type, Location: it.Location,
+				FirstSeen: old.FirstSeen, LastSeen: now,
+			}
 		default:
 			r := old
 			r.LastSeen = now
+			// Type/Location 随每轮刷新：老版本基线升级后没有这两列，
+			// 借一次普通扫描就能补齐，不用为此递增 schema 重建基线。
+			r.Type = it.Type
+			r.Location = it.Location
 			m.items[it.Key] = r
 		}
 	}

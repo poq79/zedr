@@ -51,6 +51,12 @@ type Agent struct {
 	fw *winapi.FileWatcher
 	pm *persist.Monitor
 
+	// 资产清单：inventoryLoop 赋值；invReady 之后才对可 diff 节做
+	// 条目级变更告警（首轮是建基线，不是"全是新增"）。
+	// 两个字段只在 inventoryLoop 自己的 goroutine 上读写，无需加锁。
+	inv      *inventory.Manager
+	invReady bool
+
 	local     *httpx.Server
 	localAPI  *localapi.Server
 	startedAt time.Time
@@ -588,6 +594,13 @@ func (a *Agent) scan(deep bool) int {
 		ri.Warmup = a.eng.IsWarmup(time.Now())
 		ri.RuleCount = a.eng.RuleCount()
 
+		// 下发数据落地情况：inventoryLoop 未启动（开关关）时 Count() 为 0
+		// 是真实语义（"终端没在用"），不是缺数据。
+		ri.IOCCount = a.eng.IOCCount()
+		if a.inv != nil {
+			ri.InventorySections = a.inv.Count()
+		}
+
 		// 这些字段只在扫描回调里维护：New() 里注册的回调会被这里覆盖，
 		// 放两处只会让其中一处永远不生效（UptimeSec 之前恒为 0 就是这么来的）。
 		ri.UptimeSec = int64(time.Since(a.startedAt).Seconds())
@@ -1049,33 +1062,118 @@ func (a *Agent) persistLoop(ctx context.Context) {
 // 保证稳定态下每轮几乎零流量。
 const inventoryInterval = 30 * time.Second
 
-// inventoryLoop 周期采集资产清单快照并差量上报。
+// inventoryLoop 周期采集资产清单快照并差量上报；发生变化的节随后做
+// 条目级 diff，把"新增/移除/变更了哪个服务、哪个计划任务"转成告警。
 //
 // 数据源全部以 SnapshotFn 闭包注入（依赖倒置）：清单的差量/上报逻辑
 // 不接触任何系统调用，winapi 采集函数的增改不会传染到这条链路，
 // 测试也可以用假函数覆盖全部行为。
 func (a *Agent) inventoryLoop(ctx context.Context) {
 	m := inventory.New(a.log)
+	a.inv = m
 
 	m.Register("system", a.invSystemSection)
 	m.Register("adapters", a.invAdaptersSection)
 	m.Register("listeners", a.invListenersSection)
 	m.Register("services", a.invServicesSection)
 	m.Register("tasks", a.invTasksSection)
-	// startup 节为占位：persist.Monitor 目前只导出 Size()，没有读取
-	// 基线条目的接口；等 persist 包补导出访问器后接入真实基线。
-	m.Register("startup", func() (any, error) {
-		return map[string]any{"items": []any{}}, nil
-	})
+	// startup：真实自启动项，来自 persist.Monitor 的持久化基线（7 类位置）
+	m.Register("startup", a.invStartupSection)
 	m.Register("agent", a.invAgentSection)
+
+	// 可 diff 节的条目主键。system/agent 是标量与探针健康度节，
+	// 没有稳定的条目主键，不做条目级 diff。
+	keyFns := map[string]func(map[string]any) string{
+		"services":  inventoryFieldKey("name"),
+		"tasks":     inventoryFieldKey("path"),
+		"adapters":  inventoryFieldKey("name"),
+		// listeners 的 payload 是 {"tcp":[...],"udp":[...]}，Diff 会合并
+		// 两个表并给条目注入列表名作为 proto 字段，key 形如 "tcp|8080"。
+		"listeners": inventoryFieldKey("proto", "port"),
+		"startup":   inventoryFieldKey("kind", "location"),
+	}
 
 	m.Run(ctx, inventoryInterval, func(sections []model.InventorySection) ([]string, error) {
 		// 未注册时 uplink 直接报错返回——正好让 Run 回滚 hash，
 		// 注册成功后的下一轮把首轮全量补上，不会丢节。
 		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
-		return a.up.PostInventory(cctx, sections)
+		applied, err := a.up.PostInventory(cctx, sections)
+		cancel()
+
+		// 事件发射挂在快照成功之后（此时 Manager 里正好保有本轮"变化前"
+		// payload）。只在 post 成功后 diff：post 失败 Run 会回滚 payload
+		// 状态并在下一轮重试同一节，若失败轮也发事件，重试轮会把同一批
+		// 变更重复告警一次。diff 出错只记日志，绝不影响上报结果。
+		if err == nil {
+			a.diffInventoryEvents(ctx, sections, keyFns)
+		}
+		return applied, err
 	})
+}
+
+// diffInventoryEvents 对本轮差量节做条目级 diff，把变更交给告警策略层。
+// 首轮（invReady=false）只建基线不发事件——首轮对任何节都是"全是新增"，
+// 那是基线而不是攻击面。
+func (a *Agent) diffInventoryEvents(ctx context.Context, sections []model.InventorySection, keyFns map[string]func(map[string]any) string) {
+	wasReady := a.invReady
+	a.invReady = true
+	if !wasReady {
+		return
+	}
+
+	var changes []inventory.ChangeEvent
+	for _, s := range sections {
+		keyFn, ok := keyFns[s.Name]
+		if !ok {
+			continue
+		}
+		prev, ok := a.inv.LastPayload(s.Name)
+		if !ok {
+			// 该节本轮没有"变化前"payload（首次成功采集、或采集失败后
+			// 恢复的第一轮），没有可比对象，跳过，下轮起恢复正常 diff。
+			continue
+		}
+		evs, err := inventory.Diff(prev, s.Payload, keyFn)
+		if err != nil {
+			a.log.Warn("inventory_diff_failed", "section", s.Name, "err", err)
+			continue
+		}
+		for i := range evs {
+			evs[i].Section = s.Name
+		}
+		changes = append(changes, evs...)
+	}
+	a.emitInventoryEvents(ctx, changes)
+}
+
+// invStartupItem 是 startup 节的一条自启动项（字段名即线协议）。
+type invStartupItem struct {
+	Kind     string `json:"kind"`
+	Location string `json:"location"`
+	Value    string `json:"value"`
+}
+
+// invStartupSection 从 persist.Monitor 基线组装 startup 节。
+// 基线为空是正常情况（干净机器），返回空列表而不是错误——
+// 空节不算采集失败，否则干净机器永远报 startup 采集异常。
+func (a *Agent) invStartupSection() (any, error) {
+	items := a.pm.Items()
+	list := make([]invStartupItem, 0, len(items))
+	for _, it := range items {
+		list = append(list, invStartupItem{Kind: it.Kind, Location: it.Location, Value: it.Value})
+	}
+	// 按 kind+location 排序保证 hash 稳定：枚举顺序不稳定会让差量协议
+	// 退化成每轮全量（与 services/tasks 各节同一条纪律）。
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Kind != list[j].Kind {
+			return list[i].Kind < list[j].Kind
+		}
+		if list[i].Location != list[j].Location {
+			return list[i].Location < list[j].Location
+		}
+		return list[i].Value < list[j].Value
+	})
+	return map[string]any{"items": list}, nil
 }
 
 // inventory 各节的本地 payload 类型：字段名即线协议（snake_case）。
