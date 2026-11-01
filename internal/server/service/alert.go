@@ -204,6 +204,34 @@ func (s *AlertService) UpdateStatus(ctx context.Context, id string, status domai
 }
 
 // Purge 清理已处置的历史告警。
+// BulkUpdateStatus 批量处置告警。
+//
+// 逐条复用 UpdateStatus 的校验与业务语义（不存在的 id 计入 failed 而不是整体失败），
+// 最后合并成一条审计记录——审计要回答的是"谁在什么时候处置了一批"，
+// 逐条刷审计反而把真正的操作意图淹没了。
+func (s *AlertService) BulkUpdateStatus(ctx context.Context, ids []string, status domain.AlertStatus, by, note string) (updated []string, failed []string, err error) {
+	if len(ids) == 0 {
+		return nil, nil, apperr.Invalid("ids 不能为空")
+	}
+	if len(ids) > 200 {
+		return nil, nil, apperr.Invalid("单次批量处置不能超过 200 条")
+	}
+	if !status.Valid() {
+		return nil, nil, apperr.Invalid("非法的告警状态")
+	}
+
+	updated = make([]string, 0, len(ids))
+	failed = make([]string, 0)
+	for _, id := range ids {
+		if err := s.repos.Alerts.UpdateStatus(ctx, id, status, by, note, time.Now()); err != nil {
+			failed = append(failed, id)
+			continue
+		}
+		updated = append(updated, id)
+	}
+	return updated, failed, nil
+}
+
 func (s *AlertService) Purge(ctx context.Context, before time.Time) (int64, error) {
 	return s.repos.Alerts.PurgeBefore(ctx, before)
 }

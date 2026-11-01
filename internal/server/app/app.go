@@ -9,6 +9,7 @@ import (
 	"hostguard/internal/platform/apperr"
 	"hostguard/internal/platform/httpx"
 	"hostguard/internal/ai"
+	"hostguard/internal/server/notify"
 	"hostguard/internal/platform/rulehash"
 	"hostguard/internal/platform/idgen"
 	"hostguard/internal/platform/logx"
@@ -26,6 +27,7 @@ type App struct {
 	Server   *httpx.Server
 	store    *sqlite.Store
 	services *service.Services
+	notifier *notify.Notifier
 	stop     chan struct{}
 }
 
@@ -78,8 +80,8 @@ func New() (*App, error) {
 		KillEnabled:       cfg.KillEnabled,
 		HeartbeatInterval: time.Duration(cfg.HeartbeatSec) * time.Second,
 		ScanInterval:      time.Duration(cfg.ScanSec) * time.Second,
-		DupWindow:         5 * time.Minute,
 		RetentionDays:     cfg.RetentionDays,
+		DupWindow:         cfg.DupWindow,
 	}, log, aiEngine)
 
 	// 播种内置规则 + 初始管理员
@@ -98,6 +100,19 @@ func New() (*App, error) {
 			"hint", "这是唯一一次打印，请立即登录并修改密码")
 	}
 
+	// Webhook 告警通知：订阅告警总线，尽力外发（旁路，不影响主链路）。
+	notifier := notify.New(cfg.WebhookURL, cfg.WebhookSecret, cfg.WebhookTimeout, log)
+	if notifier != nil {
+		log.Info("webhook_notifier_enabled", "url", cfg.WebhookURL)
+		if _, ch := svc.Bus.Subscribe(); ch != nil {
+			go func() {
+				for alert := range ch {
+					notifier.Ingest(alert)
+				}
+			}()
+		}
+	}
+
 	router := api.Router(api.Deps{
 		Services:     svc,
 		Tokens:       tokens,
@@ -114,6 +129,7 @@ func New() (*App, error) {
 		StartedAt:    time.Now(),
 		CookieSecure: cfg.CookieSecure,
 		Bus:          svc.Bus,
+		Notifier:     notifier,
 	})
 
 	srv := httpx.NewServer(httpx.ServerConfig{
@@ -212,6 +228,7 @@ func (a *App) Close() {
 	default:
 		close(a.stop)
 	}
+	a.notifier.Close()
 }
 
 // readyCheck 是 /ready 的判定逻辑。

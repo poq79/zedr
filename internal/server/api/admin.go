@@ -121,6 +121,41 @@ func (h *adminHandler) updateAlertStatus(w http.ResponseWriter, r *http.Request)
 	httpx.WriteNoContent(w)
 }
 
+// bulkStatusReq 是批量处置的请求体。
+type bulkStatusReq struct {
+	IDs    []string `json:"ids"`
+	Status string   `json:"status"`
+	Note   string   `json:"note"`
+}
+
+// bulkUpdateStatus 批量处置：一条审计记录覆盖整批操作。
+func (h *adminHandler) bulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req bulkStatusReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+
+	updated, failed, err := h.deps.Services.Alert.BulkUpdateStatus(r.Context(),
+		req.IDs, domain.AlertStatus(req.Status), p.Username, req.Note)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "alert.bulk_status",
+		fmt.Sprintf("%d ids", len(req.IDs)),
+		fmt.Sprintf("status=%s updated=%d failed=%d note=%s",
+			req.Status, len(updated), len(failed), req.Note),
+		httpx.ClientIP(r))
+
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+		"updated": updated,
+		"failed":  failed,
+	})
+}
+
 // ---------------------------------------------------------------- 主机
 
 func (h *adminHandler) listHosts(w http.ResponseWriter, r *http.Request) {

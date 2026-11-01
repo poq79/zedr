@@ -16,6 +16,7 @@ import (
 	"hostguard/internal/platform/apperr"
 	"hostguard/internal/platform/httpx"
 	"hostguard/internal/server/auth"
+	"hostguard/internal/server/notify"
 	"hostguard/internal/server/service"
 )
 
@@ -39,6 +40,8 @@ type Deps struct {
 	Tickets      *ticketStore
 	// RuleSignKey 是规则包签名密钥（由主密钥派生，见 rulehash.DeriveKey）
 	RuleSignKey []byte
+	// Notifier 是 webhook 告警通知器（nil 表示未启用），/metrics 读取其统计
+	Notifier *notify.Notifier
 
 	// sseActive 是当前活跃的实时流连接数。
 	// 用指针而非值：Deps 是按值传递的，而 atomic.Int64 内含 noCopy，
@@ -143,6 +146,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/alerts", viewer(adminH.listAlerts))
 	mux.Handle("GET /api/v1/alerts/{id}", viewer(adminH.getAlert))
 	mux.Handle("POST /api/v1/alerts/{id}/status", writer(adminH.updateAlertStatus))
+	mux.Handle("POST /api/v1/alerts/bulk-status", viewer(adminH.bulkUpdateStatus))
 
 	// AI 分析能力：研判 / 自然语言检索 / 引擎状态
 	mux.Handle("POST /api/v1/alerts/{id}/triage", viewer(adminH.triageAlert))
@@ -163,6 +167,10 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/allowlist", viewer(adminH.listAllowlist))
 	mux.Handle("POST /api/v1/allowlist", writer(adminH.addAllowlist))
 	mux.Handle("DELETE /api/v1/allowlist/{id}", writer(adminH.deleteAllowlist))
+
+	mux.Handle("GET /api/v1/incidents", viewer(adminH.listIncidents))
+	mux.Handle("GET /api/v1/alerts/export", viewer(adminH.exportCSV))
+	mux.HandleFunc("GET /metrics", adminH.metrics)
 
 	mux.Handle("GET /api/v1/audit", viewer(adminH.listAudit))
 	mux.Handle("GET /api/v1/users", adminOnly(adminH.listUsers))

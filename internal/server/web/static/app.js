@@ -199,6 +199,7 @@ const state = {
 const ROUTES = [
   { key: 'overview', label: '概览', icon: '▤', title: '概览', roles: null },
   { key: 'alerts', label: '告警中心', icon: '⚠', title: '告警中心', roles: null },
+  { key: 'incidents', label: '事件', icon: '⛓', title: '事件（攻击链聚类）', roles: null },
   { key: 'hosts', label: '主机终端', icon: '◫', title: '主机终端', roles: null },
   { key: 'rules', label: '检测规则', icon: '⌗', title: '检测规则', roles: null },
   { key: 'allowlist', label: '白名单', icon: '✓', title: '白名单与降噪', roles: null },
@@ -378,6 +379,7 @@ async function viewAlerts() {
       <div class="spacer"></div>
       <button class="btn sm primary" id="fApply">应用筛选</button>
       <button class="btn sm ghost" id="fReset">重置</button>
+      <button class="btn sm ghost" id="fExport" title="按当前筛选导出 CSV（含审计）">导出 CSV</button>
       <button class="btn sm ghost" id="fSaveView" title="把当前筛选条件存为本机视图">保存视图</button>
       <button class="btn sm ghost" id="helpKeys" title="查看键盘快捷键">?</button>
     </div>
@@ -407,6 +409,8 @@ async function viewAlerts() {
   renderSavedViews();
   const sv = $('#fSaveView');
   if (sv) sv.addEventListener('click', saveCurrentView);
+  const ex = $('#fExport');
+  if (ex) ex.addEventListener('click', exportCSV);
   const hk = $('#helpKeys');
   if (hk) hk.addEventListener('click', showShortcuts);
 
@@ -486,6 +490,8 @@ async function loadAlertTable() {
       selAll.addEventListener('change', () => toggleSelectAll(selAll.checked));
     }
   }
+  box.dataset.loaded = '1';
+  bindSortable();
   syncBulkbar();
 
   const pages = Math.max(1, Math.ceil(state.alerts.total / state.alerts.pageSize));
@@ -1095,6 +1101,7 @@ async function renderRoute() {
   switch (route) {
     case 'overview': return viewOverview();
     case 'alerts': return viewAlerts();
+    case 'incidents': return viewIncidents();
     case 'hosts': return viewHosts();
     case 'rules': return viewRules();
     case 'allowlist': return viewAllowlist();
@@ -1456,14 +1463,16 @@ async function bulkSetStatus(status) {
   const label = STATUS_LABEL[status] || status;
   if (!confirm(`将 ${ids.length} 条告警标记为「${label}」？`)) return;
 
-  let ok = 0, fail = 0;
-  for (const id of ids) {
-    try {
-      await api.post(`/api/v1/alerts/${encodeURIComponent(id)}/status`, { status, note: '批量处置' });
-      ok++;
-    } catch (_) { fail++; }
+  let updated, failed;
+  try {
+    const r = await api.post('/api/v1/alerts/bulk-status', { ids, status, note: '批量处置' });
+    updated = (r && r.updated) || [];
+    failed = (r && r.failed) || [];
+  } catch (e) {
+    toast(`批量处置失败：${e.message}`, 'err');
+    return;
   }
-  toast(fail ? `完成 ${ok} 条，失败 ${fail} 条` : `已更新 ${ok} 条`, fail ? 'err' : 'ok');
+  toast(failed.length ? `完成 ${updated.length} 条，失败 ${failed.length} 条` : `已更新 ${updated.length} 条`, failed.length ? 'err' : 'ok');
   clearSelection();
   loadAlertTable();
 }
@@ -1658,3 +1667,172 @@ async function loadHostTimeline(a) {
     box.innerHTML = `<div class="empty small">加载失败：${esc(e.message)}</div>`;
   }
 }
+
+/* ==================================================================
+   v0.6：事件页 / 可排序表格 / CSV 导出 / 命令面板（Alpine）
+   ================================================================== */
+
+/* ---------------- 事件（攻击链聚类） ----------------
+   单条告警是信号，连续的告警才是事件。服务端按
+   "同主机 + 相邻告警间隔 ≤ 30 分钟"聚类，这里只负责呈现：
+   事件卡片突出峰值严重度与 MITRE 组合，展开可直达每条告警。 */
+const SEV_RANK = { low: 0, medium: 1, high: 2, critical: 3 };
+
+async function viewIncidents() {
+  const c = $('#content');
+  c.innerHTML = `<div class="card" style="padding:18px">${skeletonRows(5, 5)}</div>`;
+  let r;
+  try { r = await api.get('/api/v1/incidents?limit=50'); } catch (e) { return renderError(e); }
+  const items = (r && r.items) || [];
+
+  const head = `
+    <div class="toolbar" style="margin-bottom:12px;align-items:center">
+      <h2 style="margin:0;font-size:16px">事件</h2>
+      <span class="muted small">未处置告警按「同主机 · 相邻间隔 ≤ 30 分钟」聚类 · 共 ${items.length} 个活跃事件</span>
+      <div class="spacer"></div>
+      <button class="btn sm" id="incRefresh">刷新</button>
+    </div>`;
+
+  if (!items.length) {
+    c.innerHTML = head + `<div class="card"><div class="empty">当前没有未处置的告警聚合成事件——<br />这是好事，说明各终端都在安静运行。</div></div>`;
+    const b = $('#incRefresh');
+    if (b) b.addEventListener('click', viewIncidents);
+    return;
+  }
+
+  c.innerHTML = head + items.map((it) => {
+    const sevCls = it.peak_severity === 'critical' ? 'crit' : it.peak_severity === 'high' ? 'danger' : it.peak_severity === 'medium' ? 'warn' : 'ok';
+    const dur = it.duration_sec > 0
+      ? (it.duration_sec >= 3600 ? `${Math.round(it.duration_sec / 3600)} 小时` : `${Math.max(1, Math.round(it.duration_sec / 60))} 分钟`)
+      : '<1 分钟';
+    const alerts = it.alert_ids.map((id, i) =>
+      `<button class="btn sm ghost" data-inc-alert="${esc(id)}">告警 ${i + 1}</button>`).join('');
+    return `
+    <div class="card incident" style="padding:16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span class="badge ${sevCls}" style="font-size:13px;padding:4px 12px">${esc(it.peak_severity || 'low')}</span>
+        <div style="flex:1;min-width:200px">
+          <div style="font-weight:600">${esc(it.hostname)}
+            <span class="badge info" style="margin-left:8px">${it.alert_count} 条告警</span>
+            ${it.open_count < it.alert_count ? `<span class="badge" style="background:var(--surface-2);color:var(--text-dim)">已处置 ${it.alert_count - it.open_count}</span>` : ''}
+          </div>
+          <div class="small muted" style="margin-top:4px">
+            ${fmtTime(it.started_at)} → ${fmtTime(it.last_at)} · 持续 ${dur} · 峰值分 <b class="mono">${it.max_score}</b>
+          </div>
+        </div>
+        <button class="btn sm primary" data-inc-open="${esc(it.alert_ids[it.alert_ids.length - 1])}">查看最新告警</button>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
+        ${(it.processes || []).slice(0, 6).map((p) => `<span class="badge" style="background:var(--surface-2);color:var(--text-dim)" title="进程">${esc(p)}</span>`).join('')}
+        ${(it.mitre || []).slice(0, 6).map((m) => `<span class="badge info">${esc(m)}</span>`).join('')}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;border-top:1px solid var(--line-soft);padding-top:10px">
+        ${alerts}
+      </div>
+    </div>`;
+  }).join('');
+
+  $$('#content [data-inc-alert]').forEach((b) => b.addEventListener('click', () => openAlert(b.dataset.incAlert)));
+  const rf = $('#incRefresh');
+  if (rf) rf.addEventListener('click', viewIncidents);
+}
+
+/* ---------------- 可排序表格列 ----------------
+   点击「分值/严重度/时间」表头即切换排序。服务端本就支持
+   score/severity/oldest 排序，这里只是把能力暴露出来。 */
+function bindSortable() {
+  const map = { '时间': 'oldest', '分值': 'score', '严重度': 'severity' };
+  $$('#alertTable thead th').forEach((th) => {
+    const label = th.textContent.trim();
+    const key = map[label];
+    if (!key) return;
+    th.style.cursor = 'pointer';
+    th.title = `点击按${label}排序`;
+    if (state.alerts.filters.sort === key || (key === 'oldest' && !state.alerts.filters.sort)) {
+      th.innerHTML = `${label} <span style="opacity:.7">${key === 'oldest' && state.alerts.filters.sort === 'oldest' ? '↑' : '↓'}</span>`;
+    }
+    th.addEventListener('click', () => {
+      state.alerts.filters.sort = (state.alerts.filters.sort === key) ? '' : key;
+      state.alerts.page = 1;
+      clearSelection();
+      loadAlertTable();
+    });
+  });
+}
+
+/* ---------------- CSV 导出（带审计） ---------------- */
+function exportCSV() {
+  const f = state.alerts.filters;
+  const qs = new URLSearchParams();
+  if (f.status) qs.set('status', f.status);
+  if (f.severity) qs.set('severity', f.severity);
+  if (f.verdict) qs.set('verdict', f.verdict);
+  if (f.q) qs.set('q', f.q);
+  // 用 fetch+blob 而不是 location 跳转：复用与 api() 相同的 Bearer 认证
+  // （access token 只在内存，不会出现在下载 URL 里）
+  fetch('/api/v1/alerts/export?' + qs.toString(), {
+    headers: api.token ? { Authorization: `Bearer ${api.token}` } : {},
+    credentials: 'same-origin',
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`导出失败 (${res.status})`);
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `hostguard-alerts-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast('CSV 已导出');
+    })
+    .catch((e) => toast(e.message, 'err'));
+}
+
+/* ---------------- 命令面板（Alpine 组件） ----------------
+   Alpine 经 defer 先于本文件执行 alpine:init？不——defer 脚本在
+   DOM 解析完后按序执行，而本文件是 body 末尾的普通脚本，先于 defer。
+   因此这里监听 alpine:init 注册组件，保证时序正确。 */
+document.addEventListener('alpine:init', () => {
+  window.Alpine.data('cmdk', () => ({
+    open: false,
+    q: '',
+    sel: 0,
+    init() {
+      // Ctrl/Cmd+K 全局唤起；在输入框中也响应
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          this.open = !this.open;
+          if (this.open) { this.q = ''; this.sel = 0; }
+        }
+      });
+    },
+    items() {
+      const goto = (key, label, icon) => ({ id: 'go-' + key, label: '前往：' + label, icon, hint: '导航', run: () => { location.hash = '#/' + key; } });
+      const base = [
+        goto('overview', '概览', '▤'),
+        goto('alerts', '告警中心', '⚠'),
+        goto('incidents', '事件', '⛓'),
+        goto('hosts', '主机终端', '◫'),
+        goto('rules', '检测规则', '⌗'),
+        goto('allowlist', '白名单', '✓'),
+        goto('audit', '审计日志', '≡'),
+        { id: 'act-open', label: '告警：只看待处置', icon: '◐', hint: '筛选', run: () => { navigate('alerts'); state.alerts.filters.status = 'open'; state.alerts.page = 1; loadAlertTable(); } },
+        { id: 'act-crit', label: '告警：严重且未处置', icon: '◆', hint: '筛选', run: () => { navigate('alerts'); state.alerts.filters.status = 'open'; state.alerts.filters.severity = 'critical'; state.alerts.page = 1; loadAlertTable(); } },
+        { id: 'act-export', label: '导出当前告警筛选为 CSV', icon: '⇩', hint: '导出', run: () => exportCSV() },
+        { id: 'act-dense', label: '切换紧凑视图', icon: '≡', hint: '显示', run: () => { document.body.classList.toggle('dense'); } },
+        { id: 'act-keys', label: '键盘快捷键帮助', icon: '?', hint: '帮助', run: () => showShortcuts() },
+      ];
+      const q = this.q.trim().toLowerCase();
+      if (!q) return base;
+      return base.filter((x) => x.label.toLowerCase().includes(q));
+    },
+    get filtered() { return this.items(); },
+    move(d) {
+      const n = this.filtered.length;
+      if (!n) return;
+      this.sel = (this.sel + d + n) % n;
+    },
+    pick(item) { this.open = false; item.run(); },
+    run() { const it = this.filtered[this.sel]; if (it) this.pick(it); },
+  }));
+});

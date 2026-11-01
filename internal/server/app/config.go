@@ -22,6 +22,11 @@ type Config struct {
 	CORSOrigins     []string
 	RuleSignKey  string // 规则包签名密钥；空则从 JWTSecret 派生
 
+	// Webhook 告警推送：URL 为空表示不启用。
+	WebhookURL     string
+	WebhookSecret  string        // HMAC-SHA256 签名密钥（X-HG-Signature 头）
+	WebhookTimeout time.Duration
+
 	// AI 推理后端配置。Provider=none 时只用确定性启发式分析。
 	AIProvider    string
 	AIBaseURL     string
@@ -42,6 +47,7 @@ type Config struct {
 	RateBurst       float64
 	KillEnabled     bool
 	RetentionDays   int
+	DupWindow       time.Duration // 同指纹告警聚合窗口
 	HeartbeatSec    int
 	ScanSec         int
 	ShutdownTimeout time.Duration
@@ -62,6 +68,10 @@ func LoadConfig() (*Config, error) {
 	c.JWTSecret = l.Required("HG_SERVER_JWT_SECRET")
 	c.RuleSignKey = l.Env("HG_SERVER_RULE_SIGN_KEY", "")
 
+	c.WebhookURL = l.Env("HG_SERVER_WEBHOOK_URL", "")
+	c.WebhookSecret = l.Env("HG_SERVER_WEBHOOK_SECRET", "")
+	c.WebhookTimeout = l.Duration("HG_SERVER_WEBHOOK_TIMEOUT", 10*time.Second)
+
 	c.AIProvider = l.Env("HG_AI_PROVIDER", "none")
 	c.AIBaseURL = l.Env("HG_AI_BASE_URL", "")
 	c.AIAPIKey = l.Env("HG_AI_API_KEY", "")
@@ -80,6 +90,7 @@ func LoadConfig() (*Config, error) {
 	c.LoginBurst = float64(l.Int("HG_SERVER_LOGIN_BURST", 5))
 	c.KillEnabled = l.Bool("HG_SERVER_KILL_ENABLED", false)
 	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 30)
+	c.DupWindow = l.Duration("HG_SERVER_DUP_WINDOW", 5*time.Minute) // 同指纹告警聚合窗口
 	c.HeartbeatSec = l.Int("HG_SERVER_HEARTBEAT_SEC", 30)
 	c.ScanSec = l.Int("HG_SERVER_SCAN_SEC", 2)
 	c.ShutdownTimeout = l.Duration("HG_SERVER_SHUTDOWN_TIMEOUT", 20*time.Second)
