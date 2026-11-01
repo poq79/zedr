@@ -123,7 +123,11 @@ function AppInner() {
   return (
     <>
       <Routes>
+        {/* path="*"：无 path 且无 children 的 Route 在 RR v7 不参与匹配，
+            会导致登录后整个 AppShell 不挂载（控制台空白），见 login 后
+            "No routes matched location /" 运行时警告 */}
         <Route
+          path="*"
           element={
             <AppShell
               user={user} unread={unread} live={live}
