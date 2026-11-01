@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { api } from './lib/api';
 import { initDense, initTheme } from './lib/theme';
 import type { Alert, User } from './lib/types';
@@ -25,7 +25,6 @@ function AppInner() {
   const [freshness, setFreshness] = useState('--:--:--');
   const [cmdOpen, setCmdOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
-  const navigate = useNavigate();
   const location = useLocation();
   const toast = useToast();
 
@@ -143,7 +142,7 @@ function AppInner() {
                 <Route path="/overview" element={<OverviewPage key={`o${refreshTick}`} />} />
                 <Route path="/alerts" element={<Alerts key={`a${refreshTick}`} user={user} />} />
                 <Route path="/hunt" element={<HuntPage key={`h${refreshTick}`} />} />
-                <Route path="/incidents" element={<IncidentsPage key={`i${refreshTick}`} onOpenAlert={(id) => navigate(`/alerts?open=${id}`)} />} />
+                <Route path="/incidents" element={<IncidentsPage key={`i${refreshTick}`} user={user} />} />
                 <Route path="/attack" element={<AttackMatrixPage key={`m${refreshTick}`} />} />
                 <Route path="/intel" element={<IntelPage key={`io${refreshTick}`} user={user} />} />
                 <Route path="/report" element={<ReportPage key={`r${refreshTick}`} />} />

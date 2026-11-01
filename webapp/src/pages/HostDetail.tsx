@@ -39,6 +39,8 @@ export function HostDetailPage() {
   const [cmdBusy, setCmdBusy] = useState('');
   const [qPath, setQPath] = useState('');
   const [qPid, setQPid] = useState('');
+  const [changes, setChanges] = useState<Alert[] | null>(null);
+  const [changeSection, setChangeSection] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab') || 'overview';
   const setTab = (k: string) => setSearchParams(k === 'overview' ? {} : { tab: k }, { replace: true });
@@ -52,11 +54,20 @@ export function HostDetailPage() {
       setSections((await api.get<{ sections: HostInventorySection[] }>(`/api/v1/hosts/${encodeURIComponent(id)}/inventory`)).sections || []);
       const all = (await api.get<{ items: AgentCommand[] }>('/api/v1/commands')).items || [];
       setCmds(all.filter((c) => c.agent_id === id));
+      setChanges((await api.get<{ items: Alert[] }>(`/api/v1/hosts/${encodeURIComponent(id)}/changes?limit=100`)).items || []);
     } catch (e) { err.capture(e); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  useEffect(() => { setHost(null); setRecent(null); setSections(null); setCmds(null); load(); }, [load]);
+  /* 变更节过滤：服务端 ?section= 白名单过滤，切 chip 重新拉取 */
+  useEffect(() => {
+    if (!id || changeSection === '') return;
+    api.get<{ items: Alert[] }>(`/api/v1/hosts/${encodeURIComponent(id)}/changes?limit=100&section=${encodeURIComponent(changeSection)}`)
+      .then((r) => setChanges(r.items || []))
+      .catch(() => setChanges([]));
+  }, [changeSection, id]);
+
+  useEffect(() => { setHost(null); setRecent(null); setSections(null); setCmds(null); setChanges(null); load(); }, [load]);
   if (err.rendered) return err.rendered;
 
   const sec = (name: string) => sections?.find((s) => s.name === name);
@@ -116,6 +127,7 @@ export function HostDetailPage() {
               { key: 'tasks', label: '计划任务', count: rowsOf('tasks').length },
               { key: 'startup', label: '自启动', count: rowsOf('startup').length },
               { key: 'network', label: '网络', count: rowsOf('adapters').length + rowsOf('listeners').length },
+              { key: 'changes', label: '变更', count: changes?.length },
               { key: 'ops', label: '处置与历史', count: cmds?.length },
             ]}
           />
@@ -200,6 +212,42 @@ export function HostDetailPage() {
               </SectionCard>
 
               </>
+            )}
+            {tab === 'changes' && (
+              <Card className="p-4">
+                <div className="mb-2.5 flex flex-wrap items-center gap-2.5">
+                  <CardTitle>资产变更历史</CardTitle>
+                  <span className="font-mono text-[11px] text-ghost">{changes?.length ?? 0}</span>
+                  <div className="flex-1" />
+                  <div className="flex flex-wrap gap-1">
+                    {[{ k: '', l: '全部' }, { k: 'system', l: '系统' }, { k: 'adapters', l: '适配器' }, { k: 'listeners', l: '端口' }, { k: 'services', l: '服务' }, { k: 'tasks', l: '任务' }, { k: 'startup', l: '启动项' }, { k: 'agent', l: '探针' }].map((c) => (
+                      <button key={c.k} onClick={() => { setChangeSection(c.k); if (c.k === '') load(); }}
+                        className={cn('cursor-pointer rounded-[5px] border px-2 py-1 text-[11.5px] transition-colors',
+                          changeSection === c.k ? 'border-border-strong bg-secondary font-medium text-foreground' : 'border-border-soft text-muted-foreground hover:text-foreground')}>
+                        {c.l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {!changes ? <SkeletonRows rows={3} /> : !changes.length ? (
+                  <div className="px-4 py-6 text-center text-[12.5px] text-faint">该范围内没有资产变更记录</div>
+                ) : (
+                  <table className="w-full text-[12.5px]">
+                    <tbody>
+                      {changes.map((c) => (
+                        <tr key={c.id} onClick={() => navigate(`/alerts?open=${encodeURIComponent(c.id)}`)}
+                          className="cursor-pointer border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary">
+                          <td className="w-[72px] px-3 py-2"><Badge tone={c.severity}>{SEV_LABEL[c.severity]}</Badge></td>
+                          <td className="px-3 py-2"><span className="block max-w-[520px] truncate font-medium" title={c.title}>{c.title}</span></td>
+                          <td className="px-3 py-2 font-mono text-[11.5px] text-faint">{c.process_name}</td>
+                          <td className="w-[90px] px-3 py-2 text-xs text-faint">{relTime(c.created_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <p className="mt-2 text-xs text-faint">变更事件由探针 30s 差量上报触发（监听端口/服务/任务/启动项等），并进入告警管线。</p>
+              </Card>
             )}
             {tab === 'ops' && (
               <>

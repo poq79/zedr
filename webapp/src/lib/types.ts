@@ -50,8 +50,34 @@ export interface AuditRow { id: number; at: string; actor: string; action: strin
 export interface UserRow { id: number; username: string; role: Role; created_at?: string; last_login_at?: string }
 
 export interface Incident {
-  id: string; title: string; severity: Severity; hostnames: string[];
-  alert_count: number; first_seen: string; last_seen: string;
+  id: string;
+  agent_id: string;
+  hostname: string;
+  title: string;
+  peak_severity: Severity;
+  max_score: number;
+  alert_count: number;
+  open_count: number;
+  status: 'open' | 'investigating' | 'contained' | 'resolved';
+  processes?: string[];
+  rule_ids?: string[];
+  mitre?: string[];
+  first_seen: string;
+  last_seen: string;
+  first_action_at?: string | null;
+  resolved_at?: string | null;
+  note?: string;
+  updated_at?: string;
+}
+
+/** 跨主机爆发聚类（同一载荷在多台主机出现） */
+export interface Burst {
+  hash: string;
+  host_count: number;
+  alert_count: number;
+  peak_severity: Severity;
+  hosts: string[];
+  title_sample?: string;
 }
 
 export interface AiTriage { verdict: Verdict; confidence: number; summary: string; cites?: { id: string; note?: string }[]; notes?: string[] }
@@ -97,8 +123,7 @@ export interface IntegrityReport {
 }
 
 /** 自然语言狩猎（POST /api/v1/ai/hunt）：AI 把自然语言翻译成受控过滤条件 */
-export interface HuntFilter { field: string; op: string; value: string; values?: string[] }
-export interface HuntQuery {
+export interface HuntFilter { field: string; op: string; value: string; values?: string[] }export interface HuntQuery {
   target: string; filters: HuntFilter[]; since_sec: number;
   order_by: string; desc: boolean; limit: number;
   explain: string; /* 模型对查询的自然语言解释，供分析师确认意图 */
@@ -108,4 +133,16 @@ export interface HuntResult {
   total: number;
   alerts: Alert[];
   elapsed: string;
+}
+
+/** Agentic 自动调查（POST /api/v1/alerts/{id}/investigate）：五步确定性编排 */
+export interface InvestigationStep { name: string; finding: string; citations?: string[] }
+export interface RecommendedAction { action: string; target: string; available: boolean; reason?: string }
+export interface Investigation {
+  alert_id: string;
+  verdict_suggestion: string;
+  confidence: number;
+  steps: InvestigationStep[];
+  recommended_actions: RecommendedAction[];
+  created_at: string;
 }

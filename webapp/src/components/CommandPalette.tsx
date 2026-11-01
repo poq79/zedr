@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search } from 'lucide-react';
+import { Download, Rows3, Search, Sun, Keyboard, X, type LucideIcon } from 'lucide-react';
 import { Kbd } from './ui/basics';
 import { ROUTES } from './AppShell';
 import { toggleDense, toggleTheme } from '../lib/theme';
 
-interface Cmd { id: string; label: string; icon?: string; hint?: string; run: () => void }
+interface Cmd { id: string; label: string; icon: LucideIcon; hint?: string; run: () => void }
 
 export function CommandPalette({ open, setOpen, onExport, onShortcuts }: {
   open: boolean; setOpen: (v: boolean) => void; onExport: () => void; onShortcuts: () => void;
@@ -16,12 +16,13 @@ export function CommandPalette({ open, setOpen, onExport, onShortcuts }: {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const commands: Cmd[] = useMemo(() => [
-    ...ROUTES.map((r) => ({ id: r.to, label: `前往${r.label}`, icon: '→', hint: r.label, run: () => navigate(r.to) })),
-    { id: 'export', label: '导出当前视图 CSV', icon: '↧', hint: '导出', run: () => onExport() },
-    { id: 'dense', label: '切换紧凑视图', icon: '≡', hint: '显示', run: () => toggleDense() },
-    { id: 'theme', label: '切换亮 / 暗主题', icon: '◐', hint: '主题', run: () => toggleTheme() },
-    { id: 'keys', label: '键盘快捷键帮助', icon: '?', hint: '帮助', run: () => onShortcuts() },
-    { id: 'close', label: '关闭命令面板', icon: '✕', hint: 'Esc', run: () => setOpen(false) },
+    // 导航命令直接复用侧边栏图标体系（宪法 §5：禁字符图标，一律 lucide）
+    ...ROUTES.map((r) => ({ id: r.to, label: `前往${r.label}`, icon: r.icon, hint: r.label, run: () => navigate(r.to) })),
+    { id: 'export', label: '导出当前视图 CSV', icon: Download, hint: '导出', run: () => onExport() },
+    { id: 'dense', label: '切换紧凑视图', icon: Rows3, hint: '显示', run: () => toggleDense() },
+    { id: 'theme', label: '切换亮 / 暗主题', icon: Sun, hint: '主题', run: () => toggleTheme() },
+    { id: 'keys', label: '键盘快捷键帮助', icon: Keyboard, hint: '帮助', run: () => onShortcuts() },
+    { id: 'close', label: '关闭命令面板', icon: X, hint: 'Esc', run: () => setOpen(false) },
   ], [navigate, onExport, onShortcuts, setOpen]);
 
   const filtered = useMemo(() => {
@@ -68,7 +69,7 @@ export function CommandPalette({ open, setOpen, onExport, onShortcuts }: {
             ref={inputRef}
             value={q}
             onChange={(e) => { setQ(e.target.value); setSel(0); }}
-            placeholder="跳转页面、执行操作…（支持：告警 / 主机 / 事件 / 规则 / 导出）"
+            placeholder="跳转页面、执行操作…（支持：告警 / 主机 / 狩猎 / 矩阵 / 导出）"
             className="h-12 w-full border-0 bg-transparent text-[14.5px] text-foreground outline-none placeholder:text-ghost"
           />
         </div>
@@ -80,7 +81,9 @@ export function CommandPalette({ open, setOpen, onExport, onShortcuts }: {
               onMouseEnter={() => setSel(i)}
               className={`flex w-full cursor-pointer items-center gap-2.5 rounded-[7px] border-0 px-3 py-2 text-left text-[13px] ${i === sel ? 'bg-brand-soft text-foreground' : 'bg-transparent text-foreground'}`}
             >
-              <span className="w-5 shrink-0 text-center text-primary">{c.icon}</span>
+              <span className={`flex w-5 shrink-0 justify-center ${i === sel ? 'text-primary' : 'text-faint'}`}>
+                <c.icon size={15} strokeWidth={1.7} />
+              </span>
               <span>{c.label}</span>
               {c.hint && <span className="ml-auto rounded border border-border-soft px-1.5 py-px text-[11px] text-ghost">{c.hint}</span>}
             </button>

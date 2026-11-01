@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { BrainCircuit, ShieldBan } from 'lucide-react';
 import { api } from '../lib/api';
-import type { Alert } from '../lib/types';
+import type { Alert, Investigation } from '../lib/types';
 import { SEV_LABEL, VERDICT_LABEL, LAYER_LABEL, fmtTime } from '../lib/format';
 import { Badge, Button, Card, EmptyState, Skeleton, Tabs } from '../components/ui/basics';
 import { Drawer, useToast, useConfirm } from '../components/ui/overlays';
@@ -29,8 +29,8 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
   const [a, setA] = useState<Alert | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
-  /* 证据链与 AI 研判分卡：抽屉一屏一屏看，不再一条滚到底 */
-  const [tab, setTab] = useState<'evidence' | 'ai'>('evidence');
+  /* 证据链 / AI 研判 / 自动调查三卡：抽屉一屏一屏看，不再一条滚到底 */
+  const [tab, setTab] = useState<'evidence' | 'ai' | 'investigate'>('evidence');
 
   useEffect(() => {
     if (alertId == null) { setA(null); setErr(''); return; }
@@ -100,8 +100,8 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
         <EmptyState tone="warn" icon={<ShieldBan size={20} />} title={err} sub="可关闭后重试，或刷新页面。" />
       ) : a && (
         <div className="space-y-5">
-          <Tabs className="mb-1" value={tab} onChange={(k) => setTab(k as 'evidence' | 'ai')}
-            tabs={[{ key: 'evidence', label: '证据链' }, { key: 'ai', label: 'AI 研判' }]} />
+          <Tabs className="mb-1" value={tab} onChange={(k) => setTab(k as 'evidence' | 'ai' | 'investigate')}
+            tabs={[{ key: 'evidence', label: '证据链' }, { key: 'ai', label: 'AI 研判' }, { key: 'investigate', label: '自动调查' }]} />
           {tab === 'evidence' && (
             <div key="ev" className="anim-page space-y-5">
           {a.summary && (
@@ -177,6 +177,9 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
           )}
           {tab === 'ai' && (
             <div key="ai" className="anim-page"><AiPanel alertId={a.id} /></div>
+          )}
+          {tab === 'investigate' && (
+            <div key="inv" className="anim-page"><InvestigatePanel alertId={a.id} /></div>
           )}
         </div>
       )}
@@ -328,6 +331,89 @@ function TriageBody({ r }: { r: TriageResp }) {
           <div className="font-mono text-xs leading-[1.9]">
             {r.attack_chain.map((c, i) => <div key={i}>{i + 1}. {c}</div>)}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Agentic 自动调查（POST /alerts/{id}/investigate）：
+   五步确定性编排——每步都有 finding 与引用，建议动作标注服务端开关是否可用。 */
+function InvestigatePanel({ alertId }: { alertId: string }) {
+  const toast = useToast();
+  const [inv, setInv] = useState<Investigation | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [runErr, setRunErr] = useState('');
+
+  const run = async () => {
+    setBusy(true); setRunErr('');
+    try {
+      setInv(await api.post<Investigation>(`/api/v1/alerts/${encodeURIComponent(alertId)}/investigate`, {}));
+    } catch (e) {
+      setRunErr((e as Error).message);
+      toast((e as Error).message, 'err');
+    } finally { setBusy(false); }
+  };
+
+  const verdictTone = (v: string) => v === 'malicious' ? 'critical' : v === 'suspicious' ? 'medium' : v === 'benign' ? 'resolved' : 'info';
+
+  return (
+    <div>
+      {!inv && (
+        <div className="rounded-lg border border-border-soft bg-secondary/40 px-4 py-6 text-center">
+          <p className="m-0 text-[12.5px] leading-[1.8] text-muted-foreground">
+            自动调查会对这条告警执行五步确定性编排：<br />
+            进程画像 → 家族/哈希关联 → 主机上下文 → 同源扩散 → 处置建议。<br />
+            <span className="text-faint">每一步都给证据引用，不做黑盒判断。</span>
+          </p>
+          <Button variant="primary" className="mt-3.5" onClick={run} disabled={busy}>
+            {busy ? '调查中…' : '开始自动调查'}
+          </Button>
+          {runErr && <div className="mt-2.5 text-xs text-destructive">{runErr}</div>}
+        </div>
+      )}
+
+      {inv && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2.5 rounded-lg border border-border-soft bg-secondary/40 px-3.5 py-3">
+            <span className="text-xs text-faint">研判建议</span>
+            <Badge tone={verdictTone(inv.verdict_suggestion)}>{VERDICT_LABEL[inv.verdict_suggestion] || inv.verdict_suggestion}</Badge>
+            <span className="text-xs text-faint">置信度 <b className="font-mono text-foreground">{(inv.confidence * 100).toFixed(0)}%</b></span>
+            <div className="flex-1" />
+            <Button size="sm" variant="ghost" onClick={run} disabled={busy}>{busy ? '重算中…' : '重新调查'}</Button>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            {inv.steps.map((s, i) => (
+              <div key={i} className="rounded-md border border-border-soft bg-card px-3.5 py-2.5" data-step={i}>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[11px] text-ghost">{String(i + 1).padStart(2, '0')}</span>
+                  <b className="text-[12.5px]">{s.name}</b>
+                  <span className="flex-1" />
+                  {!!s.citations?.length && (
+                    <span className="flex flex-wrap gap-1">
+                      {s.citations.slice(0, 4).map((c) => <span key={c} className="rounded border border-primary/30 bg-brand-soft px-1 py-px font-mono text-[10.5px] text-primary">{c}</span>)}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 text-[12.5px] leading-[1.7] text-muted-foreground">{s.finding}</div>
+              </div>
+            ))}
+          </div>
+
+          {!!inv.recommended_actions.length && (
+            <div>
+              <div className="mb-1.5 text-xs text-faint">建议处置</div>
+              {inv.recommended_actions.map((a, i) => (
+                <div key={i} className="mb-1.5 flex flex-wrap items-center gap-2.5 rounded-lg border border-border-soft bg-secondary/60 px-3 py-2">
+                  <span className="rounded border border-border-soft bg-secondary px-1.5 py-0.5 font-mono text-[10.5px] uppercase text-faint">{a.action}</span>
+                  <b className="min-w-0 flex-1 truncate font-mono text-[11.5px]" title={a.target}>{a.target || '-'}</b>
+                  <Badge tone={a.available ? 'resolved' : 'neutral'}>{a.available ? '可用' : '服务端开关未启用'}</Badge>
+                  {a.reason && <span className="w-full text-[11px] text-faint">{a.reason}</span>}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

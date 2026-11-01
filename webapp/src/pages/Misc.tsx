@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { KeyRound, Monitor, Plus, RefreshCw, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
-import type { Host, AllowEntry, AuditRow, User as UserRow, Severity, Role, IntegrityReport } from '../lib/types';
+import type { Host, AllowEntry, AuditRow, User as UserRow, Severity, Role, IntegrityReport, Incident, Burst } from '../lib/types';
 import { SEV_LABEL, relTime, fmtTime } from '../lib/format';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { useToast, useConfirm } from '../components/ui/overlays';
@@ -426,29 +426,69 @@ export function UsersPage({ self, onPasswordChanged }: { self: { username: strin
 
 /* ================= 事件（攻击链聚类） ================= */
 
-interface Incident {
-  peak_severity: Severity; hostname: string; alert_count: number; open_count: number;
-  started_at: string; last_at: string; duration_sec: number; max_score: number;
-  alert_ids: number[]; processes?: string[]; mitre?: string[];
-}
-interface Burst { hash: string; host_count: number; alert_count: number; peak_severity: Severity; hosts: string[]; title_sample?: string }
+const INCIDENT_STATUS_LABEL: Record<string, string> = {
+  open: '待调查', investigating: '调查中', contained: '已遏制', resolved: '已解决',
+};
+const INCIDENT_STATUS_TONE: Record<string, string> = {
+  open: 'critical', investigating: 'medium', contained: 'info', resolved: 'resolved',
+};
 
-export function IncidentsPage({ onOpenAlert }: { onOpenAlert: (id: number) => void }) {
+export function IncidentsPage({ user }: { user?: { role: Role } }) {
   const err = useError();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const navigate = useNavigate();
   const [data, setData] = useState<{ items: Incident[]; bursts: Burst[] } | null>(null);
   const [tick, setTick] = useState(0);
+  const [status, setStatus] = useState('');
+  const [busyId, setBusyId] = useState('');
+  const canWrite = !user || user.role !== 'viewer';
 
   useEffect(() => {
-    api.get<{ items: Incident[]; bursts?: Burst[] }>('/api/v1/incidents?limit=50')
+    const qs = new URLSearchParams({ limit: '100' });
+    if (status) qs.set('status', status);
+    api.get<{ items: Incident[]; bursts?: Burst[] }>(`/api/v1/incidents?${qs.toString()}`)
       .then((r) => setData({ items: r.items || [], bursts: r.bursts || [] }))
       .catch(err.capture);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick]);
+  }, [tick, status]);
 
   if (err.rendered) return err.rendered;
   if (!data) return <Card className="p-4"><SkeletonRows rows={5} /></Card>;
 
   const { items, bursts } = data;
+
+  /* 状态机只允许前进：open → investigating → contained → resolved（contained 可直接 resolved） */
+  const NEXT: Record<string, Array<{ to: Incident['status']; label: string; danger?: boolean; note: string }>> = {
+    open: [
+      { to: 'investigating', label: '开始调查', note: '事件进入调查阶段' },
+      { to: 'contained', label: '已遏制', note: '威胁已遏制' },
+      { to: 'resolved', label: '直接解决', note: '事件已解决' },
+    ],
+    investigating: [
+      { to: 'contained', label: '已遏制', note: '威胁已遏制' },
+      { to: 'resolved', label: '解决', note: '事件已解决' },
+    ],
+    contained: [
+      { to: 'resolved', label: '解决', note: '事件已解决' },
+    ],
+  };
+
+  const transition = async (it: Incident, to: Incident['status'], label: string, note: string) => {
+    const ok = await confirm({
+      title: `${label}：「${it.title}」？`,
+      message: `状态 ${it.status} → ${to}。\n状态机只允许前进、不可回退（避免 SLA 计时失真）。`,
+      okText: label, danger: to === 'resolved',
+    });
+    if (!ok) return;
+    setBusyId(it.id);
+    try {
+      await api.post(`/api/v1/incidents/${encodeURIComponent(it.id)}/status`, { status: to, note });
+      toast(`事件已更新为「${INCIDENT_STATUS_LABEL[to]}」`);
+      setTick((t) => t + 1);
+    } catch (e) { toast((e as Error).message, 'err'); }
+    finally { setBusyId(''); }
+  };
 
   return (
     <div>
@@ -473,45 +513,56 @@ export function IncidentsPage({ onOpenAlert }: { onOpenAlert: (id: number) => vo
         </Card>
       )}
 
-      <div className="mb-3 flex items-center gap-2.5">
-        <h2 className="m-0 text-base font-semibold">事件</h2>
-        <span className="text-xs text-faint">未处置告警按「同主机 · 相邻间隔 ≤ 30 分钟」聚类 · 共 {items.length} 个活跃事件</span>
+      <div className="mb-3 flex flex-wrap items-center gap-2.5">
+        <span className="text-xs text-faint">同主机 · 相邻间隔 ≤30 分钟的告警聚类为事件 · 状态机只前进</span>
         <div className="flex-1" />
+        <Select value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">全部状态</option>
+          {Object.entries(INCIDENT_STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </Select>
         <Button size="sm" onClick={() => setTick((t) => t + 1)}><RefreshCw size={13} /> 刷新</Button>
       </div>
 
       {!items.length ? (
-        <Card><EmptyState icon={<ShieldCheck size={20} />} title="当前没有告警聚合成事件"
-          sub="这是好事——说明各终端都在安静运行，没有形成攻击链的行为序列。事件会在多条相关告警出现时自动聚类。" /></Card>
-      ) : items.map((it, idx) => {
-        const dur = it.duration_sec > 0
-          ? (it.duration_sec >= 3600 ? `${Math.round(it.duration_sec / 3600)} 小时` : `${Math.max(1, Math.round(it.duration_sec / 60))} 分钟`)
-          : '<1 分钟';
+        <Card><EmptyState icon={<ShieldCheck size={20} />} title="当前没有事件"
+          sub="这是好事——说明各终端都在安静运行，没有形成攻击链的行为序列。事件会在多条相关告警出现时自动聚类并持久化。" /></Card>
+      ) : items.map((it) => {
+        const durSec = Math.max(0, (new Date(it.last_seen).getTime() - new Date(it.first_seen).getTime()) / 1000);
+        const dur = durSec >= 3600 ? `${Math.round(durSec / 3600)} 小时` : durSec >= 60 ? `${Math.round(durSec / 60)} 分钟` : '<1 分钟';
+        const nexts = canWrite ? (NEXT[it.status] || []) : [];
         return (
-          <Card key={idx} className={cn('mb-3 p-4 transition-colors hover:border-l-primary', `border-l-3 ${it.peak_severity === 'critical' ? 'border-l-crit' : it.peak_severity === 'high' ? 'border-l-destructive' : it.peak_severity === 'medium' ? 'border-l-warn' : 'border-l-border'}`)}>
+          <Card key={it.id} className={cn('mb-3 p-4', `border-l-3 ${it.peak_severity === 'critical' ? 'border-l-crit' : it.peak_severity === 'high' ? 'border-l-destructive' : it.peak_severity === 'medium' ? 'border-l-warn' : 'border-l-border'}`)}>
             <div className="flex flex-wrap items-center gap-3">
               <Badge tone={it.peak_severity} className="px-3 py-1 text-[13px]">{SEV_LABEL[it.peak_severity] || it.peak_severity}</Badge>
-              <div className="min-w-[200px] flex-1">
-                <div className="font-semibold">
-                  {it.hostname}
-                  <Badge tone="info" className="ml-2">{it.alert_count} 条告警</Badge>
-                  {it.open_count < it.alert_count && <Badge tone="neutral" className="ml-1.5">已处置 {it.alert_count - it.open_count}</Badge>}
+              <div className="min-w-[220px] flex-1">
+                <div className="flex flex-wrap items-center gap-1.5 font-semibold">
+                  {it.title}
+                  <Badge tone="info">{it.alert_count} 条告警</Badge>
+                  {it.open_count > 0 ? <Badge tone="medium">待处置 {it.open_count}</Badge> : <Badge tone="resolved">告警全部处置</Badge>}
+                  <Badge tone={INCIDENT_STATUS_TONE[it.status] || 'neutral'} title="事件处置状态">{INCIDENT_STATUS_LABEL[it.status] || it.status}</Badge>
                 </div>
                 <div className="mt-1 text-xs text-faint">
-                  {fmtTime(it.started_at)} → {fmtTime(it.last_at)} · 持续 {dur} · 峰值分 <b className="font-mono">{it.max_score}</b>
+                  {it.hostname} · {fmtTime(it.first_seen)} → {fmtTime(it.last_seen)} · 持续 {dur} · 峰值分 <b className="font-mono">{it.max_score}</b>
                 </div>
               </div>
-              <Button size="sm" variant="primary" onClick={() => onOpenAlert(it.alert_ids[it.alert_ids.length - 1])}>查看最新告警</Button>
+              <Button size="sm" variant="ghost" onClick={() => navigate(`/alerts?q=${encodeURIComponent(it.hostname)}`)}>该主机告警</Button>
             </div>
             <div className="mt-3 flex flex-wrap gap-1.5">
               {(it.processes || []).slice(0, 6).map((p, i) => <Badge key={`p${i}`} tone="neutral" title="进程">{p}</Badge>)}
+              {(it.rule_ids || []).slice(0, 4).map((r, i) => <Badge key={`r${i}`} tone="neutral" title="规则" >{r}</Badge>)}
               {(it.mitre || []).slice(0, 6).map((m, i) => <Badge key={`m${i}`} tone="info">{m}</Badge>)}
             </div>
-            <div className="mt-2.5 flex flex-wrap gap-1.5 border-t border-border-soft pt-2.5">
-              {it.alert_ids.map((id, i) => (
-                <Button key={id} size="sm" variant="ghost" onClick={() => onOpenAlert(id)}>告警 {i + 1}</Button>
-              ))}
-            </div>
+            {it.note && <div className="mt-2 text-xs text-faint">备注：{it.note}</div>}
+            {nexts.length > 0 && (
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-border-soft pt-2.5">
+                <span className="mr-1 text-[11px] text-ghost">推进状态：</span>
+                {nexts.map((n) => (
+                  <Button key={n.to} size="sm" variant={n.to === 'resolved' ? 'ghost' : 'default'}
+                    disabled={busyId === it.id}
+                    onClick={() => transition(it, n.to, n.label, n.note)}>{n.label}</Button>
+                ))}
+              </div>
+            )}
           </Card>
         );
       })}
@@ -544,18 +595,19 @@ export function ReportPage() {
 
   return (
     <div className="space-y-3.5">
-      <Card className="p-4">
-        <CardTitle className="mb-3">本周概览</CardTitle>
-        <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
-          {[
-            ['本周新增告警', rep.alerts_week],
-            ['本周已处置', rep.resolved_week],
-            ['综合误报率', rep.fp_rate != null ? `${(rep.fp_rate * 100).toFixed(1)}%` : null],
-            ['平均处置时长', rep.mttr_min != null ? `${Math.round(rep.mttr_min)} 分钟` : null],
-          ].map(([label, v]) => (
-            <div key={label as string} className="rounded-lg border border-border-soft bg-secondary/40 p-3">
-              <div className="text-xs text-faint">{label as string}</div>
-              <div className="anim-digit mt-1.5 text-[22px] font-bold tabular-nums">{(v as number | null) ?? '-'}</div>
+      <Card className="p-0">
+        {/* 与概览 KPI 同构：单面板 + 发丝线分隔 + mono 读数 */}
+        <div className="grid grid-cols-2 divide-border-soft md:grid-cols-4 md:divide-x">
+          {([
+            ['本周新增告警', rep.alerts_week, '过去 7 天'],
+            ['本周已处置', rep.resolved_week, '含确认/解决/误报'],
+            ['综合误报率', rep.fp_rate != null ? `${(rep.fp_rate * 100).toFixed(1)}%` : null, '已处置样本中的误报占比'],
+            ['平均处置时长', rep.mttr_min != null ? `${Math.round(rep.mttr_min)} 分钟` : null, '创建 → 处置'],
+          ] as [string, string | number | null, string][]).map(([label, v, sub]) => (
+            <div key={label} className="px-4 py-3.5">
+              <div className="text-[11px] tracking-[.5px] text-faint">{label}</div>
+              <div className="anim-digit mt-1.5 font-mono text-[26px] leading-none font-semibold tabular-nums">{v ?? '—'}</div>
+              <div className="mt-1.5 text-[11.5px] text-faint">{sub}</div>
             </div>
           ))}
         </div>

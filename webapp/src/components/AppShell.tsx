@@ -82,7 +82,10 @@ export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, c
       if (e.key.toLowerCase() === 'r') onRefresh();
       if (e.key.toLowerCase() === 'g') {
         const once = (e2: KeyboardEvent) => {
-          const map: Record<string, string> = { o: '/overview', a: '/alerts', i: '/incidents', h: '/hosts', r: '/rules', w: '/allowlist', l: '/audit', u: '/users' };
+          const map: Record<string, string> = {
+            o: '/overview', a: '/alerts', s: '/hunt', i: '/incidents', m: '/attack', p: '/report',
+            h: '/hosts', r: '/rules', t: '/intel', w: '/allowlist', l: '/audit', u: '/users',
+          };
           const dest = map[e2.key.toLowerCase()];
           if (dest) navigate(dest);
           window.removeEventListener('keydown', once, true);

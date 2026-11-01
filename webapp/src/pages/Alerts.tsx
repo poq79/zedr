@@ -35,10 +35,13 @@ export function Alerts({ user }: { user: User }) {
   useEffect(() => {
     const open = searchParams.get('open');
     const mitre = searchParams.get('mitre');
+    const q = searchParams.get('q');
     if (open) { setOpenId(open); }
     // ATT&CK 矩阵格子下钻：?mitre=T1059 精确过滤（后端 CSV 定界匹配，不会误中 T1059.001）
     if (mitre) { setFilters((f) => ({ ...f, mitre })); }
-    if (open || mitre) { setSearchParams({}, { replace: true }); }
+    // 事件页/主机页跳转：?q=hostname 按关键词定位（同搜索框语义）
+    if (q) { setFilters((f) => ({ ...f, q })); }
+    if (open || mitre || q) { setSearchParams({}, { replace: true }); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

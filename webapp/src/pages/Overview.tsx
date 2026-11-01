@@ -44,7 +44,7 @@ export function OverviewPage() {
           数字一律 mono——仪表读数是本系统的记忆锚点（UI-DESIGN §3） */}
       <div className="mb-3.5 grid grid-cols-2 divide-border-soft border border-border-soft rounded-md bg-card xl:grid-cols-4 xl:divide-x">
         <Kpi loading={loading} label="受管主机" tone={hostRate < 60 ? 'warn' : 'ok'} value={d?.online_hosts ?? 0} suffix={d ? `/${d.total_hosts}` : ''} sub={`在线率 ${hostRate}%`} />
-        <Kpi loading={loading} label="近 24 小时告警" value={d?.alerts_24h ?? 0} sub={d ? `全部告警 ${d.open_alerts + (d.alerts_24h || 0)} 条量级` : ''} />
+        <Kpi loading={loading} label="近 24 小时告警" value={d?.alerts_24h ?? 0} sub={d ? `平均每小时 ${((d.alerts_24h || 0) / 24).toFixed(1)} 条` : ''} />
         <Kpi loading={loading} label="待处置告警" tone="warn" value={d?.open_alerts ?? 0} sub="需人工确认" />
         <Kpi loading={loading} label="严重且待处置" tone="crit" value={d?.critical_open ?? 0} sub={d ? `恶意判定 ${d.malicious_count} · 误报 ${d.false_positive}` : ''} />
       </div>
