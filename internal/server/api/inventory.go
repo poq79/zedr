@@ -44,6 +44,9 @@ var inventoryQuerySections = map[string]struct{}{
 	"tasks":     {},
 	"startup":   {},
 	"agent":     {},
+	"defender":  {},
+	"firewall":  {},
+	"accounts":  {},
 }
 
 // getHostInventory 管理台查询主机资产清单。

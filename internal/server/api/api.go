@@ -42,6 +42,10 @@ type Deps struct {
 	RuleSignKey []byte
 	// Notifier 是 webhook 告警通知器（nil 表示未启用），/metrics 读取其统计
 	Notifier *notify.Notifier
+	// UpgradeFile/UpgradeVersion 是探针自升级包（新版本 agent exe）的
+	// 服务端配置；任一为空 = 升级端点按"未启用"返回 503
+	UpgradeFile    string
+	UpgradeVersion string
 
 	// sseActive 是当前活跃的实时流连接数。
 	// 用指针而非值：Deps 是按值传递的，而 atomic.Int64 内含 noCopy，
@@ -127,6 +131,8 @@ func Router(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/agent/alerts", agentAuth(agentH.reportAlerts))
 	mux.Handle("GET /api/v1/agent/rules", agentAuth(agentH.rules))
 	mux.Handle("GET /api/v1/agent/iocs", agentAuth(agentH.agentIOCs))
+	mux.Handle("GET /api/v1/agent/upgrade/manifest", agentAuth(agentH.upgradeManifest))
+	mux.Handle("GET /api/v1/agent/upgrade/binary", agentAuth(agentH.upgradeBinary))
 	mux.Handle("POST /api/v1/agent/commands/result", agentAuth(agentH.commandResult))
 	mux.Handle("POST /api/v1/agent/inventory", agentAuth(agentH.saveInventory))
 
@@ -180,6 +186,9 @@ func Router(d Deps) http.Handler {
 	mux.Handle("DELETE /api/v1/iocs/{id}", writer(adminH.deleteIOC))
 
 	mux.Handle("GET /api/v1/incidents", viewer(adminH.listIncidents))
+	mux.Handle("POST /api/v1/incidents/{id}/status", writer(adminH.transitionIncident))
+	mux.Handle("GET /api/v1/hosts/{id}/changes", viewer(adminH.getHostChanges))
+	mux.Handle("POST /api/v1/alerts/{id}/investigate", viewer(adminH.investigateAlert))
 	mux.Handle("GET /api/v1/report/weekly", viewer(adminH.weeklyReport))
 	mux.Handle("GET /api/v1/integrity", viewer(adminH.integrityReport))
 	mux.Handle("GET /api/v1/attack/matrix", viewer(adminH.attackMatrix))

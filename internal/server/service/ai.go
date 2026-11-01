@@ -23,6 +23,7 @@ type AIService struct {
 	repos repository.Repos
 	eng   *ai.Engine
 	log   *slog.Logger
+	cfg   Config
 }
 
 // Triage 研判一条告警。

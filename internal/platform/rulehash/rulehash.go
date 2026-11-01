@@ -110,6 +110,46 @@ func iocPayload(b *model.IOCBundle) ([]byte, error) {
 	return out, nil
 }
 
+// upgradePayload 构造升级清单的规范化签名内容。
+// 与 IOC 包同一套域隔离思路（"upgv1" 前缀）；payload 公式必须与
+// 探针侧验签实现逐字节一致：upgv1|<version>|<sha256hex>|<size>
+func upgradePayload(m *model.UpgradeManifest) []byte {
+	head := fmt.Sprintf("upgv1|%s|%s|%d|", m.Version, m.SHA256, m.Size)
+	return []byte(head)
+}
+
+// SignUpgradeManifest 计算并写入升级清单签名。
+func SignUpgradeManifest(m *model.UpgradeManifest, key []byte) error {
+	if len(key) == 0 {
+		return fmt.Errorf("规则签名密钥为空")
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(upgradePayload(m))
+	m.Signature = hex.EncodeToString(mac.Sum(nil))
+	return nil
+}
+
+// VerifyUpgradeManifest 校验升级清单签名。
+func VerifyUpgradeManifest(m *model.UpgradeManifest, key []byte) error {
+	if m.Signature == "" {
+		return fmt.Errorf("升级清单未签名")
+	}
+	if len(key) == 0 {
+		return fmt.Errorf("未配置签名密钥，无法校验升级清单")
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(upgradePayload(m))
+	want := mac.Sum(nil)
+	got, err := hex.DecodeString(m.Signature)
+	if err != nil {
+		return fmt.Errorf("升级清单签名格式非法")
+	}
+	if !hmac.Equal(want, got) {
+		return fmt.Errorf("升级清单签名校验失败（内容可能被篡改）")
+	}
+	return nil
+}
+
 // SignIOCBundle 计算并写入 IOC 包签名。
 func SignIOCBundle(b *model.IOCBundle, key []byte) error {
 	if len(key) == 0 {
