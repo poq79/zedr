@@ -87,6 +87,12 @@ type RuntimeInfo struct {
 	WatchedDirs  int   `json:"watched_dirs"`
 	DropEvents   int64 `json:"drop_events"`
 	PersistCount int   `json:"persist_count"`
+
+	// 下发数据的落地情况：IOC 表与资产清单是否真的在本探针生效。
+	// 没有这两项，"服务端下发了"和"终端在用"之间隔着一次静默失败
+	// （验签拒绝/版本回退都发生在终端侧），排障时只能翻日志。
+	IOCCount          int `json:"ioc_count"`
+	InventorySections int `json:"inventory_sections"`
 }
 
 // Store 是线程安全的内存视图。

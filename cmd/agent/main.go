@@ -256,6 +256,8 @@ func printStatus() error {
 			CPUPercent    float64 `json:"cpu_percent"`
 			MemMB         float64 `json:"mem_mb"`
 			RuleCount     int    `json:"rule_count"`
+			IOCCount      int    `json:"ioc_count"`
+			InventorySections int `json:"inventory_sections"`
 			BaselineSize  int    `json:"baseline_size"`
 			FileWatch     bool   `json:"file_watch"`
 			PersistCount  int    `json:"persist_count"`
@@ -280,7 +282,7 @@ func printStatus() error {
 	}
 	fmt.Printf("HostGuard 探针 %s · 运行 %d 分钟 · %s\n", d.AgentVersion, d.UptimeSec/60, online)
 	fmt.Printf("  监控进程   : %d（扫描间隔 %s）\n", d.ProcCount, d.ScanInterval)
-	fmt.Printf("  检测规则   : %d 条\n", d.RuleCount)
+	fmt.Printf("  检测规则   : %d 条 · IOC %d 条 · 资产清单 %d 节\n", d.RuleCount, d.IOCCount, d.InventorySections)
 	fmt.Printf("  资源占用   : CPU %.2f%% · 内存 %.1f MB\n", d.CPUPercent, d.MemMB)
 	fmt.Printf("  行为监控   : 文件落地监控 %s · 自启动基线 %d 项\n", map[bool]string{true: "开", false: "关"}[d.FileWatch], d.PersistCount)
 	fmt.Printf("  累计检测   : 扫描 %d 次 · 告警 %d · 抑制 %d\n", d.Stats.Scanned, d.Stats.Fired, d.Stats.Suppressed)

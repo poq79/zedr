@@ -410,6 +410,14 @@ def cleanup():
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "scenarios"
+    # "matrix" 是 "scenarios" 的别名——口头语都管这步叫场景矩阵，
+    # 传 matrix 却被静默当 no-op 跳过（报告照样写出但 scenarios 为空）
+    # 属于最阴险的工具坑，这里显式收编。
+    if mode == "matrix":
+        mode = "scenarios"
+    if mode not in ("scenarios", "fp", "perf", "load", "all"):
+        print("未知模式 %r，可用：scenarios(默认) | fp | perf | load | all" % mode)
+        sys.exit(2)
     try:
         if mode in ("scenarios", "all"):
             run_scenarios()
