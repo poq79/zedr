@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 # 版本号单一事实源：发版只改这里（可用环境变量 VERSION 覆盖做本地实验）。
 # 历史教训：默认值长期停在 0.1.0，/metrics 版本分布与运维台账全部失真。
-VERSION="${VERSION:-0.9.7}"
+VERSION="${VERSION:-0.9.8}"
 mkdir -p bin
 
 # ---- 前端（React 19 + Vite + Tailwind v4）----
@@ -33,10 +33,10 @@ build() {
   go build -ldflags "-X main.version=${VERSION}" -o "bin/$out" "./cmd/$pkg"
 }
 
-build server     secserver.exe
-build agent      secagent.exe
-build desktop    secui.exe
-build hgdiag     hgdiag.exe
+build server     zedr-server.exe
+build agent      zedr-agent.exe
+build desktop    zedr-ui.exe
+build diag       zedr-diag.exe
 build resetadmin resetadmin.exe
 
 echo
