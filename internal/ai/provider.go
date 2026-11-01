@@ -538,6 +538,147 @@ func (o *OpenAICompatible) Triage(ctx context.Context, in *TriageInput) (*Triage
 	return res, nil
 }
 
+// AgentMessage 是 Agent 循环里的一条消息（系统/用户/助手工具调用/工具结果）。
+type AgentMessage struct {
+	Role       string     `json:"role"` // system / user / assistant / tool
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"-"` // 仅助手消息
+	ToolCallID string     `json:"-"` // 仅 tool 消息
+}
+
+// ToolCall 是模型提出的一次工具调用。
+type ToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// AgentReply 是一次带工具的对话回复。
+type AgentReply struct {
+	Content     string
+	ToolCalls   []ToolCall
+	TotalTokens int
+}
+
+// 线上格式：OpenAI function calling 的 message 变体。
+type wireToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type wireAgentMessage struct {
+	Role       string         `json:"role"`
+	Content    string         `json:"content,omitempty"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+type wireToolDef struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters"`
+	} `json:"function"`
+}
+
+// AgentChat 发起一次带工具定义的对话（Agent 循环的单步）。
+// forceText=true 时传 tool_choice:"none"——达到步数上限后的收尾调用，
+// 让模型只能用已有结果写结论（OpenAI 2026 官方 agent loop 实践）。
+func (o *OpenAICompatible) AgentChat(ctx context.Context, msgs []AgentMessage, tools []AgentTool, forceText bool) (*AgentReply, error) {
+	wire := make([]wireAgentMessage, 0, len(msgs))
+	for _, m := range msgs {
+		wm := wireAgentMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			var w wireToolCall
+			w.ID = tc.ID
+			w.Type = "function"
+			w.Function.Name = tc.Name
+			w.Function.Arguments = tc.Arguments
+			wm.ToolCalls = append(wm.ToolCalls, w)
+		}
+		wire = append(wire, wm)
+	}
+	tdefs := make([]wireToolDef, 0, len(tools))
+	for _, t := range tools {
+		var d wireToolDef
+		d.Type = "function"
+		d.Function.Name = t.Name
+		d.Function.Description = t.Description
+		d.Function.Parameters = t.Parameters
+		tdefs = append(tdefs, d)
+	}
+	body := map[string]any{
+		"model":       o.model,
+		"messages":    wire,
+		"tools":       tdefs,
+		"temperature": o.temperature,
+		"max_tokens":  o.maxTokens,
+	}
+	if forceText {
+		body["tool_choice"] = "none"
+	} else {
+		body["tool_choice"] = "auto"
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/v1/chat/completions", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if o.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	}
+	res, err := o.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("模型请求失败: %w", err)
+	}
+	defer res.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("模型返回 HTTP %d: %s", res.StatusCode, truncate(string(payload), 300))
+	}
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content   string         `json:"content"`
+				ToolCalls []wireToolCall `json:"tool_calls"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return nil, fmt.Errorf("模型响应解析失败: %w", err)
+	}
+	if out.Error != nil {
+		return nil, fmt.Errorf("模型错误: %s", out.Error.Message)
+	}
+	if len(out.Choices) == 0 {
+		return nil, fmt.Errorf("模型未返回内容")
+	}
+	reply := &AgentReply{Content: out.Choices[0].Message.Content, TotalTokens: out.Usage.TotalTokens}
+	for _, tc := range out.Choices[0].Message.ToolCalls {
+		reply.ToolCalls = append(reply.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+	}
+	return reply, nil
+}
+
 // Translate 实现 Backend。
 func (o *OpenAICompatible) Translate(ctx context.Context, nl string, schema *QuerySchema) (*Query, error) {
 	over, sks := o.promptSettings(SlotHunt)

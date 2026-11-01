@@ -227,6 +227,9 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/incidents/{id}/narrative", viewer(adminH.getIncidentNarrative))
 	mux.Handle("GET /api/v1/hosts/{id}/changes", viewer(adminH.getHostChanges))
 	mux.Handle("POST /api/v1/alerts/{id}/investigate", viewer(adminH.investigateAlert))
+	// Agentic 调查 v2：模型调用只读工具自主调查（未配置模型自动回退确定性五步）
+	mux.Handle("POST /api/v1/alerts/{id}/investigate/agent", viewer(adminH.agentInvestigate))
+	mux.Handle("GET /api/v1/alerts/{id}/agent-investigation", viewer(adminH.getAgentInvestigation))
 	// 实时查询（只读调查面）：ping 是探活所以 viewer 可用；
 	// 其余走 analyst+（writer 包装）——文件浏览/进程/连接的实时面
 	// 比静态告警敏感，viewer 不放开
