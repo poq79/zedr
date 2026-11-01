@@ -51,6 +51,11 @@ type Config struct {
 	// RuleSignKey 非空时强制校验下发规则包的 HMAC 签名。
 	// 需与服务端 HG_SERVER_RULE_SIGN_KEY 一致；留空则不校验（仅记录告警）。
 	RuleSignKey string
+	// InventoryEnabled 控制资产清单快照循环（system/adapters/listeners/
+	// services/tasks/startup/agent 七节，差量上报）。
+	// 清单采集（服务/任务/网卡枚举）本身有成本，且老服务端没有对应端点
+	// 时上报只会持续报错——现场可整体关闭。
+	InventoryEnabled bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -82,6 +87,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.FileWatch = l.Bool("HG_AGENT_FILEWATCH", true)
 	c.AdaptiveScan = l.Bool("HG_AGENT_ADAPTIVE_SCAN", true)
 	c.RuleSignKey = l.Env("HG_AGENT_RULE_SIGN_KEY", "")
+	c.InventoryEnabled = l.Bool("HG_AGENT_INVENTORY", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")

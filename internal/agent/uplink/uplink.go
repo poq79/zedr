@@ -397,6 +397,23 @@ func (c *Client) ReportCommandResults(ctx context.Context, results []model.Comma
 		map[string]any{"results": results}, &out, true)
 }
 
+// PostInventory 上报资产清单差量节，返回服务端确认应用的节名。
+//
+// sections 为空直接返回：调用方（inventory.Manager）保证差量语义，
+// 空批次不该产生网络往返。20s 超时由 http.Client 全局兜底，
+// 调用方传 context 控制更细的取消。
+func (c *Client) PostInventory(ctx context.Context, sections []model.InventorySection) ([]string, error) {
+	if len(sections) == 0 {
+		return nil, nil
+	}
+	var resp model.InventoryAck
+	if err := c.do(ctx, http.MethodPost, "/api/v1/agent/inventory",
+		model.InventoryReport{Sections: sections}, &resp, true); err != nil {
+		return nil, err
+	}
+	return resp.Applied, nil
+}
+
 // ---------------------------------------------------------------- 内部
 
 func (c *Client) decorate(req *http.Request) {

@@ -371,3 +371,25 @@ type ErrorBody struct {
 		RequestID string `json:"request_id"`
 	} `json:"error"`
 }
+
+// ---------------------------------------------------------------- 资产清单
+
+// InventorySection 是主机资产清单的一个节（payload 为 JSON 快照字符串）。
+//
+// payload 用字符串而不是嵌套结构：服务端只做"存 + hash 幂等比对"，
+// 不理解各节内部结构，节内 schema 演进不需要动线协议。
+type InventorySection struct {
+	Name    string `json:"name"`
+	Hash    string `json:"hash"`
+	Payload string `json:"payload"`
+}
+
+// InventoryReport 是一次清单差量上报（只包含发生变化的节）。
+type InventoryReport struct {
+	Sections []InventorySection `json:"sections"`
+}
+
+// InventoryAck 是清单上报的服务端回执（确认应用的节名）。
+type InventoryAck struct {
+	Applied []string `json:"applied"`
+}

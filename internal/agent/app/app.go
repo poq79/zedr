@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"hostguard/internal/agent/collect"
 	"hostguard/internal/agent/detect"
 	"hostguard/internal/agent/enrich"
+	"hostguard/internal/agent/inventory"
 	"hostguard/internal/agent/localapi"
 	"hostguard/internal/agent/persist"
 	"hostguard/internal/agent/quarantine"
@@ -210,6 +212,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.flushLoop(ctx)
 	go a.persistLoop(ctx)
 	go a.persistenceWatchLoop(ctx)
+	if a.cfg.InventoryEnabled {
+		go a.inventoryLoop(ctx)
+	}
 
 	<-ctx.Done()
 	a.log.Info("agent_stopping", "pending_alerts", a.up.Pending())
@@ -1035,6 +1040,250 @@ func (a *Agent) persistLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------- 资产清单
+
+// inventoryInterval 是资产清单快照周期。清单类数据（服务/任务/网卡）
+// 变化频率远低于进程创建，30s 足够及时；差量协议（按节 hash 比对）
+// 保证稳定态下每轮几乎零流量。
+const inventoryInterval = 30 * time.Second
+
+// inventoryLoop 周期采集资产清单快照并差量上报。
+//
+// 数据源全部以 SnapshotFn 闭包注入（依赖倒置）：清单的差量/上报逻辑
+// 不接触任何系统调用，winapi 采集函数的增改不会传染到这条链路，
+// 测试也可以用假函数覆盖全部行为。
+func (a *Agent) inventoryLoop(ctx context.Context) {
+	m := inventory.New(a.log)
+
+	m.Register("system", a.invSystemSection)
+	m.Register("adapters", a.invAdaptersSection)
+	m.Register("listeners", a.invListenersSection)
+	m.Register("services", a.invServicesSection)
+	m.Register("tasks", a.invTasksSection)
+	// startup 节为占位：persist.Monitor 目前只导出 Size()，没有读取
+	// 基线条目的接口；等 persist 包补导出访问器后接入真实基线。
+	m.Register("startup", func() (any, error) {
+		return map[string]any{"items": []any{}}, nil
+	})
+	m.Register("agent", a.invAgentSection)
+
+	m.Run(ctx, inventoryInterval, func(sections []model.InventorySection) ([]string, error) {
+		// 未注册时 uplink 直接报错返回——正好让 Run 回滚 hash，
+		// 注册成功后的下一轮把首轮全量补上，不会丢节。
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		return a.up.PostInventory(cctx, sections)
+	})
+}
+
+// inventory 各节的本地 payload 类型：字段名即线协议（snake_case）。
+// adapters/services/tasks 三节从 winapi 类型显式映射——winapi 结构体不带
+// json tag（那是采集层的自由），线协议字段名必须收敛在一处；winapi
+// 增删字段时在这里同步，映射处就是唯一的翻译点。
+type invAdapter struct {
+	Name      string   `json:"name"`
+	MAC       string   `json:"mac"`
+	IPs       []string `json:"ips"`
+	Gateway   string   `json:"gateway"`
+	DNS       []string `json:"dns"`
+	OperState string   `json:"oper_state"`
+}
+
+type invService struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	State       string `json:"state"`
+	StartMode   string `json:"start_mode"`
+	PathName    string `json:"path_name"`
+	Account     string `json:"account"`
+}
+
+type invTask struct {
+	Path  string `json:"path"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+type invDisk struct {
+	Drive   string `json:"drive"`
+	TotalMB uint64 `json:"total_mb"`
+	FreeMB  uint64 `json:"free_mb"`
+}
+
+type invListener struct {
+	Port    uint16 `json:"port"`
+	PID     uint32 `json:"pid"`
+	Process string `json:"process,omitempty"`
+}
+
+type invUDPListener struct {
+	Port uint16 `json:"port"`
+	PID  uint32 `json:"pid"`
+}
+
+type invAgentInfo struct {
+	Version         string `json:"version"`
+	Collector       string `json:"collector"`
+	ScanIntervalSec int    `json:"scan_interval_sec"`
+	RuleCount       int    `json:"rule_count"`
+	IOCCount        int    `json:"ioc_count"`
+	QueueDropped    int64  `json:"queue_dropped"`
+	UptimeSec       int64  `json:"uptime_sec"`
+}
+
+// invSystemSection 组装 system 节。子项失败只少字段不拖垮整节——
+// 诚实缺席好过用 0 冒充真实值；唯独 BootTime 失败时整节跳过，
+// 没有开机时间 uptime 无从谈起，半个 system 节反而误导。
+func (a *Agent) invSystemSection() (any, error) {
+	boot, err := winapi.BootTime()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"boot_time":  boot.UTC().Format(time.RFC3339),
+		"uptime_sec": int64(time.Since(boot).Seconds()),
+	}
+	if name, cores, err := winapi.CPUInfo(); err == nil {
+		out["cpu_name"] = name
+		out["cpu_cores"] = cores
+	}
+	if total, free, err := winapi.MemoryStats(); err == nil {
+		out["mem_total_mb"] = total
+		out["mem_free_mb"] = free
+	}
+	if disks, err := winapi.DiskVolumes(); err == nil {
+		list := make([]invDisk, 0, len(disks))
+		for _, d := range disks {
+			list = append(list, invDisk{Drive: d.Drive, TotalMB: d.TotalMB, FreeMB: d.FreeMB})
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].Drive < list[j].Drive })
+		out["disks"] = list
+	}
+	return out, nil
+}
+
+// invAdaptersSection 网卡列表。按名称排序保证 hash 稳定：枚举顺序
+// 稍有变化就会让差量协议退化成每轮全量。
+func (a *Agent) invAdaptersSection() (any, error) {
+	src, err := winapi.Adapters()
+	if err != nil {
+		return nil, err
+	}
+	list := make([]invAdapter, 0, len(src))
+	for _, ai := range src {
+		list = append(list, invAdapter{
+			Name: ai.Name, MAC: ai.MAC, IPs: ai.IPs,
+			Gateway: ai.Gateway, DNS: ai.DNS, OperState: ai.OperState,
+		})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list, nil
+}
+
+// invServicesSection 服务列表（按名称排序，理由同上）。
+func (a *Agent) invServicesSection() (any, error) {
+	src, err := winapi.ServiceList()
+	if err != nil {
+		return nil, err
+	}
+	list := make([]invService, 0, len(src))
+	for _, s := range src {
+		list = append(list, invService{
+			Name: s.Name, DisplayName: s.DisplayName, State: s.State,
+			StartMode: s.StartMode, PathName: s.PathName, Account: s.Account,
+		})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list, nil
+}
+
+// invTasksSection 计划任务列表（按 path+name 排序，理由同上）。
+func (a *Agent) invTasksSection() (any, error) {
+	src, err := winapi.TaskList()
+	if err != nil {
+		return nil, err
+	}
+	list := make([]invTask, 0, len(src))
+	for _, t := range src {
+		list = append(list, invTask{Path: t.Path, Name: t.Name, State: t.State})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Path != list[j].Path {
+			return list[i].Path < list[j].Path
+		}
+		return list[i].Name < list[j].Name
+	})
+	return list, nil
+}
+
+// invListenersSection 监听端口：TCP 复用现有连接表（筛 LISTEN），UDP 走
+// 新契约。进程名逐 PID 查询——监听条目通常个位数，成本可忽略，查不到留空。
+// 输出按 (port, pid) 排序：顺序不稳定会让同样的数据每轮算出不同 hash，
+// 差量协议就退化成每轮全量。
+func (a *Agent) invListenersSection() (any, error) {
+	out := map[string]any{
+		"tcp": []invListener{},
+		"udp": []invUDPListener{},
+	}
+
+	if conns, err := winapi.TCPConnections(); err == nil {
+		tcp := make([]invListener, 0, 8)
+		procNames := make(map[uint32]string, 8)
+		for pid, list := range conns {
+			for _, c := range list {
+				if c.State != "LISTEN" {
+					continue
+				}
+				name, ok := procNames[pid]
+				if !ok {
+					if n, err := winapi.ImageNameOf(pid); err == nil {
+						name = n
+					}
+					procNames[pid] = name
+				}
+				tcp = append(tcp, invListener{Port: c.LocalPort, PID: pid, Process: name})
+			}
+		}
+		sort.Slice(tcp, func(i, j int) bool {
+			if tcp[i].Port != tcp[j].Port {
+				return tcp[i].Port < tcp[j].Port
+			}
+			return tcp[i].PID < tcp[j].PID
+		})
+		out["tcp"] = tcp
+	}
+
+	if udp, err := winapi.UDPListeners(); err == nil {
+		list := make([]invUDPListener, 0, len(udp))
+		for _, e := range udp {
+			list = append(list, invUDPListener{Port: e.Port, PID: e.PID})
+		}
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].Port != list[j].Port {
+				return list[i].Port < list[j].Port
+			}
+			return list[i].PID < list[j].PID
+		})
+		out["udp"] = list
+	}
+	return out, nil
+}
+
+// invAgentSection 探针自身状态。uptime/queue_dropped 每轮必变，所以这节
+// 天然"每轮必报"——探针健康度搭清单通道的顺风车，服务端可据此做
+// 探针存活与配置漂移的旁路核对。
+func (a *Agent) invAgentSection() (any, error) {
+	return invAgentInfo{
+		Version:         a.cfg.Version,
+		Collector:       a.coll.SourceName(),
+		ScanIntervalSec: int(a.baseInterval().Seconds()),
+		RuleCount:       a.eng.RuleCount(),
+		IOCCount:        a.eng.IOCCount(),
+		QueueDropped:    a.up.Dropped(),
+		UptimeSec:       int64(time.Since(a.startedAt).Seconds()),
+	}, nil
 }
 
 // ---------------------------------------------------------------- localapi.Backend 实现
