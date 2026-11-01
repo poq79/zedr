@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,8 +52,16 @@ func (a *Agent) emitInventoryEvents(ctx context.Context, changes []inventory.Cha
 	}
 	emitted := 0
 	dropped := 0
+	skippedBenign := 0
 	var droppedDescs []string
 	for _, ev := range changes {
+		// 稳态噪声先过滤：清单快照照常更新（资产页所见即所得），
+		// 但这些事件不值得打扰值班（实测一天能刷十几条 low 噪声）
+		if benignInventoryChange(ev) {
+			skippedBenign++
+			a.log.Debug("inventory_benign_skipped", "section", ev.Section, "kind", ev.Kind, "key", ev.Key)
+			continue
+		}
 		if emitted >= maxInventoryEventsPerRound {
 			dropped++
 			if len(droppedDescs) < 10 {
@@ -64,9 +73,62 @@ func (a *Agent) emitInventoryEvents(ctx context.Context, changes []inventory.Cha
 			emitted++
 		}
 	}
+	if skippedBenign > 0 {
+		a.log.Info("inventory_benign_suppressed", "count", skippedBenign,
+			"hint", "服务状态抖动/瞬时监听等稳态变化只更新清单不产生告警")
+	}
 	if dropped > 0 {
 		a.emitInventoryStormNotice(len(changes), dropped, droppedDescs)
 	}
+}
+
+// benignInventoryChange 判断一条变更事件是否属于"稳态噪声"：
+//   - 服务 state 字段抖动：sppsvc/WaaSMedicSvc/TrustedInstaller 这类
+//     服务一天启停多次（实测一轮能刷四五条 low），状态变化不是攻击语义；
+//     路径/账户/display_name 变化仍告警（那才是服务被替换的证据）；
+//   - 监听 pid 漂移：同一端口换 pid 多为服务重启；
+//   - 动态端口段（49152-65535）新增监听：RPC/临时服务的瞬态端口常态，
+//     低端口的 added 仍告警。
+func benignInventoryChange(ev inventory.ChangeEvent) bool {
+	switch ev.Section {
+	case "services":
+		if ev.Kind != inventory.DiffChanged {
+			return false
+		}
+		if len(ev.ChangedFields) == 0 {
+			return false
+		}
+		for _, f := range ev.ChangedFields {
+			if f != "state" {
+				return false // 有 state 以外的字段变化 → 可能是服务被替换，不抑制
+			}
+		}
+		return true
+	case "listeners":
+		if ev.Kind == inventory.DiffChanged {
+			return true // pid 漂移
+		}
+		if ev.Kind == inventory.DiffAdded {
+			if port, ok := listenerPortFromKey(ev.Key); ok {
+				return port >= 49152 // 动态端口段
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// listenerPortFromKey 从 listeners 事件的 key（形如 "tcp|8080"）取端口号。
+func listenerPortFromKey(key string) (int, bool) {
+	parts := strings.Split(key, "|")
+	if len(parts) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil || n < 0 || n > 65535 {
+		return 0, false
+	}
+	return n, true
 }
 
 // emitInventoryEvent 把单条变更事件转成告警；返回是否真的发射了
