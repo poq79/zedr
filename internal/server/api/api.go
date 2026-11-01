@@ -126,6 +126,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/agent/heartbeat", agentAuth(agentH.heartbeat))
 	mux.Handle("POST /api/v1/agent/alerts", agentAuth(agentH.reportAlerts))
 	mux.Handle("GET /api/v1/agent/rules", agentAuth(agentH.rules))
+	mux.Handle("GET /api/v1/agent/iocs", agentAuth(agentH.agentIOCs))
 	mux.Handle("POST /api/v1/agent/commands/result", agentAuth(agentH.commandResult))
 
 	// ---------------- 管理台接口（JWT + RBAC） ----------------
@@ -170,6 +171,11 @@ func Router(d Deps) http.Handler {
 	mux.Handle("DELETE /api/v1/allowlist/{id}", writer(adminH.deleteAllowlist))
 	mux.Handle("GET /api/v1/allowlist/export", adminOnly(adminH.exportAllowlist))
 	mux.Handle("POST /api/v1/allowlist/import", adminOnly(adminH.importAllowlist))
+
+	// 威胁指标库：查看所有角色可读；增删需要写权限
+	mux.Handle("GET /api/v1/iocs", viewer(adminH.listIOCs))
+	mux.Handle("POST /api/v1/iocs", writer(adminH.addIOC))
+	mux.Handle("DELETE /api/v1/iocs/{id}", writer(adminH.deleteIOC))
 
 	mux.Handle("GET /api/v1/incidents", viewer(adminH.listIncidents))
 	mux.Handle("GET /api/v1/report/weekly", viewer(adminH.weeklyReport))

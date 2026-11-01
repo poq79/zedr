@@ -26,6 +26,7 @@ type Store struct {
 	alerts    alertRepo
 	rules     ruleRepo
 	allowlist allowlistRepo
+	iocs      iocRepo
 	audit     auditRepo
 	commands  commandRepo
 	stats     statsRepo
@@ -76,6 +77,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 	s.alerts = alertRepo{s}
 	s.rules = ruleRepo{s}
 	s.allowlist = allowlistRepo{s}
+	s.iocs = iocRepo{s}
 	s.audit = auditRepo{s}
 	s.commands = commandRepo{s}
 	s.stats = statsRepo{s}
@@ -87,6 +89,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 		Alerts:    &s.alerts,
 		Rules:     &s.rules,
 		Allowlist: &s.allowlist,
+		IOCs:      &s.iocs,
 		Audit:     &s.audit,
 		Commands:  &s.commands,
 		Stats:     &s.stats,
@@ -267,6 +270,20 @@ CREATE TABLE IF NOT EXISTS integrity_chain (
   digest       TEXT NOT NULL,
   alert_count  INTEGER NOT NULL,
   created_at   INTEGER NOT NULL
+);
+`,
+	},
+	{
+		name: "004_iocs",
+		sql: `
+-- 威胁指标库（当前仅 SHA256 哈希）。版本计数存 settings.ioc_version，
+-- 随内容变更递增，终端据此判断是否需要重拉整包。
+CREATE TABLE IF NOT EXISTS iocs (
+  id         TEXT PRIMARY KEY,
+  hash       TEXT NOT NULL UNIQUE,
+  note       TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
 );
 `,
 	},

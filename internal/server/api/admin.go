@@ -170,6 +170,50 @@ func (h *adminHandler) bulkUpdateStatus(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// ---------------------------------------------------------------- 威胁指标 IOC
+
+func (h *adminHandler) listIOCs(w http.ResponseWriter, r *http.Request) {
+	items, err := h.deps.Services.Rule.ListIOCs(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+type iocReq struct {
+	Hash string `json:"hash"`
+	Note string `json:"note"`
+}
+
+func (h *adminHandler) addIOC(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req iocReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	e, err := h.deps.Services.Rule.AddIOC(r.Context(), req.Hash, req.Note, p.Username)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "ioc.add",
+		e.Hash[:12]+"...", req.Note, httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, e)
+}
+
+func (h *adminHandler) deleteIOC(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	id := r.PathValue("id")
+	if err := h.deps.Services.Rule.DeleteIOC(r.Context(), id, p.Username); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "ioc.delete", id, "", httpx.ClientIP(r))
+	httpx.WriteNoContent(w)
+}
+
 // ---------------------------------------------------------------- 主机
 
 func (h *adminHandler) listHosts(w http.ResponseWriter, r *http.Request) {

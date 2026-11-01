@@ -168,6 +168,15 @@ type AllowlistEntry struct {
 	Hits      int       `json:"hits"`
 }
 
+// IOC 是一条威胁指标（当前仅 SHA256 哈希），随签名包下发到终端。
+type IOC struct {
+	ID        string    `json:"id"`
+	Hash      string    `json:"hash"`
+	Note      string    `json:"note"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // AuditLog 是后台操作审计。
 type AuditLog struct {
 	ID        int64     `json:"id"`

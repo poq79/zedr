@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"hostguard/internal/model"
+	"hostguard/internal/platform/rulehash"
 	"hostguard/internal/server/auth"
 	"hostguard/internal/server/repository/sqlite"
 	"hostguard/internal/ai"
@@ -85,6 +86,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Version:      "test",
 		StartedAt:    time.Now(),
 		Bus:          svc.Bus,
+		RuleSignKey:  rulehash.DeriveKey([]byte(testJWTSecret), "rule-signing"),
 	})
 
 	srv := httptest.NewServer(router)

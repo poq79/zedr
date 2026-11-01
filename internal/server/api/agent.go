@@ -95,6 +95,30 @@ func (h *agentHandler) rules(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, bundle)
 }
 
+// agentIOCs 下发威胁指标整包。带 If-None-Match 且版本未变时返回 304。
+// 与规则包同密钥但独立签名（payload 前缀 iocv1），老探针不请求此端点。
+func (h *agentHandler) agentIOCs(w http.ResponseWriter, r *http.Request) {
+	bundle, n, err := h.deps.Services.Rule.IOCBundle(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	// 空包也带版本号：从有到无（清空 IOC）同样要能被终端感知。
+	etag := "\"" + itoa(bundle.Version) + "\""
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if err := rulehash.SignIOCBundle(bundle, h.deps.RuleSignKey); err != nil {
+		h.deps.Log.ErrorContext(r.Context(), "ioc_sign_failed", "err", err)
+		httpx.WriteError(w, r, apperr.Internal(err))
+		return
+	}
+	w.Header().Set("ETag", etag)
+	w.Header().Set("X-IOC-Count", itoa(n))
+	httpx.WriteJSON(w, r, http.StatusOK, bundle)
+}
+
 // commandResult 接收指令执行回执。
 func (h *agentHandler) commandResult(w http.ResponseWriter, r *http.Request) {
 	a := agentFrom(r.Context())

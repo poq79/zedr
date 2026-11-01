@@ -142,6 +142,8 @@ func New(version string) (*Agent, error) {
 		startedAt: time.Now(),
 		scanReq:   make(chan bool, 1),
 	}
+	// IOC 表先从落盘缓存恢复（重启空窗补位），服务端可达后再被整包覆盖
+	a.loadIOCsCache()
 
 	a.store.SetRuntime(func(ri *state.RuntimeInfo) {
 		ri.Hostname = winapi.Hostname()
@@ -250,6 +252,7 @@ func (a *Agent) enrollLoop(ctx context.Context) {
 	for {
 		if a.up.Enrolled() {
 			a.syncRules(ctx, true)
+			a.syncIOCs(ctx, true)
 			return
 		}
 		if a.cfg.EnrollToken == "" {
@@ -289,6 +292,7 @@ func (a *Agent) enrollLoop(ctx context.Context) {
 			ri.Online = true
 		})
 		a.syncRules(ctx, true)
+		a.syncIOCs(ctx, true)
 		return
 	}
 }
@@ -334,6 +338,69 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 	a.log.Info("rules_applied", "version", bundle.Version, "rules", ok, "allow", len(entries), "bad", len(bad))
 
 	a.applyServerPolicy(bundle.AgentPolicy)
+}
+
+// syncIOCs 拉取威胁指标整包并热加载到引擎。
+// 与规则同节奏触发（注册后/指令/周期），但独立拉取、独立验签——
+// 老服务端没有此端点时 404 只会记 warn，不影响主链路。
+func (a *Agent) syncIOCs(ctx context.Context, force bool) {
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	bundle, notModified, err := a.up.FetchIOCs(cctx)
+	if err != nil {
+		a.log.Warn("iocs_fetch_failed", "err", err)
+		return
+	}
+	if notModified && !force {
+		return
+	}
+
+	m := make(map[string]string, len(bundle.IOCs))
+	for _, e := range bundle.IOCs {
+		m[e.Hash] = e.Note
+	}
+	a.eng.SetIOCs(m)
+	a.saveIOCsCache(bundle)
+	a.log.Info("iocs_applied", "version", bundle.Version, "count", len(m))
+}
+
+// saveIOCsCache 把已验签的 IOC 表落盘，重启后无需等首轮拉取即生效。
+func (a *Agent) saveIOCsCache(bundle *model.IOCBundle) {
+	type cache struct {
+		Version int            `json:"version"`
+		SavedAt time.Time      `json:"saved_at"`
+		IOCs    map[string]string `json:"iocs"`
+	}
+	m := make(map[string]string, len(bundle.IOCs))
+	for _, e := range bundle.IOCs {
+		m[e.Hash] = e.Note
+	}
+	raw, err := json.Marshal(cache{Version: bundle.Version, SavedAt: time.Now(), IOCs: m})
+	if err != nil {
+		a.log.Warn("iocs_cache_marshal_failed", "err", err)
+		return
+	}
+	if err := os.WriteFile(a.cfg.Path("iocs.json"), raw, 0o600); err != nil {
+		a.log.Warn("iocs_cache_write_failed", "err", err)
+	}
+}
+
+// loadIOCsCache 从落盘缓存恢复 IOC 表（重启后的空窗补位）。
+func (a *Agent) loadIOCsCache() {
+	raw, err := os.ReadFile(a.cfg.Path("iocs.json"))
+	if err != nil {
+		return
+	}
+	var cache struct {
+		Version int               `json:"version"`
+		IOCs    map[string]string `json:"iocs"`
+	}
+	if err := json.Unmarshal(raw, &cache); err != nil || len(cache.IOCs) == 0 {
+		return
+	}
+	a.eng.SetIOCs(cache.IOCs)
+	a.log.Info("iocs_cache_loaded", "version", cache.Version, "count", len(cache.IOCs))
 }
 
 // ---------------------------------------------------------------- 采集
@@ -742,7 +809,8 @@ func (a *Agent) handleCommands(ctx context.Context, cmds []model.Command) {
 			res.Result = "已触发全量重扫"
 		case "sync_rules":
 			a.syncRules(ctx, true)
-			res.Result = fmt.Sprintf("规则已同步，当前 %d 条", a.eng.RuleCount())
+			a.syncIOCs(ctx, true)
+			res.Result = fmt.Sprintf("规则已同步，当前 %d 条；IOC %d 条", a.eng.RuleCount(), a.eng.IOCCount())
 		case "terminate":
 			res = a.handleTerminate(c)
 		case "collect":
@@ -851,6 +919,7 @@ func (a *Agent) persistLoop(ctx context.Context) {
 			// 定期尝试同步规则（服务端可能更新了规则）
 			if a.up.Enrolled() {
 				a.syncRules(ctx, false)
+				a.syncIOCs(ctx, false)
 			}
 		}
 	}

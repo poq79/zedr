@@ -52,6 +52,9 @@ type Client struct {
 	ruleSignKey []byte
 	// lastRuleVersion 用于版本单调性检查，防止规则包被回滚到更宽松的历史版本
 	lastRuleVersion int
+
+	lastIOCEtag    string
+	lastIOCVersion int
 }
 
 // SetRuleSignKey 设置规则包验签密钥。空值表示不校验（仅记录告警日志）。
@@ -320,6 +323,66 @@ func (c *Client) FetchRules(ctx context.Context) (*model.RuleBundle, bool, error
 	c.mu.Lock()
 	c.lastRuleETag = res.Header.Get("ETag")
 	c.lastRuleVersion = wrap.Data.Version
+	c.mu.Unlock()
+	return &wrap.Data, false, nil
+}
+
+// FetchIOCs 拉取威胁指标整包；服务端版本未变时返回 notModified=true。
+// 校验逻辑与 FetchRules 同源：签名 + 版本单调，防篡改与防回滚。
+func (c *Client) FetchIOCs(ctx context.Context) (*model.IOCBundle, bool, error) {
+	c.mu.Lock()
+	etag := c.lastIOCEtag
+	key := c.ruleSignKey
+	localVer := c.lastIOCVersion
+	c.mu.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/agent/iocs", nil)
+	if err != nil {
+		return nil, false, err
+	}
+	c.decorate(req)
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+
+	res, err := c.http.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode == http.StatusNotModified {
+		return nil, true, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if err != nil {
+		return nil, false, err
+	}
+	if res.StatusCode != http.StatusOK {
+		return nil, false, decodeError(res.StatusCode, body)
+	}
+	var wrap struct {
+		Data model.IOCBundle `json:"data"`
+	}
+	if err := json.Unmarshal(body, &wrap); err != nil {
+		return nil, false, fmt.Errorf("IOC 包解析失败: %w", err)
+	}
+
+	// 哈希表进入检测引擎前必须过签名：篡改 IOC 可以把恶意样本洗白
+	// （删条目）或制造误报风暴（塞垃圾条目），与改规则同级。
+	if len(key) > 0 {
+		if err := rulehash.VerifyIOCBundle(&wrap.Data, key); err != nil {
+			return nil, false, fmt.Errorf("IOC 包校验失败，已拒绝应用: %w", err)
+		}
+	}
+	if localVer > 0 && wrap.Data.Version < localVer {
+		return nil, false, fmt.Errorf("IOC 包版本回退（本地 %d，收到 %d），已拒绝",
+			localVer, wrap.Data.Version)
+	}
+
+	c.mu.Lock()
+	c.lastIOCEtag = res.Header.Get("ETag")
+	c.lastIOCVersion = wrap.Data.Version
 	c.mu.Unlock()
 	return &wrap.Data, false, nil
 }

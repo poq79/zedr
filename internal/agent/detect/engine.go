@@ -89,6 +89,9 @@ type Engine struct {
 
 	mu    sync.RWMutex
 	rules []compiledRule
+	// iocs 是服务端下发的威胁指标哈希表（hash → 备注）。
+	// 与 rules 同锁保护：两者都是"服务端可热替换的检测数据"。
+	iocs map[string]string
 
 	statMu     sync.Mutex
 	scanned    int64
@@ -127,6 +130,37 @@ func New(enr *enrich.Enricher, base *baseline.Model, alw *allow.List, cfg Config
 		cfg:    cfg,
 		recent: make(map[string]time.Time, 512),
 	}
+}
+
+// SetIOCs 加载服务端下发的威胁指标哈希表（整包替换）。
+// 传入 nil 等价于清空——服务端明确清空 IOC 库时终端应同步清空，
+// 而不是保留旧表（否则删掉的指标仍在拦截，运营会困惑）。
+func (e *Engine) SetIOCs(hashes map[string]string) {
+	normalized := make(map[string]string, len(hashes))
+	for h, note := range hashes {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if len(h) == 64 {
+			normalized[h] = note
+		}
+	}
+	e.mu.Lock()
+	e.iocs = normalized
+	e.mu.Unlock()
+}
+
+// IOCCount 返回当前生效的 IOC 条数（供本地状态展示）。
+func (e *Engine) IOCCount() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.iocs)
+}
+
+// lookupIOC 在服务端下发的 IOC 表中查哈希。
+func (e *Engine) lookupIOC(hash string) (string, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	note, ok := e.iocs[hash]
+	return note, ok
 }
 
 // SetRules 加载服务端下发的规则（编译失败的单条规则会被跳过并计数）。
@@ -244,7 +278,7 @@ func (e *Engine) Analyze(in Input) *Result {
 	var notes []string
 
 	// ---- 第 1 层：静态指纹 ----
-	staticScore := e.staticLayer(p, meta, &signals, &notes)
+	staticScore, iocBonus := e.staticLayer(p, meta, &signals, &notes)
 
 	// ---- 第 2 层：关键词 ----
 	kwSignals := e.kw.match(p.Name, p.CmdLine)
@@ -275,7 +309,9 @@ func (e *Engine) Analyze(in Input) *Result {
 	dropScore := e.dropLayer(p, meta, in, &signals, &notes)
 
 	// ---- 第 5 层：融合定级 ----
-	total := staticScore + keywordScore + ruleScore + int(lineageScore) + dropScore
+	// iocBonus 单独入总分（见 staticLayer 注释），并计入 StaticScore 证据，
+	// 保证"分量之和 = 总分"在管理台可对账。
+	total := staticScore + iocBonus + keywordScore + ruleScore + int(lineageScore) + dropScore
 	if total > 100 {
 		total = 100
 	}
@@ -306,7 +342,7 @@ func (e *Engine) Analyze(in Input) *Result {
 			RuleHits:     hits,
 			Network:      in.Connections,
 			Modules:      in.Modules,
-			StaticScore:  float64(staticScore),
+			StaticScore:  float64(staticScore + iocBonus),
 			KeywordScore: float64(keywordScore),
 			RuleScore:    float64(ruleScore),
 			LineageScore: lineageScore,
@@ -357,17 +393,34 @@ func (e *Engine) Analyze(in Input) *Result {
 
 // ---------------------------------------------------------------- 各层实现
 
-// staticLayer 静态指纹层：哈希黑名单、签名状态、路径信誉。
-func (e *Engine) staticLayer(p ProcessInfo, meta enrich.Meta, signals *[]model.Signal, notes *[]string) int {
-	score := 0
+// iocHashBonus 是 IOC 哈希命中的融合加成。
+//
+// 刻意不参与 staticLayer 的 45 分封顶：帽子是给"路径信誉/签名状态"这类
+// 启发式信号的，防止单层噪声主导总分；而确认的威胁情报哈希是事实而非
+// 猜测，70 分意味着单凭 IOC 命中即可到达恶意阈值（MaliciousAt=70）。
+const iocHashBonus = 70
 
-	// 已知恶意哈希
+// staticLayer 静态指纹层：哈希黑名单、签名状态、路径信誉。
+// 返回值：(reputation 分（受帽子约束）, IOC 加成（不封顶）)。
+func (e *Engine) staticLayer(p ProcessInfo, meta enrich.Meta, signals *[]model.Signal, notes *[]string) (int, int) {
+	score := 0
+	iocBonus := 0
+
+	// 已知恶意哈希：内置表（EICAR 等验证用）+ 服务端下发 IOC 库
 	if meta.Hash != "" {
-		if sig, ok := knownBadHashes[strings.ToLower(meta.Hash)]; ok {
-			score += 60
+		h := strings.ToLower(meta.Hash)
+		if sig, ok := knownBadHashes[h]; ok {
+			iocBonus += iocHashBonus
 			*signals = append(*signals, model.Signal{
 				Layer: "static", ID: "S-HASH", Name: "命中已知恶意样本哈希",
-				Score: 60, Note: sig, MITRE: "T1204",
+				Score: iocHashBonus, Note: sig, MITRE: "T1204",
+			})
+		}
+		if note, ok := e.lookupIOC(h); ok {
+			iocBonus += iocHashBonus
+			*signals = append(*signals, model.Signal{
+				Layer: "static", ID: "S-IOC", Name: "命中威胁情报 IOC 哈希",
+				Score: iocHashBonus, Note: note, MITRE: "T1204",
 			})
 		}
 	}
@@ -426,7 +479,7 @@ func (e *Engine) staticLayer(p ProcessInfo, meta enrich.Meta, signals *[]model.S
 	if score > 45 {
 		score = 45
 	}
-	return score
+	return score, iocBonus
 }
 
 // ruleLayer 行为规则层。

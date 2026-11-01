@@ -94,3 +94,58 @@ func DeriveKey(master []byte, purpose string) []byte {
 	mac.Write([]byte("hostguard/" + purpose + "/v1"))
 	return mac.Sum(nil)
 }
+
+// iocPayload 构造 IOC 包的规范化签名内容。
+// 与规则包（signingPayload）格式完全独立，靠 "iocv1" 前缀做域隔离：
+// 两种包复用同一把派生密钥，但一条消息永远只会被当成一种格式校验。
+func iocPayload(b *model.IOCBundle) ([]byte, error) {
+	iocs, err := json.Marshal(b.IOCs)
+	if err != nil {
+		return nil, fmt.Errorf("IOC 序列化失败: %w", err)
+	}
+	head := fmt.Sprintf("iocv1|%d|%d|%d|", b.Version, b.GeneratedAt.UnixNano(), len(b.IOCs))
+	out := make([]byte, 0, len(head)+len(iocs))
+	out = append(out, head...)
+	out = append(out, iocs...)
+	return out, nil
+}
+
+// SignIOCBundle 计算并写入 IOC 包签名。
+func SignIOCBundle(b *model.IOCBundle, key []byte) error {
+	if len(key) == 0 {
+		return fmt.Errorf("规则签名密钥为空")
+	}
+	payload, err := iocPayload(b)
+	if err != nil {
+		return err
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(payload)
+	b.Signature = hex.EncodeToString(mac.Sum(nil))
+	return nil
+}
+
+// VerifyIOCBundle 校验 IOC 包签名。
+func VerifyIOCBundle(b *model.IOCBundle, key []byte) error {
+	if b.Signature == "" {
+		return fmt.Errorf("IOC 包未签名")
+	}
+	if len(key) == 0 {
+		return fmt.Errorf("未配置签名密钥，无法校验 IOC 包")
+	}
+	payload, err := iocPayload(b)
+	if err != nil {
+		return err
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(payload)
+	want := mac.Sum(nil)
+	got, err := hex.DecodeString(b.Signature)
+	if err != nil {
+		return fmt.Errorf("IOC 签名格式非法")
+	}
+	if !hmac.Equal(want, got) {
+		return fmt.Errorf("IOC 包签名校验失败（内容可能被篡改）")
+	}
+	return nil
+}

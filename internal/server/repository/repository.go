@@ -19,6 +19,7 @@ type Repos struct {
 	Alerts    AlertRepo
 	Rules     RuleRepo
 	Allowlist AllowlistRepo
+	IOCs      IocRepo
 	Audit     AuditRepo
 	Commands  CommandRepo
 	Stats     StatsRepo
@@ -97,6 +98,19 @@ type AllowlistRepo interface {
 	Delete(ctx context.Context, id string) error
 	Exists(ctx context.Context, typ, value string) (bool, error)
 	BumpHit(ctx context.Context, typ, value string) error
+}
+
+// IocRepo 威胁指标数据访问。
+type IocRepo interface {
+	List(ctx context.Context) ([]domain.IOC, error)
+	ByHash(ctx context.Context, hash string) (*domain.IOC, error)
+	Add(ctx context.Context, e *domain.IOC) error
+	Delete(ctx context.Context, id string) error
+	Count(ctx context.Context) (int, error)
+	// Version 读取 IOC 库版本（settings 单调计数，随内容变更递增）。
+	Version(ctx context.Context) (int, error)
+	// BumpVersion 版本 +1 并返回新值（下发端据此判断终端是否需要重拉）。
+	BumpVersion(ctx context.Context) (int, error)
 }
 
 // AuditRepo 审计日志。

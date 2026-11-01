@@ -335,6 +335,27 @@ type AgentPolicy struct {
 	Collector string `json:"collector,omitempty"`
 }
 
+// IOCDTO 是下发到终端的威胁指标（当前只支持 SHA256 哈希）。
+type IOCDTO struct {
+	Hash string `json:"hash"`
+	Note string `json:"note,omitempty"`
+}
+
+// IOCBundle 是威胁指标整包。
+//
+// 为什么不塞进 RuleBundle：规则包的签名 payload（v1）只覆盖
+// rules+allowlist 两个字段，这是老探针验签的唯一依据——往里加字段
+// 并纳入签名会让混合舰队里的老探针整包验签失败、集体回退内置规则。
+// 因此 IOC 走独立包、独立端点、独立签名（payload 前缀 iocv1 做域隔离），
+// 老探针不认识新端点自然忽略，新探针才能获得 IOC 能力。
+type IOCBundle struct {
+	Version     int       `json:"version"`
+	GeneratedAt time.Time `json:"generated_at"`
+	IOCs        []IOCDTO  `json:"iocs"`
+	// Signature 是整包内容的 HMAC-SHA256（hex），校验方式同规则包。
+	Signature string `json:"signature,omitempty"`
+}
+
 // CommandResult 是终端回执。
 type CommandResult struct {
 	CommandID string `json:"command_id"`
