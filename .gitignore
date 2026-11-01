@@ -33,6 +33,8 @@ __pycache__/
 # 前端工程依赖（webapp 构建产物输出到 internal/server/web/static/ 并入库，
 # 保证无 Node 环境也能 go build）
 webapp/node_modules/
+# Vite/tsc 增量编译缓存（构建中间态，非产物）
+*.tsbuildinfo
 
 *~
 .zcode/
