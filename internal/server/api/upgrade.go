@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"os"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/platform/rulehash"
+	"zedr/internal/model"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/platform/rulehash"
 )
 
 // upgradeManifest 下发探针自升级包描述（版本/哈希/大小 + HMAC 签名）。

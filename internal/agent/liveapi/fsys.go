@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"hostguard/internal/agent/winapi"
+	"zedr/internal/agent/winapi"
 )
 
 // Entry 是目录条目（契约 §5.2）：只含 name，全路径由前端用 path 拼接。

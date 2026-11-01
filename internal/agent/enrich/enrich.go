@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/agent/winapi"
+	"zedr/internal/agent/winapi"
 )
 
 // Meta 是进程镜像的富化结果。

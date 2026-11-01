@@ -1,16 +1,16 @@
 package api
 
 import (
-	"hostguard/internal/platform/apperr"
+	"zedr/internal/platform/apperr"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/server/auth"
-	"hostguard/internal/server/domain"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/server/auth"
+	"zedr/internal/server/domain"
 )
 
 type adminHandler struct{ deps Deps }
@@ -392,7 +392,7 @@ func (h *adminHandler) exportAllowlist(w http.ResponseWriter, r *http.Request) {
 	}
 	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username,
 		"allowlist.export", "", fmt.Sprintf("%d 条", len(items)), httpx.ClientIP(r))
-	w.Header().Set("Content-Disposition", `attachment; filename="hostguard-allowlist.json"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="zedr-allowlist.json"`)
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
 		"exported_at": time.Now().UTC(), "items": items,
 	})

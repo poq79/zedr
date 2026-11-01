@@ -1,12 +1,12 @@
-// Command secagent 是 HostGuard 终端探针。
+// Command zedr-agent 是 Z-EDR 终端探针。
 //
 // 用法：
 //
-//	secagent                 前台运行（适合调试，Ctrl+C 退出）
-//	secagent -service        作为 Windows 服务运行（由 SCM 启动时使用）
-//	secagent -install        安装为开机自启的 Windows 服务（需管理员）
-//	secagent -uninstall      卸载服务（需管理员）
-//	secagent -version        打印版本
+//	zedr-agent                 前台运行（适合调试，Ctrl+C 退出）
+//	zedr-agent -service        作为 Windows 服务运行（由 SCM 启动时使用）
+//	zedr-agent -install        安装为开机自启的 Windows 服务（需管理员）
+//	zedr-agent -uninstall      卸载服务（需管理员）
+//	zedr-agent -version        打印版本
 package main
 
 import (
@@ -24,11 +24,11 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	agentapp "hostguard/internal/agent/app"
-	"hostguard/internal/platform/config"
+	agentapp "zedr/internal/agent/app"
+	"zedr/internal/platform/config"
 )
 
-const serviceName = "HostGuardAgent"
+const serviceName = "ZEDRAgent"
 
 // version 由构建脚本通过 -ldflags -X main.version 注入。
 var version = "dev"
@@ -45,7 +45,7 @@ func main() {
 	flag.Parse()
 
 	if *flagVersion {
-		fmt.Printf("secagent %s\n", version)
+		fmt.Printf("zedr-agent %s\n", version)
 		return
 	}
 
@@ -88,7 +88,7 @@ func main() {
 				}
 			}
 		} else {
-			fmt.Println("提示：数据目录（基线/离线队列）仍保留在 %LOCALAPPDATA%\\HostGuard；确认无需取证时可用 -uninstall -purge 一并清除。")
+			fmt.Println("提示：数据目录（基线/离线队列）仍保留在 %LOCALAPPDATA%\\Z-EDR；确认无需取证时可用 -uninstall -purge 一并清除。")
 		}
 		return
 	case *flagService:
@@ -170,7 +170,7 @@ func installService() error {
 	}
 
 	s, err := m.CreateService(serviceName, exe, mgr.Config{
-		DisplayName:  "HostGuard 主机安全探针",
+		DisplayName:  "Z-EDR 主机安全探针",
 		Description:  "采集进程与血缘信息，执行多引擎恶意进程检测并上报总控服务端。",
 		StartType:    mgr.StartAutomatic,
 		ErrorControl: mgr.ErrorNormal,
@@ -226,7 +226,7 @@ func agentDataDir() string {
 		return v
 	}
 	if v := os.Getenv("LOCALAPPDATA"); v != "" {
-		return filepath.Join(v, "HostGuard")
+		return filepath.Join(v, "zedr")
 	}
 	return ""
 }
@@ -239,7 +239,7 @@ func printStatus() error {
 		tok = strings.TrimSpace(string(raw))
 	}
 	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:8843/api/local/status", nil)
-	req.Header.Set("X-HG-Token", tok)
+	req.Header.Set("X-ZEDR-Token", tok)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
@@ -280,7 +280,7 @@ func printStatus() error {
 	if d.Online {
 		online = "已连接总控"
 	}
-	fmt.Printf("HostGuard 探针 %s · 运行 %d 分钟 · %s\n", d.AgentVersion, d.UptimeSec/60, online)
+	fmt.Printf("Z-EDR 探针 %s · 运行 %d 分钟 · %s\n", d.AgentVersion, d.UptimeSec/60, online)
 	fmt.Printf("  监控进程   : %d（扫描间隔 %s）\n", d.ProcCount, d.ScanInterval)
 	fmt.Printf("  检测规则   : %d 条 · IOC %d 条 · 资产清单 %d 节\n", d.RuleCount, d.IOCCount, d.InventorySections)
 	fmt.Printf("  资源占用   : CPU %.2f%% · 内存 %.1f MB\n", d.CPUPercent, d.MemMB)

@@ -49,8 +49,8 @@ func TestAgentInventoryReportAndQuery(t *testing.T) {
 	agent := env.enrollAgent()
 	env.agent = agent
 
-	svcPayload := `[{"name":"HostGuard Agent","status":"Running","start_mode":"Auto"}]`
-	taskPayload := `[{"path":"\\HostGuard\\agent","action":"secagent.exe"}]`
+	svcPayload := `[{"name":"Z-EDR Agent","status":"Running","start_mode":"Auto"}]`
+	taskPayload := `[{"path":"\\Z-EDR\\agent","action":"zedr-agent.exe"}]`
 
 	invBody := func() map[string]any {
 		return map[string]any{

@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/agent/enrich"
-	"hostguard/internal/agent/inventory"
-	"hostguard/internal/agent/winapi"
-	"hostguard/internal/model"
+	"zedr/internal/agent/enrich"
+	"zedr/internal/agent/inventory"
+	"zedr/internal/agent/winapi"
+	"zedr/internal/model"
 )
 
 // maxInventoryEventsPerRound 是单轮快照允许发射的资产变更告警上限。

@@ -19,10 +19,10 @@ import (
 	"strconv"
 	"time"
 
-	"hostguard/internal/agent/state"
-	"hostguard/internal/agent/winapi"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/agent/state"
+	"zedr/internal/agent/winapi"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
 )
 
 // Deps 是 liveapi 的构造依赖，由 app.Agent 在接线时拼装（见包注释）。

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 func testIOCBundle() *model.IOCBundle {

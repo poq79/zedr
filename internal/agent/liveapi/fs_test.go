@@ -323,10 +323,10 @@ func TestFSRead(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
 		t.Errorf("文本嗅探期望 text/plain; charset=utf-8 实得 %q", ct)
 	}
-	if fs := rec.Header().Get("X-HG-File-Size"); fs != strconv.Itoa(len(content)) {
-		t.Errorf("X-HG-File-Size 期望 %d 实得 %q", len(content), fs)
+	if fs := rec.Header().Get("X-ZEDR-File-Size"); fs != strconv.Itoa(len(content)) {
+		t.Errorf("X-ZEDR-File-Size 期望 %d 实得 %q", len(content), fs)
 	}
-	if tr := rec.Header().Get("X-HG-Truncated"); tr != "0" {
+	if tr := rec.Header().Get("X-ZEDR-Truncated"); tr != "0" {
 		t.Errorf("全量读取期望 Truncated=0 实得 %q", tr)
 	}
 
@@ -353,7 +353,7 @@ func TestFSRead(t *testing.T) {
 	if got := rec.Body.String(); got != "llo" {
 		t.Errorf("区间内容期望 llo 实得 %q", got)
 	}
-	if tr := rec.Header().Get("X-HG-Truncated"); tr != "1" {
+	if tr := rec.Header().Get("X-ZEDR-Truncated"); tr != "1" {
 		t.Errorf("区间读取期望 Truncated=1 实得 %q", tr)
 	}
 	if cl := rec.Header().Get("Content-Length"); cl != "3" {
@@ -376,7 +376,7 @@ func TestFSRead(t *testing.T) {
 	if rec.Body.Len() != fsReadMax {
 		t.Errorf("期望钳到 %d 字节实得 %d", fsReadMax, rec.Body.Len())
 	}
-	if tr := rec.Header().Get("X-HG-Truncated"); tr != "1" {
+	if tr := rec.Header().Get("X-ZEDR-Truncated"); tr != "1" {
 		t.Errorf("大文件期望 Truncated=1 实得 %q", tr)
 	}
 
@@ -402,8 +402,8 @@ func TestFSRead(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
 		t.Errorf("空文件 offset=0 应 200 空体: code=%d len=%d", rec.Code, rec.Body.Len())
 	}
-	if fs := rec.Header().Get("X-HG-File-Size"); fs != "0" {
-		t.Errorf("空文件 X-HG-File-Size 期望 0 实得 %q", fs)
+	if fs := rec.Header().Get("X-ZEDR-File-Size"); fs != "0" {
+		t.Errorf("空文件 X-ZEDR-File-Size 期望 0 实得 %q", fs)
 	}
 	if code, _ := doGet(t, h, "/fs/read?path="+url.QueryEscape(empty)+"&offset=1"); code != http.StatusBadRequest {
 		t.Errorf("空文件 offset=1 期望 400 实得 %d", code)

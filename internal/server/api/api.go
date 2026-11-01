@@ -13,12 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/server/auth"
-	"hostguard/internal/server/livetunnel"
-	"hostguard/internal/server/notify"
-	"hostguard/internal/server/service"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/server/auth"
+	"zedr/internal/server/livetunnel"
+	"zedr/internal/server/notify"
+	"zedr/internal/server/service"
 )
 
 // Deps 是控制器的依赖集合。

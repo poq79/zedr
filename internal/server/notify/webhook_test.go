@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 // TestWebhookDeliversSignedPayload 验证通知会以正确签名投递，
@@ -30,7 +30,7 @@ func TestWebhookDeliversSignedPayload(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		ch <- received{body: body, sig: r.Header.Get("X-HG-Signature"), event: r.Header.Get("X-HG-Event")}
+		ch <- received{body: body, sig: r.Header.Get("X-ZEDR-Signature"), event: r.Header.Get("X-ZEDR-Event")}
 		w.WriteHeader(200)
 	}))
 	defer srv.Close()

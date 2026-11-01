@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/agent/state"
-	"hostguard/internal/agent/winapi"
+	"zedr/internal/agent/state"
+	"zedr/internal/agent/winapi"
 )
 
 // doGet 发请求并解析 JSON 响应体（含 httpx 的 {data}/{error} 包装）。

@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"strings"
 
-	"hostguard/internal/agent/winapi"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/agent/winapi"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
 )
 
 // validateFSPath 校验 fs* 四端点共用的 path 参数，返回 Clean 后的安全路径。
@@ -241,13 +241,13 @@ func (s *server) handleFSRead(w http.ResponseWriter, r *http.Request) {
 
 	h := w.Header()
 	h.Set("Content-Type", ct)
-	h.Set("X-HG-File-Size", strconv.FormatInt(size, 10))
+	h.Set("X-ZEDR-File-Size", strconv.FormatInt(size, 10))
 	// 截断口径按 offset+limit 与 size 比（契约字面）：limit 覆盖越过 EOF 时
 	// 必然已读到结尾，与实发字节数一致
 	if offset+limit < size {
-		h.Set("X-HG-Truncated", "1")
+		h.Set("X-ZEDR-Truncated", "1")
 	} else {
-		h.Set("X-HG-Truncated", "0")
+		h.Set("X-ZEDR-Truncated", "0")
 	}
 	h.Set("Content-Length", strconv.FormatInt(int64(n)+send, 10))
 

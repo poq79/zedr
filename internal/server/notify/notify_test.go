@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 // secretAlert 是标准测试告警：摘要里埋了明文口令，
@@ -128,8 +128,8 @@ func TestFeishuDeliversInteractiveCard(t *testing.T) {
 		t.Fatalf("模板色 = %v，期望 red", header["template"])
 	}
 	title := jstr(t, header, "title", "content")
-	if !strings.Contains(title, "[HostGuard][CRITICAL]") || !strings.Contains(title, "可疑命令执行") {
-		t.Fatalf("标题不符合「[HostGuard][严重度] 标题」契约: %q", title)
+	if !strings.Contains(title, "[Z-EDR][CRITICAL]") || !strings.Contains(title, "可疑命令执行") {
+		t.Fatalf("标题不符合「[Z-EDR][严重度] 标题」契约: %q", title)
 	}
 
 	// 字段：主机/进程/得分/MITRE（第一个 div 的 fields，lark_md 双行内容）
@@ -263,7 +263,7 @@ func TestDingTalkSignAndActionCard(t *testing.T) {
 		}
 		ac := jget(t, root, "actionCard").(map[string]any)
 		title := jstr(t, ac, "title")
-		if !strings.Contains(title, "[HostGuard][CRITICAL]") {
+		if !strings.Contains(title, "[Z-EDR][CRITICAL]") {
 			t.Fatalf("标题契约不符: %q", title)
 		}
 		text := jstr(t, ac, "text")
@@ -334,7 +334,7 @@ func TestSlackDeliversAttachment(t *testing.T) {
 	if att["color"] != "danger" { // critical → danger
 		t.Fatalf("color = %v，期望 danger", att["color"])
 	}
-	if title := att["title"].(string); !strings.Contains(title, "[HostGuard][CRITICAL]") {
+	if title := att["title"].(string); !strings.Contains(title, "[Z-EDR][CRITICAL]") {
 		t.Fatalf("标题契约不符: %q", title)
 	}
 	if att["title_link"] != console {
@@ -382,7 +382,7 @@ func TestBuildEmailRFC822(t *testing.T) {
 	body := "主机: pc-1\r\n进程: evil.exe\r\n得分: 87"
 	msg := string(buildEmailRFC822("hg@example.com",
 		[]string{"a@x.com", "b@y.com"},
-		"[HostGuard][CRITICAL] 可疑命令执行",
+		"[Z-EDR][CRITICAL] 可疑命令执行",
 		body, now))
 
 	for _, want := range []string{
@@ -400,7 +400,7 @@ func TestBuildEmailRFC822(t *testing.T) {
 
 	// 主题：B 编码后可完整还原
 	subj := headerValue(t, msg, "Subject")
-	if decoded := decodeRFC2047(t, subj); decoded != "[HostGuard][CRITICAL] 可疑命令执行" {
+	if decoded := decodeRFC2047(t, subj); decoded != "[Z-EDR][CRITICAL] 可疑命令执行" {
 		t.Fatalf("主题解码不符: %q", decoded)
 	}
 
@@ -429,7 +429,7 @@ func TestBuildEmailRFC822(t *testing.T) {
 // TestEmailSubjectFolding 验证超长中文主题按 encoded-word 75 字符上限
 // 折叠，且折叠后拼接解码可完整还原。
 func TestEmailSubjectFolding(t *testing.T) {
-	long := "[HostGuard][CRITICAL] " + strings.Repeat("横向移动告警，", 30)
+	long := "[Z-EDR][CRITICAL] " + strings.Repeat("横向移动告警，", 30)
 	msg := string(buildEmailRFC822("f@x.com", []string{"t@x.com"}, long, "b", time.Now()))
 	subj := headerValue(t, msg, "Subject")
 	for _, w := range strings.Split(subj, "\r\n ") {

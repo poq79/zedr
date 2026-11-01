@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	"hostguard/internal/ioc"
-	"hostguard/internal/model"
+	"zedr/internal/ioc"
+	"zedr/internal/model"
 )
 
 // keywordMatcher 是第 2 层检测：Aho-Corasick 多模式匹配。

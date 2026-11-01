@@ -3,12 +3,12 @@ package detect
 import (
 	"testing"
 
-	"hostguard/internal/agent/allow"
-	"hostguard/internal/agent/baseline"
-	"hostguard/internal/agent/enrich"
-	"hostguard/internal/ioc"
-	"hostguard/internal/model"
-	"hostguard/internal/rules"
+	"zedr/internal/agent/allow"
+	"zedr/internal/agent/baseline"
+	"zedr/internal/agent/enrich"
+	"zedr/internal/ioc"
+	"zedr/internal/model"
+	"zedr/internal/rules"
 )
 
 // newTestEngine 构造一个不依赖宿主环境的引擎（空基线、空白名单）。

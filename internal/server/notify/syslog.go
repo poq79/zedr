@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 // SyslogNotifier 通过 UDP 发送 CEF 格式告警。
@@ -122,7 +122,7 @@ func FormatCEF(a domain.Alert) string {
 	name := strings.NewReplacer("|", "/", "\\", "/").Replace(a.Title)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "CEF:0|HostGuard|SecServer|0.6.0|HostGuardAlert|%s|%d|",
+	fmt.Fprintf(&b, "CEF:0|Z-EDR|SecServer|0.6.0|Z-EDRAlert|%s|%d|",
 		cefEscape(name), sev)
 	fmt.Fprintf(&b, "cs1Label=Host cs1=%s ", cefEscape(a.Hostname))
 	fmt.Fprintf(&b, "cs2Label=Process cs2=%s ", cefEscape(a.ProcessName))

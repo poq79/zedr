@@ -30,7 +30,7 @@ export function HostsPage() {
     <div>
       {!hosts ? <Card className="px-2 pb-2"><SkeletonRows rows={5} /></Card> : !hosts.length ? (
         <Card><EmptyState tone="info" icon={<Monitor size={20} />} title="还没有终端注册"
-          sub={<>在目标机器上启动 <b>secagent.exe</b>，并配置正确的<br /><code className="rounded bg-brand-soft px-1 font-mono text-[11px] text-primary">HG_AGENT_SERVER_URL</code> 与 <code className="rounded bg-brand-soft px-1 font-mono text-[11px] text-primary">HG_AGENT_ENROLL_TOKEN</code>。<br />终端注册后约 30 秒内会出现在这里。</>} /></Card>
+          sub={<>在目标机器上启动 <b>zedr-agent.exe</b>，并配置正确的<br /><code className="rounded bg-brand-soft px-1 font-mono text-[11px] text-primary">HG_AGENT_SERVER_URL</code> 与 <code className="rounded bg-brand-soft px-1 font-mono text-[11px] text-primary">HG_AGENT_ENROLL_TOKEN</code>。<br />终端注册后约 30 秒内会出现在这里。</>} /></Card>
       ) : (
         <Card className="overflow-x-auto px-2 py-3.5">
           <table className="w-full text-[13px]">

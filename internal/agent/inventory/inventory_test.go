@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 // newTestManager 返回免抖动的 Manager（生产默认 0~10s 启动抖动，

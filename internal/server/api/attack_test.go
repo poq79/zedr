@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 // TestAttackMatrixAndDrillDown 端到端验证 ATT&CK 矩阵：

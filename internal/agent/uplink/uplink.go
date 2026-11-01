@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/redact"
-	"hostguard/internal/platform/rulehash"
+	"zedr/internal/model"
+	"zedr/internal/platform/redact"
+	"zedr/internal/platform/rulehash"
 )
 
 // Credentials 是注册后持久化的凭证。

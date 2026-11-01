@@ -12,14 +12,14 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
 )
 
 const (
 	// upgradeProtocol 升级协议标识（契约 §3.1：Upgrade: hg-tunnel/1）
 	upgradeProtocol = "hg-tunnel/1"
-	// tunnelVersion 当前隧道协议版本。探针携带 X-HG-Tunnel-Version，
+	// tunnelVersion 当前隧道协议版本。探针携带 X-ZEDR-Tunnel-Version，
 	// 服务端只接受自己认识的版本；未来不兼容变更靠它做门禁
 	// （老服务端拒绝新版本探针 → 探针转每小时静默重试，不会反复报错）
 	tunnelVersion = "1"
@@ -76,7 +76,7 @@ func UpgradeHandler(log *slog.Logger, authenticate func(agentID, secret string) 
 		resp := "HTTP/1.1 101 Switching Protocols\r\n" +
 			"Connection: Upgrade\r\n" +
 			"Upgrade: " + upgradeProtocol + "\r\n" +
-			"X-HG-Tunnel-Version: " + tunnelVersion + "\r\n\r\n"
+			"X-ZEDR-Tunnel-Version: " + tunnelVersion + "\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
 			log.Warn("tunnel_101_write_failed", "agent_id", agentID, "error", err.Error())
 			_ = conn.Close()
@@ -121,7 +121,7 @@ func isUpgradeRequest(r *http.Request) bool {
 	if !connUpgrade {
 		return false
 	}
-	return r.Header.Get("X-HG-Tunnel-Version") == tunnelVersion
+	return r.Header.Get("X-ZEDR-Tunnel-Version") == tunnelVersion
 }
 
 // bearerToken 从 Authorization 头解析 Bearer 令牌。

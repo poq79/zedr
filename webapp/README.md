@@ -1,8 +1,8 @@
-# HostGuard 管理台前端（webapp）
+# Z-EDR 管理台前端（webapp）
 
 React 19 + TypeScript + Vite 7 + Tailwind CSS v4 + lucide-react。
 构建产物输出到 `../internal/server/web/static/`，由 Go `go:embed` 打进
-`secserver.exe` —— 保持**单文件交付、无 CDN、无 Node 运行时**的部署优势。
+`zedr-server.exe` —— 保持**单文件交付、无 CDN、无 Node 运行时**的部署优势。
 
 ## 常用命令
 

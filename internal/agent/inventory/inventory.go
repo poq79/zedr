@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 // SnapshotFn 是一个节的快照函数：返回值会被 json.Marshal 成 payload。

@@ -1,7 +1,7 @@
 // Package notify 提供告警外发通知。
 //
 // 目前的实现是 Webhook：告警入库后向配置的 URL 推送 JSON 载荷，
-// 并用共享密钥计算 HMAC-SHA256 签名放在 X-HG-Signature 头，
+// 并用共享密钥计算 HMAC-SHA256 签名放在 X-ZEDR-Signature 头，
 // 接收方可以验证"这条通知确实来自本服务端且未被篡改"。
 //
 // 设计要点：
@@ -22,7 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 // WebhookPayload 是推送给接收方的载荷。字段是告警的扁平投影：
@@ -145,8 +145,8 @@ func (n *Notifier) deliver(a domain.Alert) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-HG-Event", "alert.created")
-	req.Header.Set("X-HG-Signature", sign(payload, n.secret))
+	req.Header.Set("X-ZEDR-Event", "alert.created")
+	req.Header.Set("X-ZEDR-Signature", sign(payload, n.secret))
 
 	resp, err := n.client.Do(req)
 	if err != nil {

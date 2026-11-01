@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/server/auth"
+	"zedr/internal/server/auth"
 )
 
 // ticketStore 为 SSE 提供一次性短时效票据。

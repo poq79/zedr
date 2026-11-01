@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"hostguard/internal/agent/winapi"
+	"zedr/internal/agent/winapi"
 )
 
 var (

@@ -119,7 +119,7 @@ export function AppShell({ user, onLogout, unread, live, onRefresh, freshness, c
         <div className="flex items-center gap-2.5 px-2 pb-4">
           {/* 纯色徽标：渐变块+英文装饰字是 slop 清单典型项；方块只承载品牌识别 */}
           <div className="grid h-[30px] w-[30px] place-items-center rounded-md bg-primary text-[15px] font-bold text-primary-foreground">H</div>
-          <b className="text-[15px] tracking-[.2px] text-foreground">HostGuard</b>
+          <b className="text-[15px] tracking-[.2px] text-foreground">Z-EDR</b>
         </div>
 
         <nav className="mt-1.5 flex flex-col">

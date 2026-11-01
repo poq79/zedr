@@ -10,7 +10,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"hostguard/internal/platform/apperr"
+	"zedr/internal/platform/apperr"
 )
 
 func testLog() *slog.Logger {

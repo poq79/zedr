@@ -15,7 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 // signingPayload 是参与签名的规范化内容。
@@ -91,7 +91,7 @@ func Verify(b *model.RuleBundle, key []byte) error {
 // 也不能直接推出另一个，更不会出现"改 JWT 顺便改规则"的连带风险。
 func DeriveKey(master []byte, purpose string) []byte {
 	mac := hmac.New(sha256.New, master)
-	mac.Write([]byte("hostguard/" + purpose + "/v1"))
+	mac.Write([]byte("zedr/" + purpose + "/v1"))
 	return mac.Sum(nil)
 }
 

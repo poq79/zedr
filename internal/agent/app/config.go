@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/platform/config"
+	"zedr/internal/platform/config"
 )
 
 // Config 是探针全部运行时配置（只来自环境变量）。
@@ -135,12 +135,12 @@ func LoadConfig(version string) (*Config, error) {
 	return c, nil
 }
 
-// defaultDataDir 默认落在 %LOCALAPPDATA%\HostGuard，避免污染用户目录。
+// defaultDataDir 默认落在 %LOCALAPPDATA%\zedr，避免污染用户目录。
 func defaultDataDir() string {
 	if v := os.Getenv("LOCALAPPDATA"); v != "" {
-		return filepath.Join(v, "HostGuard")
+		return filepath.Join(v, "zedr")
 	}
-	return `C:\ProgramData\HostGuard`
+	return `C:\ProgramData\zedr`
 }
 
 // Path 返回数据目录下的文件路径。

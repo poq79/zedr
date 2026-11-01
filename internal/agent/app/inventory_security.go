@@ -4,7 +4,7 @@ package agentapp
 // 字段名即线协议（snake_case）；winapi 类型无 json tag，
 // 在这里做唯一的翻译点——与 adapters/services/tasks 的映射策略一致。
 
-import "hostguard/internal/agent/winapi"
+import "zedr/internal/agent/winapi"
 
 type invFirewallProfile struct {
 	Name    string `json:"name"`

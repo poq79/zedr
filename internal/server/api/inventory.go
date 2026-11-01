@@ -7,10 +7,10 @@ import (
 	"sort"
 	"strings"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/service"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/service"
 )
 
 // saveInventory 探针上报主机资产清单（分节、hash 幂等）。

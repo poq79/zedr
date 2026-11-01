@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 // stormServer 是按消息类型计数的假飞书端点：interactive 告警卡与

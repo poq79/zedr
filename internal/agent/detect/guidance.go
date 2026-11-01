@@ -9,7 +9,7 @@ package detect
 
 import (
 	"fmt"
-	"hostguard/internal/model"
+	"zedr/internal/model"
 	"strings"
 )
 

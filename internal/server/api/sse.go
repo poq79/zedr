@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/server/domain"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/server/domain"
 )
 
 // issueStreamTicket 为当前会话签发一次性的 SSE 连接票据。

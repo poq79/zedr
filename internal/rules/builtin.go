@@ -3,8 +3,8 @@ package rules
 import (
 	"encoding/json"
 
-	"hostguard/internal/ioc"
-	"hostguard/internal/model"
+	"zedr/internal/ioc"
+	"zedr/internal/model"
 )
 
 // Builtin 是一条内置规则（随程序发布，可在服务端启用/禁用但不可删除）。

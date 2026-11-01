@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/agent/enrich"
-	"hostguard/internal/agent/winapi"
-	"hostguard/internal/model"
+	"zedr/internal/agent/enrich"
+	"zedr/internal/agent/winapi"
+	"zedr/internal/model"
 )
 
 // record 是基线里的一条记录。

@@ -59,7 +59,7 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
         />
         <div className="relative flex items-center gap-2.5">
           <div className="grid h-8 w-8 place-items-center rounded-md bg-primary text-[14px] font-bold text-primary-foreground">H</div>
-          <b className="text-[15px] tracking-[.2px] text-foreground">HostGuard</b>
+          <b className="text-[15px] tracking-[.2px] text-foreground">Z-EDR</b>
         </div>
 
         <div className="relative">
@@ -101,7 +101,7 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
               <ShieldCheck size={24} strokeWidth={2} />
             </div>
             <div>
-              <h1 className="m-0 text-xl font-bold tracking-tight">HostGuard</h1>
+              <h1 className="m-0 text-xl font-bold tracking-tight">Z-EDR</h1>
               <p className="m-0 text-[12.5px] text-faint">主机进程安全检测 · 总控管理后台</p>
             </div>
           </div>
@@ -144,7 +144,7 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
           <span className="text-ghost">|</span>
           <span>忘记密码：<span className="font-mono">bin/resetadmin.exe</span></span>
           <span className="text-ghost">|</span>
-          <span>© 2026 HostGuard</span>
+          <span>© 2026 Z-EDR</span>
         </div>
       </div>
     </div>

@@ -9,21 +9,21 @@ import (
 	"sort"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/platform/settingseal"
-	"hostguard/internal/ai"
-	"hostguard/internal/model"
-	"hostguard/internal/server/notify"
-	"hostguard/internal/platform/rulehash"
-	"hostguard/internal/platform/idgen"
-	"hostguard/internal/platform/logx"
-	"hostguard/internal/server/api"
-	"hostguard/internal/server/auth"
-	"hostguard/internal/server/livetunnel"
-	"hostguard/internal/server/repository/sqlite"
-	"hostguard/internal/server/service"
-	"hostguard/internal/server/web"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/platform/settingseal"
+	"zedr/internal/ai"
+	"zedr/internal/model"
+	"zedr/internal/server/notify"
+	"zedr/internal/platform/rulehash"
+	"zedr/internal/platform/idgen"
+	"zedr/internal/platform/logx"
+	"zedr/internal/server/api"
+	"zedr/internal/server/auth"
+	"zedr/internal/server/livetunnel"
+	"zedr/internal/server/repository/sqlite"
+	"zedr/internal/server/service"
+	"zedr/internal/server/web"
 )
 
 // App 是已装配完成的服务端实例。
@@ -468,14 +468,14 @@ func (a *App) backupDB(ctx context.Context) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	dst := filepath.Join(dir, fmt.Sprintf("secserver-%s.db", time.Now().Format("20060102-1504")))
+	dst := filepath.Join(dir, fmt.Sprintf("zedr-server-%s.db", time.Now().Format("20060102-1504")))
 	if _, err := a.store.DB().ExecContext(ctx, `VACUUM INTO ?`, dst); err != nil {
 		return "", fmt.Errorf("VACUUM INTO 失败: %w", err)
 	}
 
 	// 只保留最近 7 份：备份本身就是要占用与源库同量级的磁盘空间，
 	// 无上限的增长最终会变成新的故障源
-	matches, _ := filepath.Glob(filepath.Join(dir, "secserver-*.db"))
+	matches, _ := filepath.Glob(filepath.Join(dir, "zedr-server-*.db"))
 	sort.Strings(matches)
 	for len(matches) > 7 {
 		if err := os.Remove(matches[0]); err != nil {

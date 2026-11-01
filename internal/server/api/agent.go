@@ -4,12 +4,12 @@ import (
 	"context"
 	"net/http"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/platform/rulehash"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/livetunnel"
+	"zedr/internal/model"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/platform/rulehash"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/livetunnel"
 )
 
 type agentHandler struct{ deps Deps }

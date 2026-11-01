@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/server/domain"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/server/domain"
 )
 
 // ---------------------------------------------------------------- /metrics
@@ -34,27 +34,27 @@ func (h *adminHandler) metrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s gauge\n%s %v\n", name, help, name, name, val)
 	}
 
-	gauge("hg_hosts_total", "注册的主机总数", m.TotalHosts)
-	gauge("hg_hosts_online", "在线主机数（3 分钟内有心跳）", m.OnlineHosts)
-	gauge("hg_alerts_24h", "过去 24 小时收到的告警数", m.Alerts24h)
-	gauge("hg_alerts_open", "未处置告警数（open + acknowledged）", m.OpenAlerts)
-	gauge("hg_alerts_critical_open", "未处置的 critical 告警数", m.CriticalOpen)
-	gauge("hg_alert_avg_score", "24 小时告警平均分", fmt.Sprintf("%.2f", m.AvgScore))
+	gauge("zedr_hosts_total", "注册的主机总数", m.TotalHosts)
+	gauge("zedr_hosts_online", "在线主机数（3 分钟内有心跳）", m.OnlineHosts)
+	gauge("zedr_alerts_24h", "过去 24 小时收到的告警数", m.Alerts24h)
+	gauge("zedr_alerts_open", "未处置告警数（open + acknowledged）", m.OpenAlerts)
+	gauge("zedr_alerts_critical_open", "未处置的 critical 告警数", m.CriticalOpen)
+	gauge("zedr_alert_avg_score", "24 小时告警平均分", fmt.Sprintf("%.2f", m.AvgScore))
 
 	for _, sev := range []string{"critical", "high", "medium", "low"} {
-		fmt.Fprintf(&b, "hg_alerts_by_severity{severity=%q} %d\n", sev, m.SeverityDist[sev])
+		fmt.Fprintf(&b, "zedr_alerts_by_severity{severity=%q} %d\n", sev, m.SeverityDist[sev])
 	}
 
 	sent, failed, dropped := h.deps.Notifier.Stats()
-	gauge("hg_webhook_sent_total", "webhook 通知成功数", sent)
-	gauge("hg_webhook_failed_total", "webhook 通知失败数", failed)
-	gauge("hg_webhook_dropped_total", "webhook 队列满丢弃数", dropped)
+	gauge("zedr_webhook_sent_total", "webhook 通知成功数", sent)
+	gauge("zedr_webhook_failed_total", "webhook 通知失败数", failed)
+	gauge("zedr_webhook_dropped_total", "webhook 队列满丢弃数", dropped)
 
 	// 版本分布：每个版本一条样本行。版本碎片化是升级管理的日常，
 	// SIEM/看板据此画"还有多少台没升上来"的趋势
 	if vd, err := h.deps.Services.Stats.Versions(r.Context()); err == nil {
 		for v, n := range vd {
-			fmt.Fprintf(&b, "hg_agent_versions{version=%q} %d\n", v, n)
+			fmt.Fprintf(&b, "zedr_agent_versions{version=%q} %d\n", v, n)
 		}
 	}
 
@@ -62,22 +62,22 @@ func (h *adminHandler) metrics(w http.ResponseWriter, r *http.Request) {
 	if counts, err := h.deps.Services.Incident.CountByStatus(r.Context()); err == nil {
 		openish := 0
 		for st, n := range counts {
-			fmt.Fprintf(&b, "hg_incidents{status=%q} %d\n", st, n)
+			fmt.Fprintf(&b, "zedr_incidents{status=%q} %d\n", st, n)
 			if st != string(domain.IncidentResolved) {
 				openish += n
 			}
 		}
-		gauge("hg_incidents_open", "未进入 resolved 的事件数", openish)
+		gauge("zedr_incidents_open", "未进入 resolved 的事件数", openish)
 	}
 	if mtta, err := h.deps.Services.Incident.AvgFirstActionMinutes(
 		r.Context(), time.Now().Add(-7*24*time.Hour)); err == nil {
-		gauge("hg_incident_mtta_minutes", "事件创建→首次人工动作平均分钟数（7 天窗口）",
+		gauge("zedr_incident_mtta_minutes", "事件创建→首次人工动作平均分钟数（7 天窗口）",
 			fmt.Sprintf("%.2f", mtta))
 	}
 
-	gauge("hg_go_goroutines", "当前 goroutine 数", m.Goroutines)
-	gauge("hg_go_heap_alloc_bytes", "Go 堆已分配字节", m.HeapAlloc)
-	gauge("hg_uptime_seconds", "服务运行秒数", fmt.Sprintf("%.0f", m.UptimeSec))
+	gauge("zedr_go_goroutines", "当前 goroutine 数", m.Goroutines)
+	gauge("zedr_go_heap_alloc_bytes", "Go 堆已分配字节", m.HeapAlloc)
+	gauge("zedr_uptime_seconds", "服务运行秒数", fmt.Sprintf("%.0f", m.UptimeSec))
 
 	_, _ = w.Write([]byte(b.String()))
 }
@@ -101,7 +101,7 @@ func (h *adminHandler) exportCSV(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`attachment; filename="hostguard-alerts-%s.csv"`, time.Now().Format("20060102-1504")))
+		fmt.Sprintf(`attachment; filename="zedr-alerts-%s.csv"`, time.Now().Format("20060102-1504")))
 
 	// UTF-8 BOM：让 Excel 正确识别中文列
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
@@ -161,7 +161,7 @@ func (h *adminHandler) exportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if truncated {
-		w.Header().Set("X-HG-Export-Truncated", "true")
+		w.Header().Set("X-ZEDR-Export-Truncated", "true")
 	}
 }
 

@@ -2,14 +2,14 @@
 
 package main
 
-// secserver 的 Windows 服务化支持（与 cmd/agent 的实现同构）：
+// zedr-server 的 Windows 服务化支持（与 cmd/agent 的实现同构）：
 //
 // 为什么必须服务化：开发会话沙箱会静默回收"后台命令拉起的子进程"
 // （本轮实测 server 被回收 3 次），而生产部署里裸进程也没有自愈能力。
 // 注册为 Windows 服务后由 SCM 统一管理生命周期：开机自启、崩溃自动
 // 重启（恢复策略 5s/10s/30s 三级）、退出有 Stop 通知可优雅收尾。
 //
-// 用法：secserver -install（管理员）/ -uninstall / -service（SCM 调用）
+// 用法：zedr-server -install（管理员）/ -uninstall / -service（SCM 调用）
 
 import (
 	"context"
@@ -21,11 +21,11 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"hostguard/internal/platform/config"
-	"hostguard/internal/server/app"
+	"zedr/internal/platform/config"
+	"zedr/internal/server/app"
 )
 
-const serviceName = "HostGuardServer"
+const serviceName = "ZEDRServer"
 
 type serverServiceHandler struct{}
 
@@ -87,7 +87,7 @@ func installServerService() error {
 	}
 
 	s, err := m.CreateService(serviceName, exe, mgr.Config{
-		DisplayName: "HostGuard 总控服务端",
+		DisplayName: "Z-EDR 总控服务端",
 		Description: "接收终端探针告警上报，执行事件聚合、规则下发与处置指令。",
 		StartType:   mgr.StartAutomatic,
 		ErrorControl: mgr.ErrorNormal,

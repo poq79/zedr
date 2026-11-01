@@ -345,7 +345,7 @@ func (m *Manager) upgrade(conn net.Conn, agentID, secret string) (io.ReadWriteCl
 	b.WriteString("Authorization: Bearer " + secret + "\r\n")
 	b.WriteString("Connection: Upgrade\r\n")
 	b.WriteString("Upgrade: hg-tunnel/1\r\n")
-	b.WriteString("X-HG-Tunnel-Version: 1\r\n\r\n")
+	b.WriteString("X-ZEDR-Tunnel-Version: 1\r\n\r\n")
 
 	// 握手整体一个预算（写请求 + 读响应），101 后必须清除——
 	// 会话是长连接，残留 deadline 会在静默期掐死 keepalive

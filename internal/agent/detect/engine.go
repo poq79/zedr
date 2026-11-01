@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/agent/allow"
-	"hostguard/internal/agent/baseline"
-	"hostguard/internal/agent/enrich"
-	"hostguard/internal/model"
-	"hostguard/internal/rules"
+	"zedr/internal/agent/allow"
+	"zedr/internal/agent/baseline"
+	"zedr/internal/agent/enrich"
+	"zedr/internal/model"
+	"zedr/internal/rules"
 )
 
 // ProcessInfo 是采集层交给检测引擎的进程快照。

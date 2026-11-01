@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"strings"
 
-	"hostguard/internal/agent/allow"
-	"hostguard/internal/agent/state"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/agent/allow"
+	"zedr/internal/agent/state"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
 )
 
 // Backend 是本地 API 依赖的能力集合（由 agent 实现）。

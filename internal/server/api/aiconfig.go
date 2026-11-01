@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/service"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/service"
 )
 
 // 本文件是 AI 配置中心的控制器：模型槽位、连通性测试、提示词模板、技能包。

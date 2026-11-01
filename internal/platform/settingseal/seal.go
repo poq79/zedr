@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"strings"
 
-	"hostguard/internal/platform/rulehash"
+	"zedr/internal/platform/rulehash"
 )
 
 // 前缀用于自描述密文版本：算法轮换时老数据仍可识别。

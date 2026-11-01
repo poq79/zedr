@@ -14,24 +14,24 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/agent/allow"
-	"hostguard/internal/agent/baseline"
-	"hostguard/internal/agent/collect"
-	"hostguard/internal/agent/detect"
-	"hostguard/internal/agent/enrich"
-	"hostguard/internal/agent/inventory"
-	"hostguard/internal/agent/liveapi"
-	"hostguard/internal/agent/localapi"
-	"hostguard/internal/agent/persist"
-	"hostguard/internal/agent/quarantine"
-	"hostguard/internal/agent/state"
-	"hostguard/internal/agent/tunnel"
-	"hostguard/internal/agent/uplink"
-	"hostguard/internal/agent/winapi"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/platform/idgen"
-	"hostguard/internal/platform/logx"
-	"hostguard/internal/model"
+	"zedr/internal/agent/allow"
+	"zedr/internal/agent/baseline"
+	"zedr/internal/agent/collect"
+	"zedr/internal/agent/detect"
+	"zedr/internal/agent/enrich"
+	"zedr/internal/agent/inventory"
+	"zedr/internal/agent/liveapi"
+	"zedr/internal/agent/localapi"
+	"zedr/internal/agent/persist"
+	"zedr/internal/agent/quarantine"
+	"zedr/internal/agent/state"
+	"zedr/internal/agent/tunnel"
+	"zedr/internal/agent/uplink"
+	"zedr/internal/agent/winapi"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/platform/idgen"
+	"zedr/internal/platform/logx"
+	"zedr/internal/model"
 )
 
 // Agent 是探针实例。
@@ -141,12 +141,12 @@ func New(version string) (*Agent, error) {
 	// 否则每次升级换目录都会凭空产生一批"未签名程序在可写目录"的噪声。
 	if exe, err := os.Executable(); err == nil {
 		if dir := filepath.Dir(exe); dir != "" {
-			if err := alw.EnsureLocal(allow.TypePath, dir, "HostGuard 安装目录自豁免"); err != nil {
+			if err := alw.EnsureLocal(allow.TypePath, dir, "Z-EDR 安装目录自豁免"); err != nil {
 				log.Warn("self_allow_failed", "err", err)
 			}
 		}
 	}
-	if err := alw.EnsureLocal(allow.TypePath, cfg.DataDir, "HostGuard 数据目录自豁免"); err != nil {
+	if err := alw.EnsureLocal(allow.TypePath, cfg.DataDir, "Z-EDR 数据目录自豁免"); err != nil {
 		log.Warn("self_allow_failed", "err", err)
 	}
 

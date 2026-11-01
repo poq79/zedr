@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""HostGuard 检测能力评估套件
+"""Z-EDR 检测能力评估套件
 
 安全边界：不下载任何外部文件，所有"攻击样本"均由本机自造：
-  - 二进制改名：复制我方 hgdiag.exe，内容完全无害
+  - 二进制改名：复制我方 zedr-diag.exe，内容完全无害
   - 可疑命令行：只用 echo 打印，再用 ping 回环保活，绝不执行真实危险命令
   - EICAR：行业标准测试串，本身不含可执行代码
 
@@ -35,7 +35,7 @@ BIN = os.path.join(ROOT, "bin")
 AGENT = "http://127.0.0.1:8843"
 SERVER = "http://127.0.0.1:8080"
 WORK = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Temp", "hg-scenarios")
-HGD_IAG = os.path.join(BIN, "hgdiag.exe")
+HGD_IAG = os.path.join(BIN, "zedr-diag.exe")
 
 # 文件类样本的路径标记（用于与系统同名进程区分）
 WORK_MARK = "hg-scenarios"
@@ -45,7 +45,7 @@ SUSPICIOUS_AT = 38
 
 # 探针本地 API 的访问令牌（v0.9 起强制校验，见 internal/agent/localapi/auth.go）
 def _local_token():
-    p = os.path.join(os.environ.get("LOCALAPPDATA", ""), "HostGuard", "local.token")
+    p = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Z-EDR", "local.token")
     try:
         with open(p, encoding="utf-8") as f:
             return f.read().strip()
@@ -59,7 +59,7 @@ report = {"scenarios": [], "falsepositives": [], "perf": {}, "load": {}}
 
 # ----------------------------------------------------------------- 基础工具
 def http_get(url, timeout=8):
-    h = {"X-HG-Token": LOCAL_TOKEN} if LOCAL_TOKEN else {}
+    h = {"X-ZEDR-Token": LOCAL_TOKEN} if LOCAL_TOKEN else {}
     req = urllib.request.Request(url, headers=h)
     with _OPENER.open(req, timeout=timeout) as r:
         return json.load(r)
@@ -69,7 +69,7 @@ def http_post(url, payload, headers=None, timeout=10):
     data = json.dumps(payload).encode()
     h = {"Content-Type": "application/json"}
     if LOCAL_TOKEN:
-        h["X-HG-Token"] = LOCAL_TOKEN
+        h["X-ZEDR-Token"] = LOCAL_TOKEN
     if headers:
         h.update(headers)
     req = urllib.request.Request(url, data=data, headers=h, method="POST")
@@ -224,7 +224,7 @@ def _admin_group_change():
 
 
 def _service_create():
-    """注册一个指向自造样本（hgdiag 副本）的系统服务（可逆）。
+    """注册一个指向自造样本（zedr-diag 副本）的系统服务（可逆）。
     服务 added → INV-SERVICES 告警；路径在可写目录且未签名 → high/60。"""
     name = "HgS16E2E"
     binpath = copy_as("hg_s16_svc.exe")
@@ -269,7 +269,7 @@ def run_scenarios():
 
     os.makedirs(WORK, exist_ok=True)
     if not processes():
-        print("!! 探针本地接口不可用，请先启动 secagent.exe")
+        print("!! 探针本地接口不可用，请先启动 zedr-agent.exe")
         return []
 
     results = []

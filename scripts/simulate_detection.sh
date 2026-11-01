@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# HostGuard 检测能力受控验证脚本
+# Z-EDR 检测能力受控验证脚本
 #
 # 安全声明：本脚本**不下载任何外部文件**，全部样本在本地生成：
-#   1) 二进制改名样本 —— 复制我们自己的 hgdiag.exe 并改名，内容完全无害；
+#   1) 二进制改名样本 —— 复制我们自己的 zedr-diag.exe 并改名，内容完全无害；
 #   2) 可疑命令行样本 —— 只做 echo + 网络回环延时，不执行任何实际危险动作；
 #   3) EICAR 测试串   —— 由行业标准字符串拼接生成，本身不包含可执行代码。
 #
@@ -31,7 +31,7 @@ banner "0. 环境检查"
 if curl -s -m 3 "$AGENT_API/api/local/status" >/dev/null 2>&1; then
   echo "探针本地接口: 正常"
 else
-  echo "探针未运行，请先启动 bin/secagent.exe"; exit 1
+  echo "探针未运行，请先启动 bin/zedr-agent.exe"; exit 1
 fi
 if curl -s -m 3 "$SERVER_API/health" >/dev/null 2>&1; then
   echo "总控服务端: 正常"
@@ -40,13 +40,13 @@ else
 fi
 
 banner "1. 伪装系统进程 —— 期望命中 HG-016（系统进程在非系统目录运行）"
-cp -f "$ROOT/bin/hgdiag.exe" "$TD_POSIX/svchost.exe"
+cp -f "$ROOT/bin/zedr-diag.exe" "$TD_POSIX/svchost.exe"
 echo "生成: $(winpath "$TD_POSIX/svchost.exe")"
 cmd //c start "" "$(winpath "$TD_POSIX/svchost.exe")" -hold 12s >/dev/null 2>&1
 sleep 9
 
 banner "2. 改名扫描器 —— 期望命中 N-009 / HG-019（名称类 IOC）"
-cp -f "$ROOT/bin/hgdiag.exe" "$TD_POSIX/nmap.exe"
+cp -f "$ROOT/bin/zedr-diag.exe" "$TD_POSIX/nmap.exe"
 echo "生成: $(winpath "$TD_POSIX/nmap.exe")"
 cmd //c start "" "$(winpath "$TD_POSIX/nmap.exe")" -hold 12s >/dev/null 2>&1
 sleep 9

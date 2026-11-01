@@ -26,8 +26,8 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/rulehash"
+	"zedr/internal/model"
+	"zedr/internal/platform/rulehash"
 )
 
 // maxUpgradeBinarySize 是升级包体积硬上限。当前探针二进制约 15MB，

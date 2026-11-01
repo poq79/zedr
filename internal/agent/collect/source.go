@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"hostguard/internal/agent/winapi"
+	"zedr/internal/agent/winapi"
 )
 
 // Source 是"进程表来源"的抽象。

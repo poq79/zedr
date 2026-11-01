@@ -4,7 +4,7 @@
 // 设计约束：
 //   - 隔离区固定在探针数据目录下（dataDir/quarantine），与白名单/基线
 //     同级——数据目录已自豁免、权限 0700，不需要额外提权；
-//   - 拒绝隔离 HostGuard 自身安装/数据目录内的文件（自保护，
+//   - 拒绝隔离 Z-EDR 自身安装/数据目录内的文件（自保护，
 //     防止"删掉自己的检测数据"这类指令被滥用）；
 //   - 跨卷移动用 copy+hash 校验+删除 原子化降级，任何一步失败都
 //     不产生"两个副本都不完整"的状态；
@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/platform/idgen"
+	"zedr/internal/platform/idgen"
 )
 
 // Entry 是隔离清单里的一条记录。
@@ -62,7 +62,7 @@ type Store struct {
 var (
 	ErrNotFound      = errors.New("隔离记录不存在")
 	ErrAlreadyGone   = errors.New("文件不存在或已被移动")
-	ErrProtected     = errors.New("拒绝隔离 HostGuard 自身目录内的文件")
+	ErrProtected     = errors.New("拒绝隔离 Z-EDR 自身目录内的文件")
 	ErrOriginalExists = errors.New("原路径已存在同名文件，拒绝覆盖")
 	ErrAlreadyRestored = errors.New("该记录已恢复过")
 )

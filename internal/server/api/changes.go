@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/platform/httpx"
 )
 
 // getHostChanges 返回主机的资产变更事件（inventory 层告警）。

@@ -143,7 +143,7 @@ export function Alerts({ user }: { user: User }) {
     const csv = '\uFEFF' + [cols.join(','), ...items.map((a) => cols.map((c) => esc((a as unknown as Record<string, unknown>)[c])).join(','))].join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
-    a.href = url; a.download = `hostguard-alerts-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    a.href = url; a.download = `zedr-alerts-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
     URL.revokeObjectURL(url);
     toast(`已导出 ${items.length} 条告警`);
   };

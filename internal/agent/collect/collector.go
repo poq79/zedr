@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/agent/winapi"
-	"hostguard/internal/model"
+	"zedr/internal/agent/winapi"
+	"zedr/internal/model"
 )
 
 // Collector 维护跨轮次的进程状态。

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/platform/httpx"
 )
 
 // 本地 API 的访问控制。
@@ -26,8 +26,8 @@ import (
 //     同用户身份的进程理论上能读到该文件——这一点无法在用户态彻底解决
 //     （那是操作系统的信任边界），但配合前一层已挡住浏览器侧的攻击。
 const (
-	tokenHeader = "X-HG-Token"
-	tokenCookie = "hg_local_token"
+	tokenHeader = "X-ZEDR-Token"
+	tokenCookie = "zedr_local_token"
 	tokenQuery  = "token"
 )
 

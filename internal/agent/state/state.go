@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/agent/collect"
-	"hostguard/internal/agent/detect"
-	"hostguard/internal/model"
+	"zedr/internal/agent/collect"
+	"zedr/internal/agent/detect"
+	"zedr/internal/model"
 )
 
 // ProcRow 是本地 UI 展示用的进程行。

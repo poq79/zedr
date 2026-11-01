@@ -31,7 +31,7 @@ func TestItemsReturnsBaselineEntries(t *testing.T) {
 			FirstSeen: now, LastSeen: now,
 		},
 		// 老版本基线条目：没有 type/location 列
-		`scheduled_task|\hostguard\worker`: {
+		`scheduled_task|\zedr\worker`: {
 			Command: "cmd /c worker.exe",
 			FirstSeen: now, LastSeen: now,
 		},
@@ -59,7 +59,7 @@ func TestItemsReturnsBaselineEntries(t *testing.T) {
 		t.Fatalf("service 条目字段不符: %+v", svc)
 	}
 
-	task, ok := byKey[`scheduled_task|\hostguard\worker`]
+	task, ok := byKey[`scheduled_task|\zedr\worker`]
 	if !ok {
 		t.Fatalf("缺 scheduled_task 条目: %+v", items)
 	}

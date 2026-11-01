@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/logx"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/logx"
 )
 
 // maxBodyBytes 限制请求体，防止内存耗尽。

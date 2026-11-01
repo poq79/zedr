@@ -16,8 +16,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/server/domain"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/server/domain"
 )
 
 // Claims 是访问令牌载荷。
@@ -49,7 +49,7 @@ func NewManager(secret string, accessTTL, refreshTTL time.Duration) (*Manager, e
 	}
 	return &Manager{
 		secret:     []byte(secret),
-		issuer:     "hostguard-server",
+		issuer:     "zedr-server",
 		accessTTL:  accessTTL,
 		refreshTTL: refreshTTL,
 	}, nil
@@ -68,7 +68,7 @@ func (m *Manager) IssueAccess(u *domain.User, now time.Time) (string, time.Time,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   u.ID,
-			Audience:  jwt.ClaimStrings{"hostguard-console"},
+			Audience:  jwt.ClaimStrings{"zedr-console"},
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)),
 			ExpiresAt: jwt.NewNumericDate(exp),
@@ -95,7 +95,7 @@ func (m *Manager) ParseAccess(raw string) (*Claims, error) {
 		return m.secret, nil
 	},
 		jwt.WithIssuer(m.issuer),
-		jwt.WithAudience("hostguard-console"),
+		jwt.WithAudience("zedr-console"),
 		jwt.WithExpirationRequired(),
 		jwt.WithLeeway(30*time.Second),
 	)

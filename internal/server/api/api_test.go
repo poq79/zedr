@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/rulehash"
-	"hostguard/internal/server/auth"
-	"hostguard/internal/server/repository/sqlite"
-	"hostguard/internal/ai"
-	"hostguard/internal/server/service"
+	"zedr/internal/model"
+	"zedr/internal/platform/rulehash"
+	"zedr/internal/server/auth"
+	"zedr/internal/server/repository/sqlite"
+	"zedr/internal/ai"
+	"zedr/internal/server/service"
 )
 
 const (
@@ -401,8 +401,8 @@ func TestIngestAcceptsHostLevelAlert(t *testing.T) {
 	res := env.doAgentJSON(http.MethodPost, "/api/v1/agent/alerts", model.AlertBatchRequest{
 		Alerts: []model.AlertEnvelope{{
 			Fingerprint: "fp-host-level",
-			Title:       "资产变更：新增计划任务 \\HostGuardE2E",
-			Summary:     "计划任务 \\HostGuardE2E 新增（cmd /c echo）",
+			Title:       "资产变更：新增计划任务 \\ZEDRE2E",
+			Summary:     "计划任务 \\ZEDRE2E 新增（cmd /c echo）",
 			Verdict:     model.VerdictSuspicious,
 			Severity:    model.SeverityMedium,
 			Score:       45,
@@ -433,7 +433,7 @@ func TestIngestAcceptsHostLevelAlert(t *testing.T) {
 			} `json:"evidence"`
 		} `json:"items"`
 	}
-	env.doJSON(http.MethodGet, "/api/v1/alerts?q=HostGuardE2E", nil, http.StatusOK, env.token, &list)
+	env.doJSON(http.MethodGet, "/api/v1/alerts?q=ZEDRE2E", nil, http.StatusOK, env.token, &list)
 	if len(list.Items) != 1 || list.Items[0].Evidence.Signals[0].Layer != "inventory" {
 		t.Fatalf("主机级告警未落库或证据层丢失: %+v", list.Items)
 	}

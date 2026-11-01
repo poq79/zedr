@@ -29,8 +29,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"hostguard/internal/platform/redact"
-	"hostguard/internal/server/domain"
+	"zedr/internal/platform/redact"
+	"zedr/internal/server/domain"
 )
 
 const (
@@ -330,9 +330,9 @@ func viewOf(a domain.Alert) alertView {
 	}
 }
 
-// cardTitle 是各渠道共用的标题格式：「[HostGuard][严重度] 标题」。
+// cardTitle 是各渠道共用的标题格式：「[Z-EDR][严重度] 标题」。
 func cardTitle(v alertView) string {
-	return "[HostGuard][" + v.severity + "] " + v.title
+	return "[Z-EDR][" + v.severity + "] " + v.title
 }
 
 // orDash 空值占位：显示"-"明确是"无"，而不是"漏渲染"。
@@ -445,7 +445,7 @@ func buildFeishuCard(a domain.Alert, consoleURL string) map[string]any {
 		"tag": "note",
 		"elements": []any{
 			map[string]any{"tag": "plain_text",
-				"content": "HostGuard • 告警 ID " + v.alertID + " • " + v.viewTime()},
+				"content": "Z-EDR • 告警 ID " + v.alertID + " • " + v.viewTime()},
 		},
 	})
 	return map[string]any{

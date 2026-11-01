@@ -14,7 +14,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"hostguard/internal/platform/apperr"
+	"zedr/internal/platform/apperr"
 )
 
 // pipeConn 探针侧的合成连接（等价于探针包的 streamConn：bufio 缓冲里
@@ -53,7 +53,7 @@ func rawUpgrade(t *testing.T, addr, agentID, secret, version string) (*http.Resp
 	b.WriteString("Authorization: Bearer " + secret + "\r\n")
 	b.WriteString("Connection: Upgrade\r\n")
 	b.WriteString("Upgrade: hg-tunnel/1\r\n")
-	b.WriteString("X-HG-Tunnel-Version: " + version + "\r\n\r\n")
+	b.WriteString("X-ZEDR-Tunnel-Version: " + version + "\r\n\r\n")
 	if _, err := conn.Write([]byte(b.String())); err != nil {
 		t.Fatalf("发送升级请求失败: %v", err)
 	}

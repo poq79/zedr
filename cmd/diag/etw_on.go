@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/agent/winapi"
+	"zedr/internal/agent/winapi"
 )
 
 // testETW 实测 ETW 实时进程事件采集能力。
@@ -18,7 +18,7 @@ import (
 func testETW(d time.Duration) {
 	fmt.Printf("\n--- ETW 实时进程事件采集（订阅 %s）---\n", d)
 
-	w, err := winapi.NewETWProcessWatcher("HostGuard-Diag")
+	w, err := winapi.NewETWProcessWatcher("ZEDR-Diag")
 	if err != nil {
 		fmt.Printf("ETW 不可用: %v\n", err)
 		fmt.Println("  => 探针不受影响：默认走快照轮询 + 文件落地监控")

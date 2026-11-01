@@ -3,7 +3,7 @@ package attack
 import (
 	"testing"
 
-	"hostguard/internal/rules"
+	"zedr/internal/rules"
 )
 
 // TestCatalogConsistency 验证目录自身一致性：

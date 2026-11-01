@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/platform/config"
+	"zedr/internal/platform/config"
 )
 
 // Config 是服务端全部运行时配置（只来自环境变量）。
@@ -26,7 +26,7 @@ type Config struct {
 
 	// Webhook 告警推送：URL 为空表示不启用。
 	WebhookURL     string
-	WebhookSecret  string // HMAC-SHA256 签名密钥（X-HG-Signature 头）
+	WebhookSecret  string // HMAC-SHA256 签名密钥（X-ZEDR-Signature 头）
 	WebhookTimeout time.Duration
 	// WebhookMinSeverity 是全部通知渠道（webhook/syslog/飞书/钉钉/Slack/邮件）
 	// 的统一严重度门槛：只推送不低于该严重度的告警（治理通知风暴）。
@@ -105,7 +105,7 @@ func LoadConfig() (*Config, error) {
 	c.LogFormat = l.Env("HG_LOG_FORMAT", "json")
 
 	c.Addr = l.Env("HG_SERVER_ADDR", "0.0.0.0:8080")
-	c.DBPath = l.Env("HG_SERVER_DB_PATH", "./data/secserver.db")
+	c.DBPath = l.Env("HG_SERVER_DB_PATH", "./data/zedr-server.db")
 	c.CORSOrigins = l.CSV("HG_SERVER_CORS_ORIGINS", []string{"http://localhost:8080", "http://127.0.0.1:8080"})
 	c.JWTSecret = l.Required("HG_SERVER_JWT_SECRET")
 	c.RuleSignKey = l.Env("HG_SERVER_RULE_SIGN_KEY", "")

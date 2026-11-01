@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/rulehash"
+	"zedr/internal/model"
+	"zedr/internal/platform/rulehash"
 )
 
 const testIOC1 = "aa01010101010101010101010101010101010101010101010101010101010101"

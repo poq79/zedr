@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
 )
 
-const refreshCookieName = "hg_rt"
+const refreshCookieName = "zedr_rt"
 
 type authHandler struct{ deps Deps }
 

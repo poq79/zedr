@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/platform/httpx"
 )
 
 // errInvestigationNotCached 表示该告警还没有已缓存的调查报告。

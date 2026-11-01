@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
-	"hostguard/internal/platform/logx"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
+	"zedr/internal/platform/logx"
 )
 
 // 实时查询代理：管理端 REST → 隧道内只读 REST 的薄转发层。
@@ -104,9 +104,9 @@ func (h *adminHandler) liveForward(w http.ResponseWriter, r *http.Request, rest 
 	}
 	// 操作员身份透传给探针侧审计（探针端无鉴权概念——无监听面，
 	// 物理上只有持凭证的服务端可达，但"谁在查"要跟着请求走）
-	treq.Header.Set("X-HG-Operator", p.Username)
+	treq.Header.Set("X-ZEDR-Operator", p.Username)
 	if rid := logx.RequestID(r.Context()); rid != "" {
-		treq.Header.Set("X-HG-Request-Id", rid)
+		treq.Header.Set("X-ZEDR-Request-Id", rid)
 	}
 
 	started := time.Now()
@@ -135,7 +135,7 @@ func (h *adminHandler) liveForward(w http.ResponseWriter, r *http.Request, rest 
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
-	for _, hd := range []string{"X-HG-File-Size", "X-HG-Truncated"} {
+	for _, hd := range []string{"X-ZEDR-File-Size", "X-ZEDR-Truncated"} {
 		if v := resp.Header.Get(hd); v != "" {
 			w.Header().Set(hd, v)
 		}

@@ -8,7 +8,7 @@ package notify
 import (
 	"log/slog"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 // NewSlack 创建 Slack 渠道（attachments + fields）。
@@ -62,7 +62,7 @@ func buildSlackPayload(a domain.Alert, consoleURL string) map[string]any {
 			slackField("MITRE", orDash(v.mitre), true),
 			slackField("告警 ID", v.alertID, true),
 		},
-		"footer": "HostGuard • " + v.viewTime(),
+		"footer": "Z-EDR • " + v.viewTime(),
 		"ts":     a.CreatedAt.Unix(),
 	}
 	if consoleURL != "" {

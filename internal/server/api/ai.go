@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/httpx"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
 )
 
 // triageAlert 对单条告警做 AI 研判。

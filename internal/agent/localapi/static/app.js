@@ -1,4 +1,4 @@
-/* HostGuard 桌面端（本机防护）· 前端应用 */
+/* Z-EDR 桌面端（本机防护）· 前端应用 */
 'use strict';
 
 const $ = (s, r = document) => r.querySelector(s);

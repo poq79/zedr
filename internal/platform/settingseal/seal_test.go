@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"hostguard/internal/platform/rulehash"
+	"zedr/internal/platform/rulehash"
 )
 
 func TestSealOpenRoundtrip(t *testing.T) {

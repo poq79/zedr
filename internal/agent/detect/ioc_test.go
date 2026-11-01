@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 // makeSample 写一个临时文件并返回其 SHA256，供 IOC 命中测试使用。
@@ -37,7 +37,7 @@ func hasSignal(res *Result, id string) bool {
 // 单凭命中即达恶意阈值，证据带 S-IOC 信号，分量可对账。
 func TestIOCHashHit(t *testing.T) {
 	e := newTestEngine(t)
-	path, hash := makeSample(t, "hostguard-ioc-test-payload")
+	path, hash := makeSample(t, "zedr-ioc-test-payload")
 
 	e.SetIOCs(map[string]string{hash: "演练样本 A（测试）"})
 
@@ -62,7 +62,7 @@ func TestIOCHashHit(t *testing.T) {
 // 清空 IOC 表（服务端明确清库）后原命中也不再触发。
 func TestIOCCleanFile(t *testing.T) {
 	e := newTestEngine(t)
-	path, hash := makeSample(t, "hostguard-clean-file")
+	path, hash := makeSample(t, "zedr-clean-file")
 	e.SetIOCs(map[string]string{strings.Repeat("ab", 32): "无关条目"})
 
 	res := e.Analyze(Input{Proc: ProcessInfo{PID: 101, Name: "clean.exe", Path: path}})

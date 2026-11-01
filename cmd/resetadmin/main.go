@@ -12,7 +12,7 @@
 //	resetadmin                          # 交互缺失时列出账号并退出
 //	resetadmin -new '新密码'            # 重置唯一管理员（role=admin）密码
 //	resetadmin -generate                # 随机生成 14 位强密码并打印
-//	resetadmin -db ./data/secserver.db -new 'xxx'
+//	resetadmin -db ./data/zedr-server.db -new 'xxx'
 //
 // 重置语义与 ChangePassword 一致：同步吊销该用户全部刷新令牌。
 package main
@@ -33,7 +33,7 @@ import (
 const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^*-_=+"
 
 func main() {
-	dbPath := flag.String("db", "./data/secserver.db", "服务端 SQLite 路径（与 HG_SERVER_DB_PATH 一致）")
+	dbPath := flag.String("db", "./data/zedr-server.db", "服务端 SQLite 路径（与 HG_SERVER_DB_PATH 一致）")
 	newPw := flag.String("new", "", "新密码（≥8 位）")
 	generate := flag.Bool("generate", false, "随机生成 14 位强密码")
 	flag.Parse()

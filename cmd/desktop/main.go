@@ -1,14 +1,14 @@
-// Command secui 是 HostGuard 的桌面端（本机防护面板）。
+// Command zedr-ui 是 Z-EDR 的桌面端（本机防护面板）。
 //
 // 形态：原生 Win32 窗口 + WebView2 渲染，无浏览器地址栏，像普通桌面应用。
 // 若目标机器未安装 WebView2 运行时，自动退化为"用默认浏览器打开"。
 //
 // 用法：
 //
-//	secui                     打开桌面面板（自动连接本地探针）
-//	secui -url http://...     指定面板地址
-//	secui -browser            强制用默认浏览器打开（不创建窗口）
-//	secui -start-agent        若探针未运行，尝试拉起同目录下的 secagent.exe
+//	zedr-ui                     打开桌面面板（自动连接本地探针）
+//	zedr-ui -url http://...     指定面板地址
+//	zedr-ui -browser            强制用默认浏览器打开（不创建窗口）
+//	zedr-ui -start-agent        若探针未运行，尝试拉起同目录下的 zedr-agent.exe
 package main
 
 import (
@@ -24,7 +24,7 @@ import (
 
 	webview2 "github.com/jchv/go-webview2"
 
-	"hostguard/internal/platform/config"
+	"zedr/internal/platform/config"
 )
 
 var version = "dev"
@@ -35,14 +35,14 @@ func main() {
 	var (
 		urlFlag    = flag.String("url", "", "面板地址（默认读 HG_AGENT_LOCAL_ADDR）")
 		forceBrowser = flag.Bool("browser", false, "强制用默认浏览器打开")
-		startAgent = flag.Bool("start-agent", true, "探针未运行时尝试拉起同目录 secagent.exe")
+		startAgent = flag.Bool("start-agent", true, "探针未运行时尝试拉起同目录 zedr-agent.exe")
 		debug      = flag.Bool("debug", false, "开启 WebView2 调试端口")
 		showVer    = flag.Bool("version", false, "打印版本")
 	)
 	flag.Parse()
 
 	if *showVer {
-		fmt.Printf("secui %s\n", version)
+		fmt.Printf("zedr-ui %s\n", version)
 		return
 	}
 
@@ -85,7 +85,7 @@ func main() {
 		Debug:     *debug,
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{
-			Title:  "HostGuard · 本机进程防护",
+			Title:  "Z-EDR · 本机进程防护",
 			Width:  1180,
 			Height: 820,
 			Center: true,
@@ -99,7 +99,7 @@ func main() {
 	}
 	defer w.Destroy()
 
-	w.SetTitle("HostGuard · 本机进程防护 v" + version)
+	w.SetTitle("Z-EDR · 本机进程防护 v" + version)
 	w.Navigate(target)
 	w.Run()
 }
@@ -132,9 +132,9 @@ func launchAgent() error {
 	if err != nil {
 		return err
 	}
-	agentPath := filepath.Join(filepath.Dir(exe), "secagent.exe")
+	agentPath := filepath.Join(filepath.Dir(exe), "zedr-agent.exe")
 	if _, err := os.Stat(agentPath); err != nil {
-		return fmt.Errorf("未找到 secagent.exe: %w", err)
+		return fmt.Errorf("未找到 zedr-agent.exe: %w", err)
 	}
 	cmd := exec.Command(agentPath)
 	cmd.Dir = filepath.Dir(exe)
@@ -154,14 +154,14 @@ func openBrowser(url string) {
 }
 
 // readLocalToken 从数据目录读取本地接口访问令牌。
-// 数据目录与探针保持一致：优先 HG_AGENT_DATA_DIR，否则 %LOCALAPPDATA%\HostGuard。
+// 数据目录与探针保持一致：优先 HG_AGENT_DATA_DIR，否则 %LOCALAPPDATA%\zedr。
 func readLocalToken() string {
 	dir := os.Getenv("HG_AGENT_DATA_DIR")
 	if dir == "" {
 		if v := os.Getenv("LOCALAPPDATA"); v != "" {
-			dir = filepath.Join(v, "HostGuard")
+			dir = filepath.Join(v, "zedr")
 		} else {
-			dir = `C://ProgramData//HostGuard`
+			dir = `C://ProgramData//zedr`
 		}
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "local.token"))

@@ -1,4 +1,4 @@
-// Command hgdiag 是探针采集层的自检工具。
+// Command zedr-diag 是探针采集层的自检工具。
 //
 // 用途：在目标终端上快速验证 Win32 采集能力是否正常（进程枚举、命令行、
 // 账号解析、哈希、签名、TCP 表），排查"探针装了但采不到数据"这类问题。
@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/agent/winapi"
+	"zedr/internal/agent/winapi"
 )
 
 func main() {
@@ -31,7 +31,7 @@ func main() {
 	persistCheck := flag.Bool("persist", false, "枚举持久化项（自启动）并输出分类统计")
 	flag.Parse()
 
-	fmt.Println("=== HostGuard 采集层自检 ===")
+	fmt.Println("=== Z-EDR 采集层自检 ===")
 	fmt.Printf("OS      : %s\n", winapi.OSVersion())
 	fmt.Printf("Host    : %s\n", winapi.Hostname())
 	fmt.Printf("User    : %s\n", winapi.CurrentUser())

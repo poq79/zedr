@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 // NewDingTalk 创建钉钉渠道（actionCard：markdown 正文 + 可选跳转按钮）。

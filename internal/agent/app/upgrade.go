@@ -42,7 +42,7 @@ import (
 
 	"golang.org/x/sys/windows/svc"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 // 升级数据文件名（落盘在数据目录；.old 备份与目标二进制同目录）。

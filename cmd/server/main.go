@@ -1,7 +1,7 @@
-// Command secserver 是 HostGuard 总控服务端。
+// Command zedr-server 是 Z-EDR 总控服务端。
 //
-// 启动：secserver（配置全部来自环境变量 / .env）
-// 服务化：secserver -install（管理员，开机自启+崩溃自动重启）
+// 启动：zedr-server（配置全部来自环境变量 / .env）
+// 服务化：zedr-server -install（管理员，开机自启+崩溃自动重启）
 // 端点：GET /health  GET /ready  GET /（管理台）
 package main
 
@@ -15,8 +15,8 @@ import (
 
 	"golang.org/x/sys/windows/svc"
 
-	"hostguard/internal/platform/config"
-	"hostguard/internal/server/app"
+	"zedr/internal/platform/config"
+	"zedr/internal/server/app"
 )
 
 // version 由构建脚本通过 -ldflags -X main.version 注入。
@@ -32,7 +32,7 @@ func main() {
 	flag.Parse()
 
 	if *flagVersion {
-		fmt.Printf("secserver %s\n", version)
+		fmt.Printf("zedr-server %s\n", version)
 		return
 	}
 	if *flagInstall {

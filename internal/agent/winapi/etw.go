@@ -10,7 +10,7 @@
 //     但 OpenTrace 对所有参数组合都返回 ERROR_INVALID_NAME，未能跑通，
 //     不能作为默认采集路径。
 //
-// 需要验证时：go build -tags etw ./cmd/hgdiag && ./hgdiag -etw 10s
+// 需要验证时：go build -tags etw ./cmd/diag && ./zedr-diag -etw 10s
 //
 // 为什么需要它：用户态轮询（无论 Toolhelp32 还是 NtQuery）都存在固有的
 // TOCTOU 盲区——存活时间短于一个轮询周期的进程永远采集不到，
@@ -202,7 +202,7 @@ type ETWProcessWatcher struct {
 // 因此调用前会先尝试停止同名残留会话（探针崩溃后重启是常见场景）。
 func NewETWProcessWatcher(sessionName string) (*ETWProcessWatcher, error) {
 	if sessionName == "" {
-		sessionName = "HostGuard-ProcessTrace"
+		sessionName = "ZEDR-ProcessTrace"
 	}
 	w := &ETWProcessWatcher{
 		name: sessionName,
@@ -522,7 +522,7 @@ func decodeUTF16LE(raw []byte) string {
 // ProbeETW 做一次轻量可用性探测：能建会话、能启用 provider 即为可用。
 // 探测后立即清理，不留残留会话。
 func ProbeETW() error {
-	w, err := NewETWProcessWatcher("HostGuard-Probe")
+	w, err := NewETWProcessWatcher("ZEDR-Probe")
 	if err != nil {
 		return err
 	}
