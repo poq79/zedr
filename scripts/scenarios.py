@@ -43,18 +43,33 @@ WORK_MARK = "hg-scenarios"
 MALICIOUS_AT = 70
 SUSPICIOUS_AT = 38
 
+# 探针本地 API 的访问令牌（v0.9 起强制校验，见 internal/agent/localapi/auth.go）
+def _local_token():
+    p = os.path.join(os.environ.get("LOCALAPPDATA", ""), "HostGuard", "local.token")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+LOCAL_TOKEN = _local_token()
+
 report = {"scenarios": [], "falsepositives": [], "perf": {}, "load": {}}
 
 
 # ----------------------------------------------------------------- 基础工具
 def http_get(url, timeout=8):
-    with _OPENER.open(url, timeout=timeout) as r:
+    h = {"X-HG-Token": LOCAL_TOKEN} if LOCAL_TOKEN else {}
+    req = urllib.request.Request(url, headers=h)
+    with _OPENER.open(req, timeout=timeout) as r:
         return json.load(r)
 
 
 def http_post(url, payload, headers=None, timeout=10):
     data = json.dumps(payload).encode()
     h = {"Content-Type": "application/json"}
+    if LOCAL_TOKEN:
+        h["X-HG-Token"] = LOCAL_TOKEN
     if headers:
         h.update(headers)
     req = urllib.request.Request(url, data=data, headers=h, method="POST")
