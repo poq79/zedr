@@ -31,10 +31,11 @@ build() {
   go build -ldflags "-X main.version=${VERSION}" -o "bin/$out" "./cmd/$pkg"
 }
 
-build server  secserver.exe
-build agent   secagent.exe
-build desktop secui.exe
-build hgdiag  hgdiag.exe
+build server     secserver.exe
+build agent      secagent.exe
+build desktop    secui.exe
+build hgdiag     hgdiag.exe
+build resetadmin resetadmin.exe
 
 echo
 echo "构建完成（版本 ${VERSION}）："
