@@ -90,6 +90,58 @@ const EMPTY_ICONS = {
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
 };
 
+/* Promise 化确认对话框：替代原生 confirm()。
+   原生弹窗样式不可控、在 WebView2 里与产品风格割裂；
+   这里的 message 接收 HTML（调用方自行 esc），Enter 确认 / Esc 取消。 */
+function hgConfirm({ title = '确认操作', message = '', danger = false, okText = '确认', cancelText = '取消' } = {}) {
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.className = 'confirm-mask';
+    mask.innerHTML = `
+      <div class="confirm ${danger ? 'danger' : ''}" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">
+        <div class="c-title"><span class="c-ico">${danger ? TOAST_ICONS.err : TOAST_ICONS.warn}</span>${esc(title)}</div>
+        <div class="c-msg">${message}</div>
+        <div class="c-actions">
+          <button class="btn" data-act="cancel">${esc(cancelText)}</button>
+          <button class="btn ${danger ? 'danger' : 'primary'}" data-act="ok">${esc(okText)}</button>
+        </div>
+      </div>`;
+    const onKey = (e) => {
+      if (e.key === 'Escape') { cleanup(); resolve(false); }
+      else if (e.key === 'Enter') { e.preventDefault(); cleanup(); resolve(true); }
+    };
+    const cleanup = () => { mask.remove(); document.removeEventListener('keydown', onKey); };
+    mask.addEventListener('click', (e) => {
+      if (e.target === mask) { cleanup(); resolve(false); return; }
+      const act = e.target.closest('[data-act]');
+      if (act) { cleanup(); resolve(act.dataset.act === 'ok'); }
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(mask);
+    mask.querySelector('[data-act="ok"]').focus();
+  });
+}
+
+/* 骨架屏：内容版式预演，比 spinner 少一层"在等什么"的认知成本 */
+function skeletonRows(n = 6) {
+  const widths = [38, 92, 66, 50, 74, 58];
+  let rows = '';
+  for (let i = 0; i < n; i++) {
+    rows += `<div class="skel-row">
+      <span class="skel" style="width:${widths[i % widths.length]}%"></span>
+      <span class="skel" style="width:${widths[(i + 1) % widths.length]}%;animation-delay:.12s"></span>
+      <span class="skel" style="width:14%;animation-delay:.24s"></span>
+    </div>`;
+  }
+  return `<div class="skel-rows">${rows}</div>`;
+}
+
+function skeletonPage() {
+  const kpi = '<div class="card skel-block"><span class="skel" style="width:42%"></span><span class="skel" style="width:58%;height:24px;margin-top:6px"></span><span class="skel" style="width:30%"></span></div>';
+  return `<div class="grid grid-4" style="margin-bottom:14px">${kpi.repeat(4)}</div>
+    <div class="card skel-block"><span class="skel" style="width:26%"></span><span class="skel" style="width:100%;height:96px;animation-delay:.15s"></span></div>`;
+}
+
 /* ------------------------------------------------------------------ API 客户端 */
 class ApiError extends Error {
   constructor(code, message, status, requestId) {
@@ -284,9 +336,9 @@ function timelineChart(points) {
     const x = padL + i * bw + Math.max(1, bw * 0.16);
     const w = Math.max(1, bw * 0.68);
     const y = padT + innerH - h;
-    bars += `<rect x="${x}" y="${y}" width="${w}" height="${Math.max(0, h - critH)}" rx="2" fill="#3d8bfd" opacity="0.75"></rect>`;
+    bars += `<rect class="cbar" style="fill:var(--accent);animation-delay:${i * 28}ms" x="${x}" y="${y}" width="${w}" height="${Math.max(0, h - critH)}" rx="2" opacity="0.75"></rect>`;
     if (critH > 0) {
-      bars += `<rect x="${x}" y="${padT + innerH - critH}" width="${w}" height="${critH}" rx="2" fill="#fb7185"></rect>`;
+      bars += `<rect class="cbar" style="fill:var(--crit);animation-delay:${i * 28}ms" x="${x}" y="${padT + innerH - critH}" width="${w}" height="${critH}" rx="2"></rect>`;
     }
   });
 
@@ -295,8 +347,8 @@ function timelineChart(points) {
   for (let i = 0; i <= 3; i++) {
     const v = Math.round((max / 3) * i);
     const y = padT + innerH - (i / 3) * innerH;
-    grid += `<line x1="${padL}" y1="${y}" x2="${W - 8}" y2="${y}" stroke="#1f2b45" stroke-width="1"></line>`;
-    grid += `<text x="${padL - 6}" y="${y + 3.5}" font-size="9" fill="#6b7c99" text-anchor="end">${v}</text>`;
+    grid += `<line x1="${padL}" y1="${y}" x2="${W - 8}" y2="${y}" style="stroke:var(--line-strong)" stroke-width="1"></line>`;
+    grid += `<text x="${padL - 6}" y="${y + 3.5}" font-size="9" style="fill:var(--text-faint)" text-anchor="end">${v}</text>`;
   }
 
   // X 轴标签（最多 6 个）
@@ -307,16 +359,16 @@ function timelineChart(points) {
     const d = new Date(p.bucket);
     const hh = String(d.getHours()).padStart(2, '0');
     const x = padL + i * bw + bw / 2;
-    labels += `<text x="${x}" y="${H - 5}" font-size="9" fill="#6b7c99" text-anchor="middle">${hh}:00</text>`;
+    labels += `<text x="${x}" y="${H - 5}" font-size="9" style="fill:var(--text-faint)" text-anchor="middle">${hh}:00</text>`;
   });
 
   return `<div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" height="150">${grid}${bars}${labels}</svg></div>
-    <div class="legend"><span><i style="background:#3d8bfd"></i>普通告警</span><span><i style="background:#fb7185"></i>严重告警</span></div>`;
+    <div class="legend"><span><i style="background:var(--accent)"></i>普通告警</span><span><i style="background:var(--crit)"></i>严重告警</span></div>`;
 }
 
 function severityDonut(dist) {
   const order = ['critical', 'high', 'medium', 'low', 'info'];
-  const colors = { critical: '#fb7185', high: '#f87171', medium: '#fbbf24', low: '#64748b', info: '#475569' };
+  const colors = { critical: 'var(--crit)', high: 'var(--danger)', medium: 'var(--warn)', low: 'var(--text-faint)', info: 'var(--text-ghost)' };
   const total = order.reduce((a, k) => a + (dist[k] || 0), 0);
   if (!total) return '<div class="empty">暂无告警分布——环境安静</div>';
 
@@ -326,7 +378,7 @@ function severityDonut(dist) {
     const v = dist[k] || 0;
     if (!v) return;
     const len = (v / total) * C;
-    arcs += `<circle cx="60" cy="60" r="${R}" fill="none" stroke="${colors[k]}" stroke-width="14"
+    arcs += `<circle class="donut-arc" style="stroke:${colors[k]};animation-delay:${offset * 2 | 0}ms" cx="60" cy="60" r="${R}" fill="none" stroke-width="14"
       stroke-dasharray="${len - 2} ${C - len + 2}" stroke-dashoffset="${-offset}"
       transform="rotate(-90 60 60)" stroke-linecap="butt"></circle>`;
     offset += len;
@@ -343,10 +395,10 @@ function severityDonut(dist) {
 
   return `<div style="display:flex;gap:18px;align-items:center">
       <svg viewBox="0 0 120 120" width="120" height="120" style="flex:0 0 120px">
-        <circle cx="60" cy="60" r="${R}" fill="none" stroke="#1a2438" stroke-width="14"></circle>
+        <circle cx="60" cy="60" r="${R}" fill="none" style="stroke:var(--line)" stroke-width="14"></circle>
         ${arcs}
-        <text x="60" y="58" text-anchor="middle" font-size="20" font-weight="700" fill="#e6edf7">${total}</text>
-        <text x="60" y="74" text-anchor="middle" font-size="9" fill="#6b7c99">总告警</text>
+        <text x="60" y="58" text-anchor="middle" font-size="20" font-weight="700" style="fill:var(--text)">${total}</text>
+        <text x="60" y="74" text-anchor="middle" font-size="9" style="fill:var(--text-faint)">总告警</text>
       </svg>
       <div style="flex:1">${rows}</div>
     </div>`;
@@ -365,7 +417,7 @@ function barList(items, valueKey, labelKey) {
 /* ------------------------------------------------------------------ 视图：概览 */
 async function viewOverview() {
   const c = $('#content');
-  c.innerHTML = '<div class="empty"><span class="spin"></span> 加载中…</div>';
+  c.innerHTML = skeletonPage();
   let d;
   try { d = await api.get('/api/v1/dashboard'); } catch (e) { return renderError(e); }
 
@@ -438,7 +490,7 @@ async function viewAlerts() {
     </div>
     <div id="aiHuntResult"></div>
     <div class="card" style="padding:14px 8px 8px">
-      <div id="alertTable"><div class="empty"><span class="spin"></span> 加载中…</div></div>
+      <div id="alertTable"><div class="skel-rows"><div class="skel-row"><span class="skel" style="width:9%"></span><span class="skel" style="width:34%"></span><span class="skel" style="width:16%"></span><span class="skel" style="width:12%;animation-delay:.15s"></span></div><div class="skel-row"><span class="skel" style="width:9%"></span><span class="skel" style="width:28%"></span><span class="skel" style="width:19%"></span><span class="skel" style="width:10%;animation-delay:.15s"></span></div><div class="skel-row"><span class="skel" style="width:9%"></span><span class="skel" style="width:38%"></span><span class="skel" style="width:14%"></span><span class="skel" style="width:15%;animation-delay:.15s"></span></div></div></div>
       <div class="pager" id="alertPager"></div>
     </div>
   `;
@@ -691,7 +743,7 @@ function renderAlertDetail(a) {
     <section class="block">
       <h3>同主机事件时间线</h3>
       <div class="card" style="padding:16px 14px 4px">
-        <div id="hostTimeline"><div class="empty small"><span class="spin"></span> 加载中…</div></div>
+        <div id="hostTimeline"><div class="skel-rows"><div class="skel-row"><span class="skel" style="width:100%;animation-delay:.1s"></span></div><div class="skel-row"><span class="skel" style="width:78%;animation-delay:.2s"></span></div></div></div>
       </div>
     </section>
 
@@ -755,7 +807,11 @@ function renderAlertDetail(a) {
 async function quickAllowlist(a) {
   const value = a.hash_sha256;
   if (!value) return toast('该告警没有文件哈希，无法按哈希加白', 'warn');
-  if (!confirm(`将文件哈希加入白名单？\n\n${value}\n\n加白后该文件在本机与服务端都不再告警，请确认这是可信程序。`)) return;
+  if (!(await hgConfirm({
+    title: '将文件哈希加入白名单？',
+    message: `文件哈希：<code>${esc(value)}</code><br />加白后该文件在本机与服务端都不再告警，请确认这是可信程序。`,
+    danger: true, okText: '仍要加白',
+  }))) return;
   try {
     await api.post('/api/v1/allowlist', {
       type: 'hash', value, note: `来自告警 ${a.id}（${a.process_name}）`,
@@ -767,7 +823,7 @@ async function quickAllowlist(a) {
 /* ------------------------------------------------------------------ 视图：主机 */
 async function viewHosts() {
   const c = $('#content');
-  c.innerHTML = '<div class="empty"><span class="spin"></span> 加载中…</div>';
+  c.innerHTML = skeletonPage();
   let res;
   try { res = await api.get('/api/v1/hosts'); } catch (e) { return renderError(e); }
   state.hosts = res.items || [];
@@ -807,7 +863,7 @@ async function viewHosts() {
 /* ------------------------------------------------------------------ 视图：规则 */
 async function viewRules() {
   const c = $('#content');
-  c.innerHTML = '<div class="empty"><span class="spin"></span> 加载中…</div>';
+  c.innerHTML = skeletonPage();
   let res;
   try { res = await api.get('/api/v1/rules'); } catch (e) { return renderError(e); }
   state.rules = res.items || [];
@@ -912,7 +968,7 @@ async function viewRules() {
 /* ------------------------------------------------------------------ 视图：白名单 */
 async function viewAllowlist() {
   const c = $('#content');
-  c.innerHTML = '<div class="empty"><span class="spin"></span> 加载中…</div>';
+  c.innerHTML = skeletonPage();
   let res;
   try { res = await api.get('/api/v1/allowlist'); } catch (e) { return renderError(e); }
   state.allowlist = res.items || [];
@@ -985,7 +1041,11 @@ async function viewAllowlist() {
   });
   $$('[data-del]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!confirm('确认删除该白名单项？删除后相关检测会重新生效。')) return;
+      if (!(await hgConfirm({
+        title: '删除该白名单项？',
+        message: '删除后相关检测会重新生效，该对象若仍有可疑行为会再次告警。',
+        danger: true, okText: '删除',
+      }))) return;
       try { await api.del('/api/v1/allowlist/' + encodeURIComponent(btn.dataset.del)); toast('已删除'); viewAllowlist(); }
       catch (e) { toast(e.message, 'err'); }
     });
@@ -995,7 +1055,7 @@ async function viewAllowlist() {
 /* ------------------------------------------------------------------ 视图：审计 */
 async function viewAudit() {
   const c = $('#content');
-  c.innerHTML = '<div class="empty"><span class="spin"></span> 加载中…</div>';
+  c.innerHTML = skeletonPage();
   let res;
   try { res = await api.get('/api/v1/audit?limit=300'); } catch (e) { return renderError(e); }
   state.audit = res.items || [];
@@ -1021,7 +1081,7 @@ async function viewAudit() {
 /* ------------------------------------------------------------------ 视图：账号 */
 async function viewUsers() {
   const c = $('#content');
-  c.innerHTML = '<div class="empty"><span class="spin"></span> 加载中…</div>';
+  c.innerHTML = skeletonPage();
   let res;
   try { res = await api.get('/api/v1/users'); } catch (e) { return renderError(e); }
   state.users = res.items || [];
@@ -1188,6 +1248,54 @@ async function renderRoute() {
   revealContent();
 }
 
+/* 主题切换：dark-first，light 为变体；上次选择跨会话保留 */
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem('hg_theme', t);
+}
+
+/* 顶栏设置菜单：主题 / 紧凑密度 / 快捷键的可见入口
+   （之前紧凑密度只有隐藏快捷键，新用户永远发现不了） */
+function bindSettings() {
+  const btn = $('#settingsBtn'), menu = $('#settingsMenu');
+  if (!btn || !menu) return;
+  const close = () => { menu.style.display = 'none'; btn.setAttribute('aria-expanded', 'false'); };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = menu.style.display !== 'none';
+    menu.style.display = open ? 'none' : 'block';
+    btn.setAttribute('aria-expanded', String(!open));
+    const dc = $('#denseCheck');
+    if (dc) dc.style.visibility = document.body.classList.contains('dense') ? 'visible' : 'hidden';
+  });
+  document.addEventListener('click', (e) => { if (!menu.contains(e.target)) close(); });
+  $('#miTheme').addEventListener('click', () => {
+    setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+  });
+  $('#miDense').addEventListener('click', () => {
+    document.body.classList.toggle('dense');
+    localStorage.setItem('hg_dense', document.body.classList.contains('dense') ? '1' : '0');
+    $('#denseCheck').style.visibility = document.body.classList.contains('dense') ? 'visible' : 'hidden';
+  });
+  $('#miKeys').addEventListener('click', () => { close(); showShortcuts(); });
+}
+
+/* 登录页人性化：Caps Lock 提醒（大小写输错是登录失败头号原因之一）
+   + 记住上次登录的用户名 */
+function bindLoginEnhancements() {
+  const pass = $('#loginPass'), caps = $('#capsHint'), user = $('#loginUser');
+  if (pass && caps) {
+    const sync = (e) => { if (e.getModifierState) caps.classList.toggle('show', e.getModifierState('CapsLock')); };
+    pass.addEventListener('keydown', sync);
+    pass.addEventListener('keyup', sync);
+    pass.addEventListener('blur', () => caps.classList.remove('show'));
+  }
+  if (user) {
+    const last = localStorage.getItem('hg_last_user');
+    if (last) user.value = last;
+  }
+}
+
 function showLogin(msg) {
   $('#app').style.display = 'none';
   $('#loginWrap').style.display = 'grid';
@@ -1210,10 +1318,13 @@ function showApp() {
 }
 
 async function boot() {
-  // 恢复上次的密度选择：值班习惯应当跨会话保留
+  // 主题与密度：上次的选择跨会话保留
+  setTheme(localStorage.getItem('hg_theme') === 'light' ? 'light' : 'dark');
   if (localStorage.getItem('hg_dense') === '1') document.body.classList.add('dense');
   installKeyboard();
   bindChangePassword();
+  bindSettings();
+  bindLoginEnhancements();
 
   // 登录表单
   $('#loginForm').addEventListener('submit', async (e) => {
@@ -1229,6 +1340,7 @@ async function boot() {
       api.token = res.access_token;
       api.tokenExp = Date.parse(res.expires_at) || 0;
       state.user = res.user;
+      localStorage.setItem('hg_last_user', $('#loginUser').value.trim());
       $('#loginPass').value = '';
       showApp();
       toast('登录成功');
@@ -1543,7 +1655,11 @@ async function bulkSetStatus(status) {
   const ids = Array.from(state.alerts.selected);
   if (!ids.length) return;
   const label = STATUS_LABEL[status] || status;
-  if (!confirm(`将 ${ids.length} 条告警标记为「${label}」？`)) return;
+  if (!(await hgConfirm({
+    title: `批量标记 ${ids.length} 条告警？`,
+    message: `选中的告警将全部标记为「${esc(label)}」。该操作会写入审计日志。`,
+    okText: '标记',
+  }))) return;
 
   let updated, failed;
   try {

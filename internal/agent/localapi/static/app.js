@@ -46,6 +46,36 @@ function toast(msg, kind = 'ok') {
   setTimeout(() => el.remove(), 3250);
 }
 
+/* Promise 化确认对话框（替代原生 confirm）：Enter 确认 / Esc 取消 */
+function hgConfirm({ title = '确认操作', message = '', danger = false, okText = '确认', cancelText = '取消' } = {}) {
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.className = 'confirm-mask';
+    mask.innerHTML = `
+      <div class="confirm ${danger ? 'danger' : ''}" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">
+        <div class="c-title"><span class="c-ico">${TOAST_ICONS[danger ? 'err' : 'warn']}</span>${esc(title)}</div>
+        <div class="c-msg">${message}</div>
+        <div class="c-actions">
+          <button class="btn" data-act="cancel">${esc(cancelText)}</button>
+          <button class="btn ${danger ? 'danger' : 'primary'}" data-act="ok">${esc(okText)}</button>
+        </div>
+      </div>`;
+    const cleanup = () => { mask.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { cleanup(); resolve(false); }
+      else if (e.key === 'Enter') { e.preventDefault(); cleanup(); resolve(true); }
+    };
+    mask.addEventListener('click', (e) => {
+      if (e.target === mask) { cleanup(); resolve(false); return; }
+      const act = e.target.closest('[data-act]');
+      if (act) { cleanup(); resolve(act.dataset.act === 'ok'); }
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(mask);
+    mask.querySelector('[data-act="ok"]').focus();
+  });
+}
+
 function rel(iso) {
   if (!iso) return '-';
   const d = new Date(iso);
@@ -259,7 +289,11 @@ function renderWatchlist() {
     btn.addEventListener('click', async () => {
       const path = btn.dataset.allowPath;
       if (!path) return toast('该进程没有可用的镜像路径', 'err');
-      if (!confirm(`确认信任该路径？\n\n${path}`)) return;
+      if (!(await hgConfirm({
+        title: '信任该路径？',
+        message: `该路径下的程序不再告警：<br /><code>${esc(path)}</code>`,
+        danger: true, okText: '信任此路径',
+      }))) return;
       try {
         await api('/api/local/allowlist', {
           method: 'POST',
@@ -332,7 +366,11 @@ function renderAllow(entries) {
     btn.addEventListener('click', async () => {
       const type = btn.dataset.delType;
       const value = btn.dataset.delValue;
-      if (!confirm('确认移除该白名单？移除后相关检测会重新生效。')) return;
+      if (!(await hgConfirm({
+        title: '移除该白名单？',
+        message: '移除后相关检测会重新生效。',
+        danger: true, okText: '移除',
+      }))) return;
       try {
         await api(`/api/local/allowlist?type=${encodeURIComponent(type)}&value=${encodeURIComponent(value)}`, { method: 'DELETE' });
         toast('已移除');
@@ -445,7 +483,11 @@ async function openAlert(id) {
   if (ah) {
     ah.addEventListener('click', async () => {
       const hash = a.hash_sha256 || p.hash_sha256;
-      if (!confirm(`确认信任该文件？\n\n${hash}`)) return;
+      if (!(await hgConfirm({
+        title: '信任该文件？',
+        message: `按哈希加白：<br /><code>${esc(hash)}</code><br />加白后该文件在本机不再告警，请确认这是可信程序。`,
+        danger: true, okText: '仍要信任',
+      }))) return;
       try {
         await api('/api/local/allowlist', { method: 'POST', body: { type: 'hash', value: hash, note: `来自告警：${a.title}` } });
         toast('已加入本地白名单');
@@ -459,7 +501,11 @@ async function openAlert(id) {
     ap.addEventListener('click', async () => {
       const path = a.image_path || p.path;
       if (!path) return toast('缺少镜像路径', 'err');
-      if (!confirm(`确认信任该路径下的程序？\n\n${path}`)) return;
+      if (!(await hgConfirm({
+        title: '信任该路径下的程序？',
+        message: `<code>${esc(path)}</code><br />路径下任意程序都不会再告警，请确认范围可接受。`,
+        danger: true, okText: '仍要信任',
+      }))) return;
       try {
         await api('/api/local/allowlist', { method: 'POST', body: { type: 'path', value: path, note: `来自告警：${a.title}` } });
         toast('已加入本地白名单');
