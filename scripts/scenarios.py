@@ -192,7 +192,50 @@ SCENARIOS = [
          run=lambda: subprocess.run(["cmd", "/c", "echo short-lived"],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
          probe=None, expect=[]),
+
+    # ---- S15/S16：资产变更事件管线（走告警流，不走进程探针）----
+    # 这两个场景不依赖进程被采集，而是验证"清单 diff → critical/medium 告警"。
+    # 判定口径仍读引擎的 score/verdict/suppressed——变更事件的告警同样
+    # 会在 /api/local/alerts 出现（探针本地视图包含 inventory 层告警）。
+    dict(id="S15", name="管理员组变更（T1098 资产侧证据）",
+         run=lambda: _admin_group_change(),
+         probe=None, expect=["INV-ACCOUNTS"]),
+
+    dict(id="S16", name="服务新增指向自造样本（T1543.003 资产侧证据）",
+         run=lambda: _service_create(),
+         probe=None, expect=["INV-SERVICES"]),
 ]
+
+def _admin_group_change():
+    """建临时用户并加入 Administrators 组（可逆，全程本机自造）。
+    变更事件在探针 30s 周期 + 富化后产生 INV-ACCOUNTS 告警；
+    收尾清理在 finally 由场景自身完成（用户与组成员身份都删）。"""
+    user = "hg_s15_e2e"
+    try:
+        subprocess.run(["net", "user", user, "S15-REDACTED-PW", "/add"],
+                       capture_output=True, text=True)
+        subprocess.run(["net", "localgroup", "Administrators", user, "/add"],
+                       capture_output=True, text=True)
+        time.sleep(45)  # 等探针 30s 周期 diff + 告警入本地视图
+    finally:
+        subprocess.run(["net", "localgroup", "Administrators", user, "/delete"],
+                       capture_output=True, text=True)
+        subprocess.run(["net", "user", user, "/delete"], capture_output=True, text=True)
+
+
+def _service_create():
+    """注册一个指向自造样本（hgdiag 副本）的系统服务（可逆）。
+    服务 added → INV-SERVICES 告警；路径在可写目录且未签名 → high/60。"""
+    name = "HgS16E2E"
+    binpath = copy_as("hg_s16_svc.exe")
+    try:
+        subprocess.run(["sc", "create", name, "binpath=", binpath, "start=", "demand"],
+                       capture_output=True, text=True)
+        time.sleep(45)
+    finally:
+        subprocess.run(["sc", "delete", name], capture_output=True, text=True)
+
+
 
 
 def locate(probe):
@@ -247,7 +290,32 @@ def run_scenarios():
 
         new_alerts = [a for a in alerts() if a["id"] not in before]
 
-        if sc["probe"] is None:
+        # 资产变更类场景（expect 带 INV- 前缀）：不依赖进程被采集，
+        # 验证"清单 diff → 变更告警"管线；判定信号是 evidence.signals 的 ID
+        inv_want = [e for e in sc.get("expect", []) if e.startswith("INV-")]
+        if inv_want:
+            matches = []
+            for _ in range(12):
+                time.sleep(5)
+                fresh = [a for a in alerts() if a["id"] not in before]
+                for a in fresh:
+                    sigs = [s.get("id") for s in (a.get("evidence") or {}).get("signals") or []]
+                    if inv_want[0] in sigs and a not in matches:
+                        matches.append(a)
+                # 取最高分匹配：add/remove 两向都会入集合（场景的清理
+                # 动作也会触发反向事件），锚定最能代表攻击语义的那条
+                if matches and len(matches) >= 1 and matches[-1].get("score", 0) >= SUSPICIOUS_AT:
+                    break
+            if matches:
+                hit = max(matches, key=lambda a: a.get("score") or 0)
+            if hit:
+                score = hit.get("score") or 0
+                suppressed = hit.get("suppressed") or ""
+                title = hit.get("title") or ""
+                state = "检出·资产变更" if score >= SUSPICIOUS_AT else "检出·低危"
+            else:
+                state, score, suppressed, title = "漏检", 0, "", ""
+        elif sc["probe"] is None:
             state, score, suppressed, title = "未观测（预期漏检）", 0, "", ""
         elif row is None:
             state, score, suppressed, title = "未采集到该进程", 0, "", ""
