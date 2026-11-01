@@ -86,6 +86,19 @@ func (heuristicBackend) Triage(_ context.Context, in *TriageInput) (*TriageResul
 			Citations: []string{e.ID},
 		})
 	}
+	// 弱信号同样要给出可核对的理由：suspicious 结论若没有任何引用，
+	// 界面会标注"结论无引用"——启发式自己都不落地，就没资格要求模型落地。
+	// （2026-11 评测基线发现的真实缺陷：弱信号分支此前不产 Reason，
+	// 导致「仅弱信号」样本的可溯源率为 0。）
+	for i, e := range weak {
+		if i >= 3 { // 超过 3 条时只列前 3 条，避免理由刷屏
+			break
+		}
+		reasons = append(reasons, Reason{
+			Text:      fmt.Sprintf("%s（%d 分，弱信号）：%s", e.Name, e.Score, e.Detail),
+			Citations: []string{e.ID},
+		})
+	}
 
 	// ---- 组合信号：单个信号弱，凑在一起就是攻击链 ----
 	var combo []string
