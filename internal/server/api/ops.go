@@ -156,7 +156,9 @@ func csvField(s string) string {
 
 // ---------------------------------------------------------------- 事件聚合
 
-// listIncidents 返回未处置告警聚类出的事件视图。
+// listIncidents 返回未处置告警聚类出的事件视图 + 跨主机爆发。
+// 两者都在同一个接口里：值班打开"事件"页要回答的正是
+// "本机在发生什么 + 整个环境在发生什么"。
 func (h *adminHandler) listIncidents(w http.ResponseWriter, r *http.Request) {
 	limit := atoiDefault(r.URL.Query().Get("limit"), 50)
 	incidents, err := h.deps.Services.Stats.ListIncidents(r.Context(), limit)
@@ -164,11 +166,27 @@ func (h *adminHandler) listIncidents(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, apperr.Internal(err))
 		return
 	}
+	bursts, err := h.deps.Services.Stats.ListBursts(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, apperr.Internal(err))
+		return
+	}
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
 		"items":     incidents,
+		"bursts":    bursts,
 		"window":    "30m",
 		"generated": time.Now().UTC(),
 	})
+}
+
+// weeklyReport 运营周报（7 天窗口）。
+func (h *adminHandler) weeklyReport(w http.ResponseWriter, r *http.Request) {
+	rep, err := h.deps.Services.Stats.WeeklyReport(r.Context(), 7*24*time.Hour)
+	if err != nil {
+		httpx.WriteError(w, r, apperr.Internal(err))
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, rep)
 }
 
 // parseAlertFilter 从查询串构造告警过滤器（与 listAlerts 同一套语义，

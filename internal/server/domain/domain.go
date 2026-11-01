@@ -97,6 +97,10 @@ type Agent struct {
 	ProcCount   int         `json:"proc_count"`
 	CPUPercent  float64     `json:"cpu_percent"`
 	MemMB       float64     `json:"mem_mb"`
+
+	// ClockSkewMS 是终端与服务端的时钟偏移（毫秒，进程内存值不落库）。
+	// >10s 时告警时间线与事件窗口判定会失真，管理台据此提示检查 NTP。
+	ClockSkewMS int64 `json:"clock_skew_ms,omitempty"`
 	RuleVersion int         `json:"rule_version"`
 	OpenAlerts  int         `json:"open_alerts"`
 }
@@ -203,6 +207,11 @@ type DashboardSummary struct {
 	TopRules       []RuleStat       `json:"top_rules"`
 	TopMITRE       []MITREStat      `json:"top_mitre"`
 	AvgScore       float64          `json:"avg_score"`
+
+	// AvgResponseMin 是过去 7 天已处置告警的"创建→处置"平均时长（分钟）。
+	// MTTR 是安全运营最核心的效率指标：没有它，"响应变快了还是变慢了"
+	// 只能靠感觉。0 表示窗口内没有已处置告警。
+	AvgResponseMin float64 `json:"avg_response_min"`
 }
 
 // HostAlertStat 是主机告警排行项。

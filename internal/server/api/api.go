@@ -140,6 +140,7 @@ func Router(d Deps) http.Handler {
 		return jwtMiddleware(d, []string{"admin"}, h)
 	}
 
+	mux.Handle("POST /api/v1/auth/change-password", viewer(authH.changePassword))
 	mux.Handle("GET /api/v1/me", viewer(adminH.me))
 	mux.Handle("GET /api/v1/dashboard", viewer(adminH.dashboard))
 
@@ -169,6 +170,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("DELETE /api/v1/allowlist/{id}", writer(adminH.deleteAllowlist))
 
 	mux.Handle("GET /api/v1/incidents", viewer(adminH.listIncidents))
+	mux.Handle("GET /api/v1/report/weekly", viewer(adminH.weeklyReport))
 	mux.Handle("GET /api/v1/alerts/export", viewer(adminH.exportCSV))
 	mux.HandleFunc("GET /metrics", adminH.metrics)
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -518,5 +519,46 @@ func TestAllowlistRecyclesOpenAlerts(t *testing.T) {
 	env.doJSON(http.MethodGet, "/api/v1/alerts", nil, http.StatusOK, env.token, &list)
 	if list.Items[0].Status != "false_positive" {
 		t.Fatalf("告警应被回收为误报，实际 %s", list.Items[0].Status)
+	}
+}
+
+// TestLoginLockout 验证连续失败后的临时锁定：
+// 前 4 次错误返回 401（未锁定），第 5 次错误触发锁定（400 + 明确文案），
+// 此后即使密码正确也被拒绝。这是对在线暴力破解的基础防线。
+func TestLoginLockout(t *testing.T) {
+	env := newTestEnv(t)
+
+	const user = "locktest"
+	const pass = "LockTest#2026x"
+	env.doJSON(http.MethodPost, "/api/v1/users", map[string]string{
+		"username": user, "password": pass, "role": "viewer",
+	}, http.StatusOK, env.token, &struct{}{})
+
+	var errRes struct {
+		Error struct{ Message string `json:"message"` } `json:"error"`
+	}
+	for i := 0; i < 4; i++ {
+		env.doJSON(http.MethodPost, "/api/v1/auth/login",
+			map[string]string{"username": user, "password": "wrong-pass"}, http.StatusUnauthorized, "", &errRes)
+	}
+	// 第 5 次失败：触发锁定
+	env.doJSON(http.MethodPost, "/api/v1/auth/login",
+		map[string]string{"username": user, "password": "wrong-pass"}, http.StatusBadRequest, "", &errRes)
+
+	// 锁定后正确密码也应被拒绝。
+	// 注意 doJSON 的 out 只解析 {data:} 包装，错误体是 {error:}，
+	// 必须用返回的原始字节自己解。
+	raw := env.doJSON(http.MethodPost, "/api/v1/auth/login",
+		map[string]string{"username": user, "password": pass}, http.StatusBadRequest, "", nil)
+	var er struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &er); err != nil {
+		t.Fatalf("解析错误响应失败: %v (raw=%s)", err, truncateForLog(string(raw)))
+	}
+	if !strings.Contains(er.Error.Message, "锁定") {
+		t.Fatalf("连续失败 5 次后应提示锁定，实际: %q", er.Error.Message)
 	}
 }

@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
 	"time"
 
 	"hostguard/internal/platform/apperr"
 	"hostguard/internal/platform/httpx"
 	"hostguard/internal/ai"
+	"hostguard/internal/model"
 	"hostguard/internal/server/notify"
 	"hostguard/internal/platform/rulehash"
 	"hostguard/internal/platform/idgen"
@@ -29,6 +33,9 @@ type App struct {
 	services *service.Services
 	notifier *notify.Notifier
 	stop     chan struct{}
+
+	// janitorTicks 是 janitor 循环的执行轮数（每轮 60s），用于触发每日备份
+	janitorTicks int
 }
 
 // Version 由构建脚本注入（-ldflags -X）。
@@ -84,6 +91,19 @@ func New() (*App, error) {
 		DupWindow:         cfg.DupWindow,
 	}, log, aiEngine)
 
+	// 终端运行策略：服务端一处配置，随规则包签名下发到所有探针。
+	// 两项都未配置时不下发（agentPolicy=nil），完全尊重终端本地配置。
+	var policy *model.AgentPolicy
+	if cfg.AgentPolicyScanInterval > 0 || cfg.AgentPolicyCollector != "" {
+		policy = &model.AgentPolicy{
+			ScanIntervalSec: int(cfg.AgentPolicyScanInterval.Seconds()),
+			Collector:       cfg.AgentPolicyCollector,
+		}
+		log.Info("agent_policy_active",
+			"scan_interval_sec", policy.ScanIntervalSec, "collector", policy.Collector)
+	}
+	svc.Rule.SetAgentPolicy(policy)
+
 	// 播种内置规则 + 初始管理员
 	if _, err := svc.Rule.SeedBuiltins(ctx); err != nil {
 		_ = store.Close()
@@ -100,17 +120,36 @@ func New() (*App, error) {
 			"hint", "这是唯一一次打印，请立即登录并修改密码")
 	}
 
-	// Webhook 告警通知：订阅告警总线，尽力外发（旁路，不影响主链路）。
+	// 告警外发通知：订阅总线，尽力外发（旁路，不影响主链路）。
+	//
+	// 严重度过滤是治理"通知风暴"的关键：告警入库是全量的，但推给
+	// 值班手机/SIEM 的应该只是需要人看的部分——低分告警进系统留档即可，
+	// 推送一条可疑的"接近阈值"事件只会消耗值班注意力（那是最贵的资源）。
+	minSev := severityRank(cfg.WebhookMinSeverity)
+
 	notifier := notify.New(cfg.WebhookURL, cfg.WebhookSecret, cfg.WebhookTimeout, log)
-	if notifier != nil {
-		log.Info("webhook_notifier_enabled", "url", cfg.WebhookURL)
+	syslogger := notify.NewSyslog(cfg.SyslogAddr, log)
+	if notifier != nil || syslogger != nil {
 		if _, ch := svc.Bus.Subscribe(); ch != nil {
 			go func() {
 				for alert := range ch {
+					// 只外发未处置的、达到严重度门槛的告警
+					if alert.Status != model.StatusOpen ||
+						severityRank(string(alert.Severity)) < minSev {
+						continue
+					}
 					notifier.Ingest(alert)
+					syslogger.Ingest(alert)
 				}
 			}()
 		}
+	}
+	if notifier != nil {
+		log.Info("webhook_notifier_enabled", "url", cfg.WebhookURL,
+			"min_severity", cfg.WebhookMinSeverity)
+	}
+	if syslogger != nil {
+		log.Info("syslog_notifier_enabled", "addr", cfg.SyslogAddr, "format", "CEF/UDP")
 	}
 
 	router := api.Router(api.Deps{
@@ -217,6 +256,19 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 			} else if n > 0 {
 				a.Log.Info("alerts_purged", "count", n)
 			}
+
+			// 每轮 janitor 计数，累计 24 轮（≈24 小时）做一次数据库备份。
+			// SQLite 单文件架构下"没有备份"等于"数据随时归零"：
+			// 磁盘损坏、误删、迁移手滑，任何一样都会让全部告警与审计凭空消失。
+			// VACUUM INTO 生成紧凑的一致性快照，在线执行不阻塞业务。
+			a.janitorTicks++
+			if a.janitorTicks%24 == 0 {
+				if n, err := a.backupDB(ctx); err != nil {
+					a.Log.Warn("db_backup_failed", "err", err)
+				} else {
+					a.Log.Info("db_backup_done", "file", n)
+				}
+			}
 		}
 	}
 }
@@ -272,4 +324,46 @@ func ruleSignKey(cfg *Config) []byte {
 		return []byte(cfg.RuleSignKey)
 	}
 	return rulehash.DeriveKey([]byte(cfg.JWTSecret), "rule-signing")
+}
+
+
+// backupDB 用 VACUUM INTO 把数据库快照到 <db 目录>/backup/，
+// 文件名带时间戳，保留最近 7 份。返回备份文件路径。
+func (a *App) backupDB(ctx context.Context) (string, error) {
+	src := a.Cfg.DBPath
+	dir := filepath.Join(filepath.Dir(src), "backup")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(dir, fmt.Sprintf("secserver-%s.db", time.Now().Format("20060102-1504")))
+	if _, err := a.store.DB().ExecContext(ctx, `VACUUM INTO ?`, dst); err != nil {
+		return "", fmt.Errorf("VACUUM INTO 失败: %w", err)
+	}
+
+	// 只保留最近 7 份：备份本身就是要占用与源库同量级的磁盘空间，
+	// 无上限的增长最终会变成新的故障源
+	matches, _ := filepath.Glob(filepath.Join(dir, "secserver-*.db"))
+	sort.Strings(matches)
+	for len(matches) > 7 {
+		if err := os.Remove(matches[0]); err != nil {
+			return dst, err
+		}
+		matches = matches[1:]
+	}
+	return dst, nil
+}
+
+
+// severityRank 把严重度转成可比较的数值。
+func severityRank(s string) int {
+	switch s {
+	case "critical":
+		return 3
+	case "high":
+		return 2
+	case "medium":
+		return 1
+	default:
+		return 0
+	}
 }

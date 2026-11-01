@@ -23,9 +23,15 @@ type Config struct {
 	RuleSignKey  string // 规则包签名密钥；空则从 JWTSecret 派生
 
 	// Webhook 告警推送：URL 为空表示不启用。
-	WebhookURL     string
-	WebhookSecret  string        // HMAC-SHA256 签名密钥（X-HG-Signature 头）
-	WebhookTimeout time.Duration
+	WebhookURL        string
+	WebhookSecret     string        // HMAC-SHA256 签名密钥（X-HG-Signature 头）
+	WebhookTimeout    time.Duration
+	WebhookMinSeverity string       // 只推送不低于该严重度的告警（治理通知风暴）
+	SyslogAddr         string       // CEF over UDP；空则不启用
+
+	// 下发给所有终端的运行策略（随规则包走，零值=不干预终端本地配置）
+	AgentPolicyScanInterval time.Duration
+	AgentPolicyCollector    string
 
 	// AI 推理后端配置。Provider=none 时只用确定性启发式分析。
 	AIProvider    string
@@ -71,6 +77,14 @@ func LoadConfig() (*Config, error) {
 	c.WebhookURL = l.Env("HG_SERVER_WEBHOOK_URL", "")
 	c.WebhookSecret = l.Env("HG_SERVER_WEBHOOK_SECRET", "")
 	c.WebhookTimeout = l.Duration("HG_SERVER_WEBHOOK_TIMEOUT", 10*time.Second)
+	c.WebhookMinSeverity = l.Env("HG_SERVER_WEBHOOK_MIN_SEVERITY", "high")
+	c.SyslogAddr = l.Env("HG_SERVER_SYSLOG_ADDR", "")
+
+	c.AgentPolicyScanInterval = l.Duration("HG_AGENT_POLICY_SCAN_INTERVAL", 0)
+	c.AgentPolicyCollector = l.Env("HG_AGENT_POLICY_COLLECTOR", "")
+	l.Check(c.AgentPolicyCollector == "" || c.AgentPolicyCollector == "auto" ||
+		c.AgentPolicyCollector == "ntquery" || c.AgentPolicyCollector == "toolhelp",
+		"HG_AGENT_POLICY_COLLECTOR 只能是 auto/ntquery/toolhelp")
 
 	c.AIProvider = l.Env("HG_AI_PROVIDER", "none")
 	c.AIBaseURL = l.Env("HG_AI_BASE_URL", "")
@@ -96,6 +110,9 @@ func LoadConfig() (*Config, error) {
 	c.ShutdownTimeout = l.Duration("HG_SERVER_SHUTDOWN_TIMEOUT", 20*time.Second)
 
 	// 校验
+	l.Check(c.WebhookMinSeverity == "low" || c.WebhookMinSeverity == "medium" ||
+		c.WebhookMinSeverity == "high" || c.WebhookMinSeverity == "critical",
+		"HG_SERVER_WEBHOOK_MIN_SEVERITY 只能是 low/medium/high/critical")
 	l.Check(c.AIProvider == "none" || c.AIProvider == "openai",
 		"HG_AI_PROVIDER 只能是 none 或 openai")
 	l.Check(c.AITokenBudget >= 1000, "HG_AI_HOURLY_TOKEN_BUDGET 至少 1000")

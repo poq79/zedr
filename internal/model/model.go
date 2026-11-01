@@ -221,6 +221,11 @@ type HeartbeatRequest struct {
 	RuleVersion  int             `json:"rule_version"`
 	Detector     DetectorStats   `json:"detector"`
 	Samples      int64           `json:"samples"`
+	// AgentTime 是探针发出心跳时的本地时钟（RFC3339）。
+	// 服务端用"到达时刻 - AgentTime"估算两端时钟偏移：
+	// 偏移过大时，告警时间线、事件聚类的窗口判定都会失真，
+	// 这是企业内网 NTP 漂移最常见的隐性故障，必须在界面上可见。
+	AgentTime time.Time `json:"agent_time"`
 }
 
 // DetectorStats 是本地检测器计数，便于观察去噪效果。
@@ -311,6 +316,19 @@ type RuleBundle struct {
 	// Signature 是整包内容的 HMAC-SHA256（hex）。
 	// 终端验签通过才应用，防止下发链路被篡改导致检测被悄悄关掉。
 	Signature string `json:"signature,omitempty"`
+
+	// AgentPolicy 是随规则包下发的运行策略（nil = 不干预终端本地配置）。
+	// 规则签名覆盖整包，策略也被同一签名保护——不能被篡改成关闭采集。
+	AgentPolicy *AgentPolicy `json:"agent_policy,omitempty"`
+}
+
+// AgentPolicy 是服务端统一下发的探针运行策略。
+// 零值字段表示"本项不下发"，由终端本地配置决定。
+type AgentPolicy struct {
+	// ScanIntervalSec 是进程扫描间隔（秒），≥2 才生效。
+	ScanIntervalSec int `json:"scan_interval_sec,omitempty"`
+	// Collector 是采集引擎选择（auto/ntquery/toolhelp），冷生效（重启后）。
+	Collector string `json:"collector,omitempty"`
 }
 
 // CommandResult 是终端回执。

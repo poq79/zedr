@@ -118,3 +118,29 @@ func (h *authHandler) clearRefreshCookie(w http.ResponseWriter) {
 		SameSite: http.SameSiteStrictMode,
 	})
 }
+
+
+// changePasswordReq 是修改密码的请求体。
+type changePasswordReq struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+}
+
+// changePassword 当前用户改密：成功后吊销全部刷新令牌，
+// 前端应清除本地凭证并回到登录页。
+func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req changePasswordReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	if err := h.deps.Services.Auth.ChangePassword(r.Context(), p.UserID,
+		req.OldPassword, req.NewPassword); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username,
+		"auth.change_password", p.UserID, "", httpx.ClientIP(r))
+	httpx.WriteNoContent(w)
+}

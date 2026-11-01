@@ -201,3 +201,227 @@ func buildIncident(host string, group []domain.Alert) Incident {
 	inc.ID = host + "@" + inc.StartedAt.Format("20060102-1504")
 	return inc
 }
+
+// ---------------------------------------------------------------- 跨主机爆发
+
+// Burst 是"同一个哈希在多台主机上同时出现"——横向移动 / 蠕虫式投递的强信号。
+// 单台主机上无论多可疑都是端问题，同一份载荷同时出现在 N 台机器上
+// 就是事件级问题，运营视角完全不同。
+type Burst struct {
+	Hash         string   `json:"hash"`
+	Hosts        []string `json:"hosts"`
+	HostCount    int      `json:"host_count"`
+	AlertCount   int      `json:"alert_count"`
+	PeakSeverity string   `json:"peak_severity"`
+	MaxScore     int      `json:"max_score"`
+	TitleSample  string   `json:"title_sample"`
+	FirstSeen    time.Time `json:"first_seen"`
+}
+
+// burstHostThreshold 是判定"爆发"的最低主机数。取 3 是保守值：
+// 2 台可能是同事拷贝了同一个安装包，3 台以上同窗口出现同一份
+// 未签名载荷就很难用正常运维解释。
+const burstHostThreshold = 3
+
+// ListBursts 在过去 24 小时的未处置告警里找跨主机爆发。
+func (s *StatsService) ListBursts(ctx context.Context) ([]Burst, error) {
+	alerts, _, err := s.repos.Alerts.List(ctx, domain.AlertFilter{
+		Status:   []domain.AlertStatus{model.StatusOpen, model.StatusAcknowledged},
+		Page:     1,
+		PageSize: 200,
+		Sort:     "oldest",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	cutoff := time.Now().Add(-24 * time.Hour)
+	type agg struct {
+		hosts  map[string]bool
+		count  int
+		peak   string
+		max    int
+		title  string
+		first  time.Time
+	}
+	byHash := map[string]*agg{}
+	rank := map[string]int{"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+	for _, a := range alerts {
+		if a.HashSHA256 == "" || a.CreatedAt.Before(cutoff) {
+			continue
+		}
+		g := byHash[a.HashSHA256]
+		if g == nil {
+			g = &agg{hosts: map[string]bool{}}
+			byHash[a.HashSHA256] = g
+		}
+		g.hosts[a.Hostname] = true
+		g.count++
+		if rank[string(a.Severity)] >= rank[g.peak] {
+			g.peak = string(a.Severity)
+		}
+		if a.Score > g.max {
+			g.max = a.Score
+			g.title = a.Title
+		}
+		if g.first.IsZero() || a.CreatedAt.Before(g.first) {
+			g.first = a.CreatedAt
+		}
+	}
+
+	out := []Burst{}
+	for hash, g := range byHash {
+		if len(g.hosts) < burstHostThreshold {
+			continue
+		}
+		hosts := make([]string, 0, len(g.hosts))
+		for h := range g.hosts {
+			hosts = append(hosts, h)
+		}
+		sort.Strings(hosts)
+		out = append(out, Burst{
+			Hash: hash, Hosts: hosts, HostCount: len(hosts),
+			AlertCount: g.count, PeakSeverity: g.peak,
+			MaxScore: g.max, TitleSample: g.title, FirstSeen: g.first,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].HostCount > out[j].HostCount })
+	return out, nil
+}
+
+// ---------------------------------------------------------------- 规则误报率
+
+// RuleFPStat 是单条规则的处置画像。
+// 误报率 = false_positive / (resolved + false_positive)，只统计已处置的——
+// 未处置的不该参与分母，否则"没人处理的规则"会显示 0% 误报。
+type RuleFPStat struct {
+	RuleID      string  `json:"rule_id"`
+	Handled     int     `json:"handled"`
+	FalsePos    int     `json:"false_pos"`
+	FPRate      float64 `json:"fp_rate"`
+	HandledRate float64 `json:"-"`
+}
+
+// ListRuleFPStats 统计过去 window 内各规则的误报率，返回误报率最高的前 5 条
+// （≥5 次处置才参与排序，避免"1 次误报 = 100%"的小样本噪音）。
+func (s *StatsService) ListRuleFPStats(ctx context.Context, window time.Duration) ([]RuleFPStat, error) {
+	alerts, _, err := s.repos.Alerts.List(ctx, domain.AlertFilter{
+		Status:   []domain.AlertStatus{model.StatusResolved, model.StatusFalsePositive},
+		Page:     1, PageSize: 200, Sort: "oldest",
+	})
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-window)
+
+	type acc struct{ handled, fp int }
+	byRule := map[string]*acc{}
+	for _, a := range alerts {
+		if a.CreatedAt.Before(cutoff) {
+			continue
+		}
+		for _, id := range a.RuleIDs {
+			a2 := byRule[id]
+			if a2 == nil {
+				a2 = &acc{}
+				byRule[id] = a2
+			}
+			a2.handled++
+			if a.Status == model.StatusFalsePositive {
+				a2.fp++
+			}
+		}
+	}
+
+	out := []RuleFPStat{}
+	for id, a := range byRule {
+		if a.handled < 5 {
+			continue
+		}
+		out = append(out, RuleFPStat{
+			RuleID: id, Handled: a.handled, FalsePos: a.fp,
+			FPRate: float64(a.fp) / float64(a.handled),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].FPRate > out[j].FPRate })
+	if len(out) > 5 {
+		out = out[:5]
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------- 运营周报
+
+// WeeklyReport 是给安全管理经理看的周期性汇总。
+// 设计目标：一页纸回答四个问题——发生了什么、处置得怎么样、
+// 哪些规则在制造噪音、有没有需要上报的爆发。
+type WeeklyReport struct {
+	WindowDays     int                `json:"window_days"`
+	GeneratedAt    time.Time          `json:"generated_at"`
+	AlertsCreated  int                `json:"alerts_created"`
+	AlertsHandled  int                `json:"alerts_handled"`
+	FalsePositive  int                `json:"false_positive"`
+	FPRate         float64            `json:"fp_rate"`
+	MTTRMin        float64            `json:"mttr_min"`
+	OpenAlerts     int                `json:"open_alerts"`
+	VerdictDist    map[string]int     `json:"verdict_dist"`
+	SeverityDist   map[string]int     `json:"severity_dist"`
+	TopRules       []domain.RuleStat  `json:"top_rules"`
+	TopHosts       []domain.HostAlertStat `json:"top_hosts"`
+	Bursts         []Burst            `json:"bursts"`
+	FPRanking      []RuleFPStat       `json:"fp_ranking"`
+}
+
+// WeeklyReport 组装周期报表（窗口 7 天）。
+func (s *StatsService) WeeklyReport(ctx context.Context, window time.Duration) (*WeeklyReport, error) {
+	d, err := s.Dashboard(ctx, window, 6*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	bursts, err := s.ListBursts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fp, err := s.ListRuleFPStats(ctx, window)
+	if err != nil {
+		return nil, err
+	}
+
+	handled := 0
+	verdicts := map[string]int{}
+	// 窗口内画像：复用既有 List（最新 200 条覆盖 7 天足够），时间在 Go 端过滤
+	list, _, err := s.repos.Alerts.List(ctx, domain.AlertFilter{Page: 1, PageSize: 200, Sort: "oldest"})
+	if err == nil {
+		cutoff := time.Now().Add(-window)
+		for _, a := range list {
+			if a.CreatedAt.Before(cutoff) {
+				continue
+			}
+			verdicts[string(a.Verdict)]++
+			if a.Status == model.StatusResolved || a.Status == model.StatusFalsePositive {
+				handled++
+			}
+		}
+	}
+
+	r := &WeeklyReport{
+		WindowDays:    int(window.Hours() / 24),
+		GeneratedAt:   time.Now().UTC(),
+		AlertsCreated: d.Alerts24h, // Dashboard 字段名是 24h，语义是"窗口内新增"
+		OpenAlerts:    d.OpenAlerts,
+		FalsePositive: d.FalsePositive,
+		MTTRMin:       d.AvgResponseMin,
+		VerdictDist:   verdicts,
+		SeverityDist:  d.SeverityDist,
+		TopRules:      d.TopRules,
+		TopHosts:      d.TopHosts,
+		Bursts:        bursts,
+		FPRanking:     fp,
+	}
+	if handled > 0 {
+		r.AlertsHandled = handled
+		r.FPRate = float64(d.FalsePositive) / float64(handled)
+	}
+	return r, nil
+}

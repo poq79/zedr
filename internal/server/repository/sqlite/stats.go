@@ -45,6 +45,16 @@ func (r *statsRepo) Dashboard(ctx context.Context, since time.Time, bucketMinute
 		return nil, fmt.Errorf("统计告警失败: %w", err)
 	}
 
+	// MTTR：过去 7 天已处置告警的平均处置时长（分钟）。
+	// handled_at - created_at 直接在 SQL 里算，避免把全部告警拉回内存。
+	if err := r.s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(AVG((handled_at - created_at) / 60000.0), 0)
+		 FROM alerts
+		 WHERE handled_at IS NOT NULL AND created_at >= ?`, millis(time.Now().Add(-7*24*time.Hour))).
+		Scan(&out.AvgResponseMin); err != nil {
+		return nil, fmt.Errorf("统计 MTTR 失败: %w", err)
+	}
+
 	// 严重度分布
 	rows, err := r.s.db.QueryContext(ctx, `SELECT severity, COUNT(1) FROM alerts GROUP BY severity`)
 	if err != nil {

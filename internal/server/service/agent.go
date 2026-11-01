@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"crypto/subtle"
 	"log/slog"
 	"strings"
@@ -16,6 +17,8 @@ import (
 
 // AgentService 负责终端注册、心跳、指令下发。
 type AgentService struct {
+	skewMu   sync.RWMutex
+	skewData map[string]time.Duration
 	repos repository.Repos
 	cfg   Config
 	log   *slog.Logger
@@ -116,9 +119,46 @@ func (s *AgentService) CheckSecret(a *domain.Agent, secret string) error {
 	return nil
 }
 
+// recordSkew / SkewMap 维护各终端的时钟偏移（进程内，心跳即刷新）。
+func (s *AgentService) recordSkew(agentID string, d time.Duration) {
+	s.skewMu.Lock()
+	defer s.skewMu.Unlock()
+	if s.skewData == nil {
+		s.skewData = make(map[string]time.Duration, 32)
+	}
+	s.skewData[agentID] = d
+}
+
+// SkewMap 返回各终端时钟偏移（毫秒）。终端 24h 无心跳后由 hosts 接口
+// 自然不再展示（离线主机本就不参与时间线分析）。
+func (s *AgentService) SkewMap() map[string]int64 {
+	s.skewMu.RLock()
+	defer s.skewMu.RUnlock()
+	out := make(map[string]int64, len(s.skewData))
+	for id, d := range s.skewData {
+		out[id] = d.Milliseconds()
+	}
+	return out
+}
+
 // Heartbeat 处理心跳并返回待下发指令。
 func (s *AgentService) Heartbeat(ctx context.Context, agentID string, req model.HeartbeatRequest, ip string) (*model.HeartbeatResponse, error) {
 	now := time.Now()
+
+	// 时钟偏移 = 服务端收到时刻 - 探针发出时刻（含网络单程延迟，量级在毫秒，
+	// 对"偏移几十秒"级别的判定完全够用）。只在内存记录，心跳即刷新。
+	if !req.AgentTime.IsZero() {
+		skew := now.Sub(req.AgentTime)
+		if skew < -time.Hour || skew > time.Hour {
+			// 超过 1 小时的偏移更可能是时钟源完全错乱，直接钳到告警阈值以上
+			skew = time.Hour
+		}
+		s.recordSkew(agentID, skew)
+		if skew > 10*time.Second {
+			s.log.WarnContext(ctx, "clock_skew_detected", "agent_id", agentID,
+				"skew_sec", int(skew.Seconds()), "hint", "事件时间线可能失真，请检查终端 NTP")
+		}
+	}
 	if err := s.repos.Agents.UpdateHeartbeat(ctx, agentID, now,
 		req.ProcCount, req.CPUPercent, req.MemMB, req.RuleVersion, ip, req.Version); err != nil {
 		return nil, err

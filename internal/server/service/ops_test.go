@@ -66,3 +66,24 @@ func TestBuildIncident(t *testing.T) {
 }
 
 func inv(s []string) []string { return s }
+
+// TestValidatePasswordStrength 验证密码强度策略。
+func TestValidatePasswordStrength(t *testing.T) {
+	bad := []string{
+		"short1A!",                 // 太短
+		"alllowercase123",          // 缺大写与符号（两类）
+		"ALLUPPERCASE123",          // 缺小写与符号（两类）
+		"abcdefghij",               // 只有一类
+	}
+	for _, pw := range bad {
+		if err := ValidatePasswordStrength(pw); err == nil {
+			t.Fatalf("应拒绝弱密码 %q", pw)
+		}
+	}
+	good := []string{"Adm1n!strator2026", "Str0ng-Pass.Phra5e", "Correct-Horse-42!"}
+	for _, pw := range good {
+		if err := ValidatePasswordStrength(pw); err != nil {
+			t.Fatalf("应接受 %q: %v", pw, err)
+		}
+	}
+}

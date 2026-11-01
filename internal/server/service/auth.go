@@ -18,6 +18,102 @@ type AuthService struct {
 	repos  repository.Repos
 	tokens *auth.Manager
 	log    *slog.Logger
+	guard  loginGuard
+}
+
+// ---------------------------------------------------------------- 登录失败锁定
+//
+// 进程内状态而非数据库：锁定是短时（15 分钟）防御，服务重启即清零是可接受的
+// ——它防的是在线暴力破解，不是持久攻击。按用户名锁定有一个已知代价：
+// 攻击者可以故意锁死他人账号（拒绝服务）。之所以仍按用户名锁：
+// 企业场景账号数有限、来源 IP 分散（NAT 后无法按 IP 锁），
+// 锁定的骚扰远小于密码被撞开的损失；登录接口另有独立限流兜底。
+
+const (
+	maxLoginFails = 5
+	loginLockDur  = 15 * time.Minute
+)
+
+type loginFail struct {
+	count       int
+	lockedUntil time.Time
+}
+
+type loginGuard struct {
+	fails map[string]*loginFail
+}
+
+// checkLocked 返回是否处于锁定中（顺带懒清理过期条目）。
+func (g *loginGuard) checkLocked(username string) (bool, time.Duration) {
+	if g.fails == nil {
+		return false, 0
+	}
+	e, ok := g.fails[username]
+	if !ok {
+		return false, 0
+	}
+	if remain := time.Until(e.lockedUntil); remain > 0 {
+		return true, remain
+	}
+	// 锁定已过期：清零重来
+	if !e.lockedUntil.IsZero() {
+		delete(g.fails, username)
+	}
+	return false, 0
+}
+
+func (g *loginGuard) recordFail(username string) (locked bool, remain time.Duration) {
+	if g.fails == nil {
+		g.fails = make(map[string]*loginFail, 16)
+	}
+	e := g.fails[username]
+	if e == nil {
+		e = &loginFail{}
+		g.fails[username] = e
+	}
+	// 锁定期间不计次数（锁定本身就是在惩罚，不需要无限延长）
+	if time.Until(e.lockedUntil) > 0 {
+		return true, time.Until(e.lockedUntil)
+	}
+	e.count++
+	if e.count >= maxLoginFails {
+		e.lockedUntil = time.Now().Add(loginLockDur)
+		return true, loginLockDur
+	}
+	return false, 0
+}
+
+func (g *loginGuard) reset(username string) {
+	if g.fails != nil {
+		delete(g.fails, username)
+	}
+}
+
+// ---------------------------------------------------------------- 密码策略
+
+// ValidatePasswordStrength 校验密码强度：≥10 位且至少包含大小写/数字/符号中的三类。
+// 企业环境下弱密码是最便宜的入侵通道；这条策略的成本是三行代码，收益远超成本。
+func ValidatePasswordStrength(pw string) error {
+	if len(pw) < 10 {
+		return apperr.Invalid("密码至少 10 位")
+	}
+	var classes int
+	for _, has := range []bool{
+		strings.ContainsFunc(pw, func(r rune) bool { return r >= 'a' && r <= 'z' }),
+		strings.ContainsFunc(pw, func(r rune) bool { return r >= 'A' && r <= 'Z' }),
+		strings.ContainsFunc(pw, func(r rune) bool { return r >= '0' && r <= '9' }),
+		strings.ContainsFunc(pw, func(r rune) bool {
+			return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+		}),
+	} {
+		if has {
+			classes++
+		}
+	}
+	if classes < 3 {
+		return apperr.Invalid("密码需包含大小写字母、数字、符号中的至少三类")
+	}
+	return nil
 }
 
 // LoginResult 是登录成功后的凭证集合。
@@ -36,15 +132,29 @@ func (s *AuthService) Login(ctx context.Context, username, password, ip, ua stri
 		return nil, apperr.Invalid("用户名与密码不能为空")
 	}
 
+	if locked, remain := s.guard.checkLocked(username); locked {
+		s.log.WarnContext(ctx, "login_locked", "username", username, "ip", ip,
+			"remain_sec", int(remain.Seconds()))
+		return nil, apperr.Invalid("该账号已临时锁定（连续登录失败），请 %d 分钟后重试",
+			int(remain.Minutes())+1)
+	}
+
 	u, err := s.repos.Users.ByUsername(ctx, username)
 	if err != nil {
 		return nil, err
 	}
 	// 用户名不存在与密码错误返回同一文案，避免账号枚举
 	if u == nil || u.Disabled || !auth.ComparePassword(u.PasswordHash, password) {
+		if locked, remain := s.guard.recordFail(username); locked {
+			s.log.WarnContext(ctx, "login_locked", "username", username, "ip", ip,
+				"remain_sec", int(remain.Seconds()))
+			return nil, apperr.Invalid("该账号已临时锁定（连续登录失败），请 %d 分钟后重试",
+				int(remain.Minutes())+1)
+		}
 		s.log.WarnContext(ctx, "login_failed", "username", username, "ip", ip)
 		return nil, apperr.Unauthenticated("用户名或密码错误")
 	}
+	s.guard.reset(username)
 
 	access, exp, err := s.tokens.IssueAccess(u, time.Now())
 	if err != nil {
@@ -196,8 +306,41 @@ func (s *AuthService) BootstrapAdmin(ctx context.Context, username, password str
 	return username, "", nil
 }
 
+// ChangePassword 修改当前用户密码。
+//
+// 除常规校验外必须吊销该用户的全部刷新令牌：密码改了，
+// "记住登录"的其它设备不能继续免密续期——这是密码轮换语义的一半，
+// 漏掉它等于改了个寂寞。
+func (s *AuthService) ChangePassword(ctx context.Context, userID, oldPw, newPw string) error {
+	u, err := s.repos.Users.ByID(ctx, userID)
+	if err != nil || u == nil {
+		return apperr.NotFound("用户")
+	}
+	if !auth.ComparePassword(u.PasswordHash, oldPw) {
+		return apperr.Invalid("原密码不正确")
+	}
+	if err := ValidatePasswordStrength(newPw); err != nil {
+		return err
+	}
+	hash, err := auth.HashPassword(newPw)
+	if err != nil {
+		return apperr.Internal(err)
+	}
+	if err := s.repos.Users.UpdatePassword(ctx, userID, hash); err != nil {
+		return err
+	}
+	if err := s.repos.Tokens.RevokeAllForUser(ctx, userID); err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "password_changed", "user_id", userID, "tokens_revoked", true)
+	return nil
+}
+
 // CreateUser 创建后台账号（仅管理员）。
 func (s *AuthService) CreateUser(ctx context.Context, username, displayName, password string, role domain.Role) (*domain.User, error) {
+	if err := ValidatePasswordStrength(password); err != nil {
+		return nil, err
+	}
 	username = strings.ToLower(strings.TrimSpace(username))
 	if len(username) < 3 {
 		return nil, apperr.Invalid("用户名至少 3 个字符")

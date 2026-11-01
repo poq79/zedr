@@ -18,6 +18,7 @@ import (
 type RuleService struct {
 	repos repository.Repos
 	log   *slog.Logger
+	agentPolicy *model.AgentPolicy
 }
 
 // SeedBuiltins 将内置规则同步到数据库。
@@ -172,11 +173,12 @@ func (s *RuleService) Bundle(ctx context.Context, sinceVersion int) (*model.Rule
 		return nil, err
 	}
 
-	bundle := &model.RuleBundle{
+		bundle := &model.RuleBundle{
 		Version:     maxVer,
 		GeneratedAt: time.Now().UTC(),
 		Rules:       make([]model.RuleDTO, 0, len(enabled)),
 		Allowlist:   make([]model.AllowDTO, 0, len(allow)),
+		AgentPolicy: s.agentPolicyOf(),
 	}
 	for _, r := range enabled {
 		bundle.Rules = append(bundle.Rules, model.RuleDTO{
@@ -294,6 +296,14 @@ func (s *AuditService) List(ctx context.Context, limit int) ([]domain.AuditLog, 
 
 // StatsService 提供仪表盘聚合。
 type StatsService struct{ repos repository.Repos }
+
+// SetAgentPolicy 配置随规则包下发的终端运行策略（nil = 不干预）。
+// 由 app 装配层在启动时注入，策略来源是服务端自己的环境变量——
+// 企业里"所有终端统一扫描间隔"应该是平台配置，不是逐台手改。
+func (s *RuleService) SetAgentPolicy(p *model.AgentPolicy) { s.agentPolicy = p }
+
+// AgentPolicyOf 返回当前策略（可空）。供 GetBundle 填包。
+func (s *RuleService) agentPolicyOf() *model.AgentPolicy { return s.agentPolicy }
 
 // Dashboard 返回首页聚合数据（默认 24 小时窗口、1 小时粒度）。
 func (s *StatsService) Dashboard(ctx context.Context, window time.Duration, bucket time.Duration) (*domain.DashboardSummary, error) {

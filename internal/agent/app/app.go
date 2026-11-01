@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -52,6 +53,9 @@ type Agent struct {
 
 	scanReq chan bool // 手动触发重扫
 	online  bool
+
+	// policyInterval 是服务端策略下发的扫描间隔（纳秒），0=用本地配置
+	policyInterval atomic.Int64
 }
 
 // New 装配探针。
@@ -71,7 +75,16 @@ func New(version string) (*Agent, error) {
 	// 某一种枚举方式可能失效，需要能不改代码就切回去。
 	cfg.LocalToken = loadOrCreateLocalToken(cfg.Path("local.token"), log)
 
-	coll, err := collect.New(cfg.Collector, cfg.FullRescan)
+	// 采集引擎选择的优先级：终端本地显式环境变量 > 服务端下发策略 > 本地默认。
+	// 服务端策略缓存于 policy.json（随规则包下发、签名保护），冷生效。
+	collector := cfg.Collector
+	if _, explicit := os.LookupEnv("HG_AGENT_COLLECTOR"); !explicit {
+		if pc := readCollectorPolicy(cfg.Path("policy.json")); pc != "" {
+			collector = pc
+			log.Info("collector_from_server_policy", "collector", pc)
+		}
+	}
+	coll, err := collect.New(collector, cfg.FullRescan)
 	if err != nil {
 		return nil, fmt.Errorf("初始化采集引擎失败: %w", err)
 	}
@@ -319,6 +332,8 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 		ri.Whitelist = a.alw.Size()
 	})
 	a.log.Info("rules_applied", "version", bundle.Version, "rules", ok, "allow", len(entries), "bad", len(bad))
+
+	a.applyServerPolicy(bundle.AgentPolicy)
 }
 
 // ---------------------------------------------------------------- 采集
@@ -338,7 +353,7 @@ const (
 )
 
 func (a *Agent) scanLoop(ctx context.Context) {
-	base := a.cfg.ScanInterval
+	base := a.baseInterval()
 	interval := base
 	quiet := 0
 
@@ -359,8 +374,8 @@ func (a *Agent) scanLoop(ctx context.Context) {
 			}
 			if fresh > 0 {
 				quiet = 0
-				if interval != base {
-					interval = base
+				if interval != a.baseInterval() {
+					interval = a.baseInterval()
 					ticker.Reset(interval)
 					a.store.SetRuntime(func(ri *state.RuntimeInfo) { ri.ScanInterval = interval.String() })
 				}
@@ -380,7 +395,7 @@ func (a *Agent) scanLoop(ctx context.Context) {
 			a.scan(true)
 			_ = force
 			quiet = 0
-			interval = base
+			interval = a.baseInterval()
 			ticker.Reset(interval)
 			a.store.SetRuntime(func(ri *state.RuntimeInfo) { ri.ScanInterval = interval.String() })
 		}
@@ -674,6 +689,7 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			}
 			ri := a.store.Runtime()
 			req := model.HeartbeatRequest{
+				AgentTime:  time.Now(),
 				Hostname:    ri.Hostname,
 				Version:     a.cfg.Version,
 				ProcCount:   ri.ProcCount,
@@ -885,3 +901,72 @@ func (a *Agent) RemoveAllow(typ, value string) error { return a.alw.RemoveLocal(
 
 // WhitelistSize 返回白名单条目数。
 func (a *Agent) WhitelistSize() map[string]int { return a.alw.Size() }
+
+
+// ---------------------------------------------------------------- 服务端策略
+
+// baseInterval 返回当前应使用的扫描基础间隔：
+// 服务端策略（热生效）> 本地配置。自适应退避都在此基础上进行。
+func (a *Agent) baseInterval() time.Duration {
+	if v := a.policyInterval.Load(); v > 0 {
+		return time.Duration(v)
+	}
+	return a.cfg.ScanInterval
+}
+
+// applyServerPolicy 应用随规则包下发的运行策略。
+//
+// 优先级铁律：终端本地"显式设置"的环境变量永远赢过服务端策略——
+// 否则现场排障时想临时改个参数都会被服务端悄悄改回去。
+// scan interval 热生效；collector 需要重建采集器，缓存后冷生效。
+func (a *Agent) applyServerPolicy(p *model.AgentPolicy) {
+	if p == nil {
+		return
+	}
+	if p.ScanIntervalSec >= 2 {
+		if _, explicit := os.LookupEnv("HG_AGENT_SCAN_INTERVAL"); !explicit {
+			a.policyInterval.Store(int64(time.Duration(p.ScanIntervalSec) * time.Second))
+			a.log.Info("policy_scan_interval_applied", "sec", p.ScanIntervalSec)
+		}
+	}
+	if p.Collector != "" && p.Collector != a.coll.SourceName() {
+		if _, explicit := os.LookupEnv("HG_AGENT_COLLECTOR"); !explicit {
+			switch p.Collector {
+			case "auto", "ntquery", "toolhelp":
+				if err := saveCollectorPolicy(a.cfg.Path("policy.json"), p.Collector); err != nil {
+					a.log.Warn("policy_collector_save_failed", "err", err)
+				} else {
+					a.log.Warn("policy_collector_pending_restart", "collector", p.Collector,
+						"hint", "采集引擎需重启探针后切换")
+				}
+			default:
+				a.log.Warn("policy_collector_invalid", "collector", p.Collector)
+			}
+		}
+	}
+}
+
+// policyFile 是 policy.json 的落盘格式。
+type policyFile struct {
+	Collector string `json:"collector,omitempty"`
+}
+
+func readCollectorPolicy(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var pf policyFile
+	if json.Unmarshal(raw, &pf) != nil {
+		return ""
+	}
+	return pf.Collector
+}
+
+func saveCollectorPolicy(path, collector string) error {
+	raw, err := json.Marshal(policyFile{Collector: collector})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o600)
+}

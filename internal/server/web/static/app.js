@@ -56,14 +56,39 @@ function fmtBytes(n) {
   return `${(n / 1048576).toFixed(1)} MB`;
 }
 
+/* toast 图标（内联 SVG，语义色由 CSS 控制） */
+const TOAST_ICONS = {
+  ok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  err: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></svg>',
+};
+
 function toast(msg, kind = 'ok') {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
-  el.textContent = msg;
+  el.innerHTML = `<span class="t-ico">${TOAST_ICONS[kind] || TOAST_ICONS.ok}</span><span>${esc(msg)}</span>`;
   $('#toasts').appendChild(el);
-  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; }, 3200);
-  setTimeout(() => el.remove(), 3600);
+  setTimeout(() => el.classList.add('out'), 3200);
+  setTimeout(() => el.remove(), 3650);
 }
+
+/* 页面级空状态：图标 + 结论 + 下一步引导。
+   空态是转化率最高的屏幕之一——不说"没有数据"这种废话，说"这意味着什么、现在能做什么"。 */
+function emptyState(icon, title, sub, tone = '') {
+  return `<div class="empty-state">
+    <div class="e-ico ${tone}">${icon}</div>
+    <div class="e-title">${title}</div>
+    <div class="e-sub">${sub}</div>
+  </div>`;
+}
+
+const EMPTY_ICONS = {
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  inbox: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.9A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.1z"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+};
 
 /* ------------------------------------------------------------------ API 客户端 */
 class ApiError extends Error {
@@ -196,15 +221,30 @@ const state = {
 };
 
 /* ------------------------------------------------------------------ 路由定义 */
+/* 导航图标：统一内联 SVG（16px，stroke 1.6，currentColor）。
+   弃用字符图标——跨平台字重不一，且无法与文字色联动。 */
+const NAV_ICONS = {
+  overview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
+  alerts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></svg>',
+  incidents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/><circle cx="12" cy="12" r="2.5"/><path d="M7 7.5 10 10M17 16.5 14 14"/></svg>',
+  report: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M8 17v-6M13 17V7M18 17v-9"/></svg>',
+  hosts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
+  rules: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9.5 12 2 2 3.5-4"/></svg>',
+  allowlist: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>',
+  audit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8M16 13H8M16 17H8"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M17.5 14.4a6.5 6.5 0 0 1 4 5.6"/></svg>',
+};
+
 const ROUTES = [
-  { key: 'overview', label: '概览', icon: '▤', title: '概览', roles: null },
-  { key: 'alerts', label: '告警中心', icon: '⚠', title: '告警中心', roles: null },
-  { key: 'incidents', label: '事件', icon: '⛓', title: '事件（攻击链聚类）', roles: null },
-  { key: 'hosts', label: '主机终端', icon: '◫', title: '主机终端', roles: null },
-  { key: 'rules', label: '检测规则', icon: '⌗', title: '检测规则', roles: null },
-  { key: 'allowlist', label: '白名单', icon: '✓', title: '白名单与降噪', roles: null },
-  { key: 'audit', label: '审计日志', icon: '≡', title: '审计日志', roles: null },
-  { key: 'users', label: '账号管理', icon: '◉', title: '账号管理', roles: ['admin'] },
+  { key: 'overview', label: '概览', icon: NAV_ICONS.overview, title: '概览', roles: null },
+  { key: 'alerts', label: '告警中心', icon: NAV_ICONS.alerts, title: '告警中心', roles: null },
+  { key: 'incidents', label: '事件', icon: NAV_ICONS.incidents, title: '事件（攻击链聚类）', roles: null },
+  { key: 'report', label: '报表', icon: NAV_ICONS.report, title: '运营周报', roles: null },
+  { key: 'hosts', label: '主机终端', icon: NAV_ICONS.hosts, title: '主机终端', roles: null },
+  { key: 'rules', label: '检测规则', icon: NAV_ICONS.rules, title: '检测规则', roles: null },
+  { key: 'allowlist', label: '白名单', icon: NAV_ICONS.allowlist, title: '白名单与降噪', roles: null },
+  { key: 'audit', label: '审计日志', icon: NAV_ICONS.audit, title: '审计日志', roles: null },
+  { key: 'users', label: '账号管理', icon: NAV_ICONS.users, title: '账号管理', roles: ['admin'] },
 ];
 
 function buildNav() {
@@ -341,6 +381,12 @@ async function viewOverview() {
       <div class="card kpi warn"><div class="label">待处置告警</div><div class="value">${d.open_alerts}</div><div class="sub">需人工确认</div></div>
       <div class="card kpi crit"><div class="label">严重且待处置</div><div class="value">${d.critical_open}</div><div class="sub">恶意判定 ${d.malicious_count} · 误报 ${d.false_positive}</div></div>
     </div>
+
+    ${(d.avg_response_min || 0) > 0 ? `<div class="card" style="padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+      <span class="badge ok">MTTR</span>
+      <span>过去 7 天平均处置时长 <b style="font-size:16px">${d.avg_response_min.toFixed(0)}</b> 分钟</span>
+      <span class="small muted">响应快慢从此有数可依，不再靠感觉</span>
+    </div>` : ''}
 
     <div class="grid" style="grid-template-columns: 2fr 1fr; margin-bottom:14px">
       <div class="card"><h3 class="card-title">告警时间趋势（24h / 每小时）</h3>${timelineChart(d.timeline)}</div>
@@ -741,7 +787,7 @@ async function viewHosts() {
     </tr></thead>
     <tbody>${state.hosts.map((h) => `
       <tr>
-        <td>${badge(h.status, h.status === 'online' ? '在线' : '离线')}</td>
+        <td>${badge(h.status, h.status === 'online' ? '在线' : '离线')}${(h.clock_skew_ms || 0) > 10000 ? '<div class="badge warn" style="margin-top:4px" title="终端与服务端时钟偏移超过 10 秒">时钟偏移 ' + Math.round(h.clock_skew_ms / 1000) + 's</div>' : ''}</td>
         <td><b>${esc(h.hostname)}</b><div class="small muted mono">${esc(h.id)}</div></td>
         <td class="small muted">${esc(h.os_version || '-')}<br />${esc(h.arch || '')} · v${esc(h.version || '-')}</td>
         <td class="mono small">${esc(h.username || '-')}</td>
@@ -1071,8 +1117,16 @@ function updateUnreadBadge() {
   const nav = document.getElementById('navAlerts');
   if (!nav) return;
   if (state.unread > 0) {
+    const prev = nav.textContent;
+    const next = state.unread > 99 ? '99+' : String(state.unread);
     nav.style.display = 'inline-block';
-    nav.textContent = state.unread > 99 ? '99+' : state.unread;
+    nav.textContent = next;
+    // 数字变化时重放弹出动画，提醒视线：新告警进来了
+    if (prev !== next) {
+      nav.classList.remove('pop');
+      void nav.offsetWidth; // 重置动画
+      nav.classList.add('pop');
+    }
   } else {
     nav.style.display = 'none';
   }
@@ -1080,10 +1134,28 @@ function updateUnreadBadge() {
 
 /* ------------------------------------------------------------------ 框架 */
 function renderError(e) {
-  $('#content').innerHTML = `<div class="card"><div class="empty">
-    ${esc(e.message)}${e.requestId ? `<div class="small muted" style="margin-top:8px">请求 ID：${esc(e.requestId)}</div>` : ''}
-    <div style="margin-top:14px"><button class="btn sm" onclick="location.reload()">重新加载</button></div>
-  </div></div>`;
+  $('#content').innerHTML = `<div class="card">${emptyState(EMPTY_ICONS.inbox,
+    esc(e.message),
+    `${e.requestId ? `请求 ID：<code>${esc(e.requestId)}</code><br />` : ''}可以稍后重试；若持续出现，请联系管理员检查服务端状态。`,
+    'warn')}
+    <div style="text-align:center;margin-top:-14px;padding-bottom:30px"><button class="btn sm" onclick="location.reload()">重新加载</button></div>
+  </div>`;
+}
+
+/* 渲染完成后触发内容揭示动效（class 重置技巧） */
+function revealContent() {
+  const c = $('#content');
+  c.classList.remove('page-in');
+  void c.offsetWidth;
+  c.classList.add('page-in');
+  markFresh();
+}
+
+/* 数据新鲜度：让值班的人始终知道"现在看的是多久之前的现场" */
+function markFresh() {
+  const el = document.getElementById('freshnessText');
+  if (!el) return;
+  el.textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
 }
 
 async function renderRoute() {
@@ -1102,6 +1174,7 @@ async function renderRoute() {
     case 'overview': return viewOverview();
     case 'alerts': return viewAlerts();
     case 'incidents': return viewIncidents();
+    case 'report': return viewReport();
     case 'hosts': return viewHosts();
     case 'rules': return viewRules();
     case 'allowlist': return viewAllowlist();
@@ -1136,6 +1209,7 @@ async function boot() {
   // 恢复上次的密度选择：值班习惯应当跨会话保留
   if (localStorage.getItem('hg_dense') === '1') document.body.classList.add('dense');
   installKeyboard();
+  bindChangePassword();
 
   // 登录表单
   $('#loginForm').addEventListener('submit', async (e) => {
@@ -1678,6 +1752,57 @@ async function loadHostTimeline(a) {
    事件卡片突出峰值严重度与 MITRE 组合，展开可直达每条告警。 */
 const SEV_RANK = { low: 0, medium: 1, high: 2, critical: 3 };
 
+async function viewReport() {
+  const c = $('#content');
+  c.innerHTML = `<div class="card" style="padding:18px">${skeletonRows(4, 6)}</div>`;
+  let rep;
+  try { rep = await api.get('/api/v1/report/weekly'); } catch (e) { return renderError(e); }
+
+  const fp = (rep.fp_rate || 0) * 100;
+  const verdicts = Object.entries(rep.verdict_dist || {}).sort((a, b) => b[1] - a[1]);
+  c.innerHTML = `
+    <div class="toolbar" style="margin-bottom:14px;align-items:center">
+      <h2 style="margin:0;font-size:16px">运营周报（近 ${rep.window_days} 天）</h2>
+      <span class="muted small">生成于 ${fmtTime(rep.generated_at)}</span>
+      <div class="spacer"></div>
+      <button class="btn sm primary" onclick="window.print()">打印 / 另存 PDF</button>
+    </div>
+
+    <div class="grid grid-4" style="margin-bottom:14px">
+      <div class="card kpi"><div class="label">新增告警</div><div class="value">${rep.alerts_created}</div><div class="sub">当前未处置 ${rep.open_alerts}</div></div>
+      <div class="card kpi ok"><div class="label">已处置</div><div class="value">${rep.alerts_handled}</div><div class="sub">误报率 ${fp.toFixed(0)}%</div></div>
+      <div class="card kpi ${rep.mttr_min > 240 ? 'warn' : 'ok'}"><div class="label">平均响应 MTTR</div><div class="value">${rep.mttr_min ? rep.mttr_min.toFixed(0) + '<span class="muted" style="font-size:14px"> 分</span>' : '—'}</div><div class="sub">创建 → 处置</div></div>
+      <div class="card kpi ${((rep.bursts || []).length) ? 'crit' : 'ok'}"><div class="label">跨主机爆发</div><div class="value">${(rep.bursts || []).length}</div><div class="sub">${(rep.bursts || []).length ? '需要上报的安全事件' : '无'}</div></div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:14px">
+      <div class="card"><h3 class="card-title">规则命中排行</h3>${barList(rep.top_rules || [], 'count', 'name')}</div>
+      <div class="card"><h3 class="card-title">主机告警排行</h3>${barList(rep.top_hosts || [], 'count', 'hostname')}</div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:14px">
+      <div class="card"><h3 class="card-title">结论分布</h3>
+        ${(verdicts.length ? verdicts.map(([v, n]) => `
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 4px">
+            <span style="width:90px">${esc(VERDICT_LABEL[v] || v)}</span>
+            <div class="bar" style="flex:1"><i style="width:${Math.min(100, n / Math.max(1, verdicts[0][1]) * 100)}%;background:var(--accent)"></i></div>
+            <b class="mono" style="width:48px;text-align:right">${n}</b>
+          </div>`).join('') : '<div class="empty small">窗口内无数据</div>')}
+      </div>
+      <div class="card"><h3 class="card-title">误报率最高的规则（需 ≥5 次处置）</h3>
+        ${((rep.fp_ranking || []).length) ? rep.fp_ranking.map((r) => `
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 4px">
+            <span class="mono small" style="width:90px">${esc(r.rule_id)}</span>
+            <div class="bar" style="flex:1"><i style="width:${Math.round(r.fp_rate * 100)}%;background:${r.fp_rate > 0.5 ? 'var(--danger)' : 'var(--warn)'}"></i></div>
+            <span class="small muted">${r.false_pos}/${r.handled} 误报</span>
+            <b style="width:48px;text-align:right;color:${r.fp_rate > 0.5 ? 'var(--danger)' : 'var(--warn)'}">${Math.round(r.fp_rate * 100)}%</b>
+          </div>`).join('') + '<div class="small muted" style="margin-top:8px">高误报规则建议核对命中样本后加白，或在规则页调整分值。</div>' : '<div class="empty small">处置样本不足，暂无排名</div>'}
+      </div>
+    </div>
+
+    <p class="small muted">本报表按当前数据实时生成，可在浏览器中打印为 PDF 存档或发送给管理层。</p>`;
+}
+
 async function viewIncidents() {
   const c = $('#content');
   c.innerHTML = `<div class="card" style="padding:18px">${skeletonRows(5, 5)}</div>`;
@@ -1685,7 +1810,27 @@ async function viewIncidents() {
   try { r = await api.get('/api/v1/incidents?limit=50'); } catch (e) { return renderError(e); }
   const items = (r && r.items) || [];
 
-  const head = `
+  const bursts = (r && r.bursts) || [];
+  const burstBanner = bursts.length ? `
+    <div class="card" style="padding:14px 16px;margin-bottom:12px;border-left:3px solid var(--crit);background:linear-gradient(90deg,rgba(244,117,107,.08),transparent)">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="badge crit" style="font-size:12px">⚠ 跨主机爆发 ×${bursts.length}</span>
+        <span class="small">同一份载荷在多台主机同时出现——横向移动 / 蠕虫式投递信号，优先处置：</span>
+      </div>
+      ${bursts.map((b) => `
+        <div style="margin-top:10px;padding:8px 12px;background:var(--surface-2);border-radius:8px">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <b class="mono small">${esc(b.hash.slice(0, 16))}…</b>
+            <span class="badge danger">${b.host_count} 台主机</span>
+            <span class="badge info">${b.alert_count} 条告警</span>
+            <span class="badge ${b.peak_severity === 'critical' ? 'crit' : 'warn'}">${esc(b.peak_severity)}</span>
+            <span class="small muted">${b.hosts.map(esc).join(' · ')}</span>
+          </div>
+          <div class="small muted" style="margin-top:4px">${esc(b.title_sample || '')}</div>
+        </div>`).join('')}
+    </div>` : '';
+
+  const head = `${burstBanner}
     <div class="toolbar" style="margin-bottom:12px;align-items:center">
       <h2 style="margin:0;font-size:16px">事件</h2>
       <span class="muted small">未处置告警按「同主机 · 相邻间隔 ≤ 30 分钟」聚类 · 共 ${items.length} 个活跃事件</span>
@@ -1836,3 +1981,24 @@ document.addEventListener('alpine:init', () => {
     run() { const it = this.filtered[this.sel]; if (it) this.pick(it); },
   }));
 });
+
+
+/* ---------------- 修改密码 ----------------
+   成功后吊销全部刷新令牌并回到登录页——这是密码轮换语义的一部分。 */
+function bindChangePassword() {
+  const b = $('#changePwBtn');
+  if (!b) return;
+  b.addEventListener('click', async () => {
+    const oldPw = prompt('输入当前密码：');
+    if (!oldPw) return;
+    const newPw = prompt('输入新密码（至少 10 位，含大小写/数字/符号中至少三类）：');
+    if (!newPw) return;
+    const newPw2 = prompt('再输入一次新密码：');
+    if (newPw !== newPw2) return toast('两次输入不一致', 'err');
+    try {
+      await api.post('/api/v1/auth/change-password', { old_password: oldPw, new_password: newPw });
+      toast('密码已修改，请重新登录');
+      setTimeout(() => location.reload(), 900);
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}

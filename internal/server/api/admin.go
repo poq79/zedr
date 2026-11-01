@@ -164,6 +164,13 @@ func (h *adminHandler) listHosts(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
+	// 时钟偏移是运行时值（不落库），在这里合入响应
+	skews := h.deps.Services.Agent.SkewMap()
+	for i := range agents {
+		if v, ok := skews[agents[i].ID]; ok {
+			agents[i].ClockSkewMS = v
+		}
+	}
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"items": agents, "total": len(agents)})
 }
 
