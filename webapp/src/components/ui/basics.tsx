@@ -1,4 +1,4 @@
-import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { forwardRef, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import { cn } from '../../lib/utils';
 
 /* ---------------- Button ---------------- */
@@ -158,6 +158,84 @@ export function SkeletonRows({ rows = 6 }: { rows?: number }) {
           <Skeleton style={{ width: '14%', animationDelay: '.24s' }} />
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ---------------- Tabs（药丸指示器滑动，transitions.dev 规范） ----------------
+   - 互斥视图切换：250ms fast，滑药丸而非整条重绘
+   - 首帧先 transition:none 定位再 reflow 恢复（防指示器从 0 滑入的闪跳）
+   - 键盘：←/→ 在选项卡间移动，Home/End 跳首尾，焦点跟随选中 */
+export interface TabItem { key: string; label: string; count?: number }
+
+export function Tabs({ tabs, value, onChange, className }: {
+  tabs: TabItem[]; value: string; onChange: (key: string) => void; className?: string;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const btnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [pill, setPill] = useState<{ left: number; width: number } | null>(null);
+  const [ready, setReady] = useState(false);
+
+  useLayoutEffect(() => {
+    const idx = tabs.findIndex((t) => t.key === value);
+    const btn = btnRefs.current[idx];
+    if (!btn) return;
+    const meas = () => setPill({ left: btn.offsetLeft, width: btn.offsetWidth });
+    meas();
+    // 首帧禁用过渡：reflow 后再开启（见 transitions.dev 经验条目 6）
+    const raf = requestAnimationFrame(() => setReady(true));
+    const onResize = () => { setReady(false); meas(); requestAnimationFrame(() => setReady(true)); };
+    window.addEventListener('resize', onResize);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', onResize); };
+  }, [value, tabs]);
+
+  const onKey = (e: React.KeyboardEvent) => {
+    const idx = tabs.findIndex((t) => t.key === value);
+    let next = -1;
+    if (e.key === 'ArrowRight') next = (idx + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') next = (idx - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    if (next >= 0) {
+      e.preventDefault();
+      onChange(tabs[next].key);
+      btnRefs.current[next]?.focus();
+    }
+  };
+
+  return (
+    <div
+      ref={wrapRef} role="tablist" aria-label="视图切换" onKeyDown={onKey}
+      className={cn('relative flex items-center gap-0.5 rounded-md border border-border-soft bg-card p-0.5', className)}
+    >
+      {pill && (
+        <span
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute top-0.5 bottom-0.5 rounded-[5px] bg-secondary border border-border-soft',
+            ready && 'transition-[left,width] duration-[250ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
+          )}
+          style={{ left: pill.left, width: pill.width }}
+        />
+      )}
+      {tabs.map((t, i) => {
+        const active = t.key === value;
+        return (
+          <button
+            key={t.key}
+            ref={(el) => { btnRefs.current[i] = el; }}
+            role="tab" aria-selected={active} tabIndex={active ? 0 : -1}
+            onClick={() => onChange(t.key)}
+            className={cn(
+              'relative z-1 flex cursor-pointer items-center gap-1.5 rounded-[5px] px-3 py-1.5 text-[12.5px] transition-colors duration-150',
+              active ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {t.label}
+            {t.count != null && <span className="font-mono text-[10.5px] tabular-nums text-ghost">{t.count}</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }

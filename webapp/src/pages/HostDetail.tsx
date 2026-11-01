@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, Search } from 'lucide-react';
 import { api } from '../lib/api';
 import type { AgentCommand, Alert, Host, HostInventorySection } from '../lib/types';
 import { relTime, fmtTime, SEV_LABEL } from '../lib/format';
-import { Badge, Button, Card, CardTitle, Input, SkeletonRows } from '../components/ui/basics';
+import { Badge, Button, Card, CardTitle, Input, SkeletonRows, Tabs } from '../components/ui/basics';
 import { useToast, useConfirm } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
@@ -39,6 +39,9 @@ export function HostDetailPage() {
   const [cmdBusy, setCmdBusy] = useState('');
   const [qPath, setQPath] = useState('');
   const [qPid, setQPid] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get('tab') || 'overview';
+  const setTab = (k: string) => setSearchParams(k === 'overview' ? {} : { tab: k }, { replace: true });
 
   const load = useCallback(async () => {
     try {
@@ -104,12 +107,25 @@ export function HostDetailPage() {
       {!host || !sections ? (
         <Card className="px-2 pb-2"><SkeletonRows rows={6} /></Card>
       ) : (
-        <div className="flex flex-col gap-3.5">
-          <div className="grid gap-3.5 lg:grid-cols-2">
-            <SystemCard s={sec('system')} host={host} />
-            <AgentCard s={sec('agent')} />
-          </div>
-
+        <div>
+          <Tabs
+            className="mb-3.5" value={tab} onChange={setTab}
+            tabs={[
+              { key: 'overview', label: '概览' },
+              { key: 'services', label: '服务', count: rowsOf('services').length },
+              { key: 'tasks', label: '计划任务', count: rowsOf('tasks').length },
+              { key: 'startup', label: '自启动', count: rowsOf('startup').length },
+              { key: 'network', label: '网络', count: rowsOf('adapters').length + rowsOf('listeners').length },
+              { key: 'ops', label: '处置与历史', count: cmds?.length },
+            ]}
+          />
+          <div key={tab} className="anim-page flex flex-col gap-3.5">
+            {tab === 'overview' && (
+              <>
+                <div className="grid gap-3.5 lg:grid-cols-2">
+                  <SystemCard s={sec('system')} host={host} />
+                  <AgentCard s={sec('agent')} />
+                </div>
           {/* 最近告警：/hosts/{id} 随附 20 条，点行进告警详情（/alerts?open=id） */}
           <Card className="px-2 py-3.5">
             <div className="mb-1 flex items-center gap-2.5 px-3.5">
@@ -138,14 +154,9 @@ export function HostDetailPage() {
             )}
           </Card>
 
-          <SectionCard title="网络适配器" count={sec('adapters') && parseAny(sec('adapters')!).length} >
-            {sec('adapters') && <AdaptersTable rows={parseAny(sec('adapters')!)} />}
-          </SectionCard>
-
-          <SectionCard title="监听端口" extra={sec('listeners') && <ListenersSummary s={sec('listeners')!} />}>
-            {sec('listeners') && <ListenersTable s={sec('listeners')!} />}
-          </SectionCard>
-
+              </>
+            )}
+            {tab === 'services' && (
           <BigTable title="服务" rows={rowsOf('services')} searchKeys={['name', 'display_name', 'path_name', 'account']}
             stateKey="state" stateLabel="运行状态"
             columns={[
@@ -157,6 +168,8 @@ export function HostDetailPage() {
               { key: 'account', label: '账号', mono: true },
             ]} />
 
+            )}
+            {tab === 'tasks' && (
           <BigTable title="计划任务" rows={rowsOf('tasks')} searchKeys={['path', 'name']}
             stateKey="state" stateLabel="状态"
             columns={[
@@ -165,6 +178,8 @@ export function HostDetailPage() {
               { key: 'state', label: '状态', badge: true, tone: (v) => (str(v) === 'ready' ? 'resolved' : 'neutral') },
             ]} />
 
+            )}
+            {tab === 'startup' && (
           <BigTable title="自启动项" rows={rowsOf('startup')} searchKeys={['kind', 'location', 'value']}
             stateKey="kind" stateLabel="类型" kindLabel
             columns={[
@@ -173,64 +188,82 @@ export function HostDetailPage() {
               { key: 'value', label: '命令 / 值', mono: true, truncate: true },
             ]} />
 
-          {/* 处置指令 */}
-          <Card className="p-4">
-            <CardTitle className="mb-2.5">处置指令</CardTitle>
-            <div className="flex flex-col gap-2 rounded-md border border-border-soft bg-destructive-soft/40 p-3.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <Input value={qPath} onChange={(e) => setQPath(e.target.value)} placeholder="文件完整路径，例 C:\Users\...\sample.exe" className="min-w-[280px] flex-1 font-mono text-[12px]" spellCheck={false} />
-                <Button variant="danger" size="sm" disabled={!qPath.trim() || !!cmdBusy}
-                  onClick={() => send('quarantine_file', qPath.trim(), {
-                    title: '隔离该文件？', danger: true, okText: '隔离',
-                    message: `将把 ${qPath.trim()} 移入终端侧隔离区并阻断执行。\n路径以终端实际文件为准；终端侧还有第二道确认开关。`,
-                  })}>隔离文件</Button>
-                <Button size="sm" disabled={!qPath.trim() || !!cmdBusy}
-                  onClick={() => send('quarantine_restore', qPath.trim(), {
-                    title: '恢复该文件？', okText: '恢复',
-                    message: `将把 ${qPath.trim()} 从隔离区还原到原路径。`,
-                  })}>恢复隔离</Button>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Input value={qPid} onChange={(e) => setQPid(e.target.value)} placeholder="目标进程 PID" className="w-[200px] font-mono text-[12px]" inputMode="numeric" />
-                <Button variant="danger" size="sm" disabled={!qPid.trim() || !!cmdBusy}
-                  onClick={() => send('terminate', qPid.trim(), {
-                    title: `终止进程 PID ${qPid.trim()}？`, danger: true, okText: '终止',
-                    message: `将向终端下发进程终止指令（PID ${qPid.trim()}）。\n请确认 PID 属于恶意进程——误杀系统进程可能导致蓝屏或服务中断。`,
-                  })}>终止进程</Button>
-                <span className="text-[11px] text-ghost">处置类指令需服务端与终端双侧开关开启；下发前先在告警详情核对证据</span>
-              </div>
-            </div>
-          </Card>
-
-          {/* 指令历史 */}
-          <Card className="px-2 py-3.5">
-            <div className="mb-1 flex items-center gap-2.5 px-3.5">
-              <CardTitle>指令历史</CardTitle>
-              <div className="flex-1" />
-              <span className="text-[11px] text-ghost">{(cmds || []).length} 条</span>
-            </div>
-            {!cmds ? <SkeletonRows rows={2} /> : !cmds.length ? (
-              <div className="px-4 py-6 text-center text-[12.5px] text-faint">还没有指令记录</div>
-            ) : (
-              <table className="w-full text-[13px]">
-                <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
-                  {['指令', '状态', '载荷', '结果', '下发时间', '操作人'].map((h) => <th key={h} className="px-3.5 py-2.5 font-semibold">{h}</th>)}
-                </tr></thead>
-                <tbody>
-                  {cmds.map((c) => (
-                    <tr key={c.id} className="border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary">
-                      <td className="px-3.5 py-2.5 font-medium">{CMD_LABEL[c.type] || c.type}</td>
-                      <td className="px-3.5 py-2.5"><Badge tone={CMD_STATUS_TONE[c.status] || 'neutral'}>{c.status}</Badge></td>
-                      <td className="max-w-[240px] px-3.5 py-2.5"><span className="block truncate font-mono text-[11.5px] text-muted-foreground" title={c.payload}>{c.payload || '-'}</span></td>
-                      <td className="max-w-[220px] px-3.5 py-2.5"><span className="block truncate font-mono text-[11.5px] text-faint" title={c.result}>{c.result || '-'}</span></td>
-                      <td className="px-3.5 py-2.5 text-xs text-faint" title={fmtTime(c.created_at)}>{relTime(c.created_at)}</td>
-                      <td className="px-3.5 py-2.5 font-mono text-xs">{c.created_by || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             )}
-          </Card>
+            {tab === 'network' && (
+              <>
+              <SectionCard title="网络适配器" count={sec('adapters') && parseAny(sec('adapters')!).length} >
+                {sec('adapters') && <AdaptersTable rows={parseAny(sec('adapters')!)} />}
+              </SectionCard>
+
+              <SectionCard title="监听端口" extra={sec('listeners') && <ListenersSummary s={sec('listeners')!} />}>
+                {sec('listeners') && <ListenersTable s={sec('listeners')!} />}
+              </SectionCard>
+
+              </>
+            )}
+            {tab === 'ops' && (
+              <>
+              {/* 处置指令 */}
+              <Card className="p-4">
+                <CardTitle className="mb-2.5">处置指令</CardTitle>
+                <div className="flex flex-col gap-2 rounded-md border border-border-soft bg-destructive-soft/40 p-3.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input value={qPath} onChange={(e) => setQPath(e.target.value)} placeholder="文件完整路径，例 C:\Users\...\sample.exe" className="min-w-[280px] flex-1 font-mono text-[12px]" spellCheck={false} />
+                    <Button variant="danger" size="sm" disabled={!qPath.trim() || !!cmdBusy}
+                      onClick={() => send('quarantine_file', qPath.trim(), {
+                        title: '隔离该文件？', danger: true, okText: '隔离',
+                        message: `将把 ${qPath.trim()} 移入终端侧隔离区并阻断执行。\n路径以终端实际文件为准；终端侧还有第二道确认开关。`,
+                      })}>隔离文件</Button>
+                    <Button size="sm" disabled={!qPath.trim() || !!cmdBusy}
+                      onClick={() => send('quarantine_restore', qPath.trim(), {
+                        title: '恢复该文件？', okText: '恢复',
+                        message: `将把 ${qPath.trim()} 从隔离区还原到原路径。`,
+                      })}>恢复隔离</Button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input value={qPid} onChange={(e) => setQPid(e.target.value)} placeholder="目标进程 PID" className="w-[200px] font-mono text-[12px]" inputMode="numeric" />
+                    <Button variant="danger" size="sm" disabled={!qPid.trim() || !!cmdBusy}
+                      onClick={() => send('terminate', qPid.trim(), {
+                        title: `终止进程 PID ${qPid.trim()}？`, danger: true, okText: '终止',
+                        message: `将向终端下发进程终止指令（PID ${qPid.trim()}）。\n请确认 PID 属于恶意进程——误杀系统进程可能导致蓝屏或服务中断。`,
+                      })}>终止进程</Button>
+                    <span className="text-[11px] text-ghost">处置类指令需服务端与终端双侧开关开启；下发前先在告警详情核对证据</span>
+                  </div>
+                </div>
+              </Card>
+
+              {/* 指令历史 */}
+              <Card className="px-2 py-3.5">
+                <div className="mb-1 flex items-center gap-2.5 px-3.5">
+                  <CardTitle>指令历史</CardTitle>
+                  <div className="flex-1" />
+                  <span className="text-[11px] text-ghost">{(cmds || []).length} 条</span>
+                </div>
+                {!cmds ? <SkeletonRows rows={2} /> : !cmds.length ? (
+                  <div className="px-4 py-6 text-center text-[12.5px] text-faint">还没有指令记录</div>
+                ) : (
+                  <table className="w-full text-[13px]">
+                    <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+                      {['指令', '状态', '载荷', '结果', '下发时间', '操作人'].map((h) => <th key={h} className="px-3.5 py-2.5 font-semibold">{h}</th>)}
+                    </tr></thead>
+                    <tbody>
+                      {cmds.map((c) => (
+                        <tr key={c.id} className="border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary">
+                          <td className="px-3.5 py-2.5 font-medium">{CMD_LABEL[c.type] || c.type}</td>
+                          <td className="px-3.5 py-2.5"><Badge tone={CMD_STATUS_TONE[c.status] || 'neutral'}>{c.status}</Badge></td>
+                          <td className="max-w-[240px] px-3.5 py-2.5"><span className="block truncate font-mono text-[11.5px] text-muted-foreground" title={c.payload}>{c.payload || '-'}</span></td>
+                          <td className="max-w-[220px] px-3.5 py-2.5"><span className="block truncate font-mono text-[11.5px] text-faint" title={c.result}>{c.result || '-'}</span></td>
+                          <td className="px-3.5 py-2.5 text-xs text-faint" title={fmtTime(c.created_at)}>{relTime(c.created_at)}</td>
+                          <td className="px-3.5 py-2.5 font-mono text-xs">{c.created_by || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </Card>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

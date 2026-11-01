@@ -3,7 +3,7 @@ import { BrainCircuit, ShieldBan } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Alert } from '../lib/types';
 import { SEV_LABEL, VERDICT_LABEL, LAYER_LABEL, fmtTime } from '../lib/format';
-import { Badge, Button, Card, EmptyState, Skeleton } from '../components/ui/basics';
+import { Badge, Button, Card, EmptyState, Skeleton, Tabs } from '../components/ui/basics';
 import { Drawer, useToast, useConfirm } from '../components/ui/overlays';
 
 interface TriageResp {
@@ -29,6 +29,8 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
   const [a, setA] = useState<Alert | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  /* 证据链与 AI 研判分卡：抽屉一屏一屏看，不再一条滚到底 */
+  const [tab, setTab] = useState<'evidence' | 'ai'>('evidence');
 
   useEffect(() => {
     if (alertId == null) { setA(null); setErr(''); return; }
@@ -98,6 +100,10 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
         <EmptyState tone="warn" icon={<ShieldBan size={20} />} title={err} sub="可关闭后重试，或刷新页面。" />
       ) : a && (
         <div className="space-y-5">
+          <Tabs className="mb-1" value={tab} onChange={(k) => setTab(k as 'evidence' | 'ai')}
+            tabs={[{ key: 'evidence', label: '证据链' }, { key: 'ai', label: 'AI 研判' }]} />
+          {tab === 'evidence' && (
+            <div key="ev" className="anim-page space-y-5">
           {a.summary && (
             <Section title="结论">
               <div className="text-[12.5px] leading-[1.8]">{a.summary}</div>
@@ -167,8 +173,11 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
               </table>
             </Section>
           )}
-
-          <AiPanel alertId={a.id} />
+            </div>
+          )}
+          {tab === 'ai' && (
+            <div key="ai" className="anim-page"><AiPanel alertId={a.id} /></div>
+          )}
         </div>
       )}
     </Drawer>
