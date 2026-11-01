@@ -415,3 +415,56 @@ type Incident struct {
 	Note          string         `json:"note"`
 	UpdatedAt     time.Time      `json:"updated_at"`
 }
+
+// ---------------------------------------------------------------- AI 配置中心
+
+// AISkillTask 界定技能包生效的任务域。"all" 表示对所有任务生效。
+type AISkillTask string
+
+const (
+	SkillTaskTriage      AISkillTask = "triage"
+	SkillTaskHunt        AISkillTask = "hunt"
+	SkillTaskInvestigate AISkillTask = "investigate"
+	SkillTaskAll         AISkillTask = "all"
+)
+
+// Valid 判断任务域合法性。
+func (t AISkillTask) Valid() bool {
+	switch t {
+	case SkillTaskTriage, SkillTaskHunt, SkillTaskInvestigate, SkillTaskAll:
+		return true
+	}
+	return false
+}
+
+// AISkill 是一个技能包：追加到对应任务系统提示末尾的受控片段。
+// 内容是运营者写的领域知识（如"本环境 foo.exe 是合规工具"），
+// 与提示词模板分开管理——模板定义"怎么分析"，技能包补充"分析什么环境"。
+type AISkill struct {
+	ID        string      `json:"id"`
+	Task      AISkillTask `json:"task"`
+	Name      string      `json:"name"`
+	Content   string      `json:"content"`
+	Enabled   bool        `json:"enabled"`
+	Sort      int         `json:"sort"`
+	CreatedBy string      `json:"created_by"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+}
+
+// AIPromptVersion 是提示词模板的一个历史版本（只增不改，回滚=复制旧版为新版）。
+type AIPromptVersion struct {
+	Version   int       `json:"version"`
+	Content   string    `json:"content"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AIPrompt 是某任务域的提示词模板（当前生效版本 + 历史版本）。
+type AIPrompt struct {
+	Task      string            `json:"task"`
+	Content   string            `json:"content"` // 空 = 使用内置默认
+	UpdatedBy string            `json:"updated_by"`
+	UpdatedAt *time.Time        `json:"updated_at,omitempty"`
+	Versions  []AIPromptVersion `json:"versions"`
+}

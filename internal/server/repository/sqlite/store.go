@@ -30,9 +30,10 @@ type Store struct {
 	audit     auditRepo
 	commands  commandRepo
 	stats     statsRepo
-	inventory inventoryRepo
-	incidents incidentRepo
-}
+		inventory inventoryRepo
+		incidents incidentRepo
+		aicfg     aiConfigRepo
+	}
 
 var _ = (*Store)(nil)
 
@@ -83,8 +84,9 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 	s.audit = auditRepo{s}
 	s.commands = commandRepo{s}
 	s.stats = statsRepo{s}
-	s.inventory = inventoryRepo{s}
-	s.incidents = incidentRepo{s}
+		s.inventory = inventoryRepo{s}
+		s.incidents = incidentRepo{s}
+		s.aicfg = aiConfigRepo{s}
 
 	repos := repository.Repos{
 		Users:     &s.users,
@@ -99,6 +101,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 		Stats:     &s.stats,
 		Inventory: &s.inventory,
 		Incidents: &s.incidents,
+		AIConfig:  &s.aicfg,
 	}
 	return s, repos, nil
 }
@@ -335,6 +338,36 @@ CREATE TABLE IF NOT EXISTS incidents (
 );
 CREATE INDEX IF NOT EXISTS idx_incidents_agent ON incidents(agent_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status, updated_at DESC);
+`,
+	},
+	{
+		name: "007_ai_config",
+		sql: `
+-- AI 配置中心：提示词模板版本历史 + 技能包。
+-- 模型槽位/预算等标量配置存 settings.ai_config（JSON，敏感字段已静态加密），
+-- 只有"内容型"数据（提示词、技能）值得独立建表——它们需要版本化与审计。
+CREATE TABLE IF NOT EXISTS ai_prompt_versions (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task       TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  content    TEXT NOT NULL,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  UNIQUE (task, version)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_prompt_task ON ai_prompt_versions(task, version DESC);
+
+CREATE TABLE IF NOT EXISTS ai_skills (
+  id         TEXT PRIMARY KEY,
+  task       TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  sort       INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `,
 	},
 }

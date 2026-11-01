@@ -25,6 +25,31 @@ type Repos struct {
 	Stats     StatsRepo
 	Inventory InventoryRepo
 	Incidents IncidentRepo
+	AIConfig  AIConfigRepo
+}
+
+// AIConfigRepo AI 配置中心数据访问：模型槽位配置（settings KV）、
+// 提示词模板（版本化历史）与技能包。
+type AIConfigRepo interface {
+	// GetSetting 读 settings 表通用 KV（found=false 表示键不存在）。
+	GetSetting(ctx context.Context, key string) (string, bool, error)
+	// SetSetting 写 settings 表通用 KV（UPSERT）。
+	SetSetting(ctx context.Context, key, value string) error
+
+	// Prompt 读某任务域的提示词模板（含历史版本，降序，上限 20）。
+	Prompt(ctx context.Context, task string) (*domain.AIPrompt, error)
+	// SavePrompt 保存新版本：当前内容（若有）压入历史，content 成为新版。
+	// 返回新版本号。历史超过 20 条时丢弃最老的。
+	SavePrompt(ctx context.Context, task, content, by string, at time.Time) (int, error)
+	// RollbackPrompt 把指定历史版本的内容复制为新版本（追加式回滚，
+	// 不删除任何历史——回滚本身也要可审计、可再回滚）。
+	RollbackPrompt(ctx context.Context, task string, version int, by string, at time.Time) (int, error)
+
+	// Skills 技能包清单（按 sort, name 排序）。
+	Skills(ctx context.Context) ([]domain.AISkill, error)
+	Skill(ctx context.Context, id string) (*domain.AISkill, error)
+	UpsertSkill(ctx context.Context, s *domain.AISkill) error
+	DeleteSkill(ctx context.Context, id string) error
 }
 
 // UserRepo 账号数据访问。
