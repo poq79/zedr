@@ -184,6 +184,19 @@ CPU 0.20% · 内存 11.9 MB · 平均单进程检测 32~47 ms · 快照 7.7 ms �
 - 持久化监控**首次运行只建基线、不告警**（本机 422 项），
   之后只判断新增与改写——否则第一次启动就会刷屏。
 
+### 响应闭环与资产遥测（v0.9.2 起）
+
+检测强、响应弱是原型期最大短板，v0.9.2 起补齐"研判→处置"最后一米：
+
+| 能力 | 形态 | 安全默认 |
+|---|---|---|
+| 终止进程 | `terminate` 指令，PID 复用二次校验 | 双层开关默认关（server+agent 都要开）|
+| **文件隔离/恢复** | `quarantine_file` / `quarantine_restore` 指令；隔离区在探针数据目录，清单唯一事实源、跨卷搬运哈希校验、自保护拒绝隔离自身目录 | 同上（`HG_SERVER_QUARANTINE_ENABLED` + `HG_AGENT_QUARANTINE_ENABLED`）|
+| **威胁情报 IOC 下发** | 管理台维护 SHA256 库 → 独立 HMAC 签名包下发 → 探针验签+版本单调+热加载，L1 命中 +70 不封顶（单凭命中即恶意级） | 复用规则签名密钥，零新增信任链 |
+| **ATT&CK 覆盖矩阵** | 战术×技术热力图数据源（`GET /api/v1/attack/matrix`），命中与规则覆盖两维度，告警 `mitre` 参数精确下钻 | 数据全部来自既有规则/信号 |
+| **主机资产清单** | osquery 式 7 节遥测（system/adapters/listeners/services/tasks/startup/agent），探针 30s 差量上报（节级 sha256 去重），`GET /api/v1/hosts/{id}/inventory` | `HG_AGENT_INVENTORY` 默认开，纯元数据（不采文件内容/流量内容）|
+| **资产变更告警** | 新服务/新计划任务/新监听端口/新启动项 → 签名富化定级 → ATT&CK 映射 → 进告警管线（AI 研判/Webhook/Syslog 全兼容） | 首轮快照只建基线；每轮事件数封顶 |
+
 ### 双视角打磨（v0.8）
 
 **普通用户**：告警自带「给你的说明」（发生了什么/意味着什么/建议你）；
@@ -319,8 +332,10 @@ hostguard/
 | GET | `/api/v1/dashboard` | viewer+ |
 | GET | `/api/v1/alerts` `/alerts/{id}` | viewer+ |
 | POST | `/api/v1/alerts/{id}/status` | analyst+ |
-| GET | `/api/v1/hosts` `/hosts/{id}` | viewer+ |
+| GET | `/api/v1/hosts` `/hosts/{id}` `/hosts/{id}/inventory` | viewer+ |
 | POST | `/api/v1/hosts/{id}/commands` | analyst+ |
+| GET | `/api/v1/attack/matrix`（`?days=`）| viewer+ |
+| GET/POST/DELETE | `/api/v1/iocs` | viewer / analyst+ |
 | GET/POST | `/api/v1/rules`、`/rules/{id}/toggle` | viewer / analyst+ |
 | GET/POST/DELETE | `/api/v1/allowlist` | viewer / analyst+ |
 | GET | `/api/v1/audit` | viewer+ |
@@ -364,10 +379,13 @@ bash scripts/simulate_detection.sh   # 端到端受控验证（需先启动服�
 
    切换只需改环境变量、重启探针，无需重新编译——这正是为了应对新老 Windows
    版本与安全软件干预带来的差异。
-2. **不做内核态阻断**。当前只告警与可选终止（`HG_AGENT_KILL_ENABLED`，默认关闭，且需服务端同时开启）。
+2. **不做内核态阻断**。处置能力为可选终止 + 文件隔离/恢复（双层开关默认关闭，
+   服务端与探针都要显式开启；运行中的镜像因文件锁可能隔离失败，先终止再隔离）。
 3. **签名校验不含在线吊销检查**，走本地缓存以保证性能。
-4. **默认不检测文件写入行为**，只覆盖进程创建及其上下文。
-5. **IOC 表为内置样例**，生产应替换为服务端下发的 IOC 库。
+4. **默认不检测文件写入行为**，只覆盖进程创建及其上下文（8 个高危目录的
+   落地监控除外）。
+5. **IOC 库为管理台维护 + 签名下发**（当前仅 SHA256 哈希，上限 1 万条）；
+   自动情报源（MISP 等）见 docs/RESEARCH.md R2 的触发条件。
 
 ---
 
