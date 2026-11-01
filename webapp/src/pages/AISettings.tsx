@@ -42,6 +42,19 @@ interface AISkill {
 }
 interface ProbeResult { ok: boolean; latency_ms: number; models?: string[]; detail: string }
 
+interface EvalMetrics {
+  total: number; accuracy: number; malicious_recall: number; fp_rate: number; fn_rate: number;
+  suspicious_not_benign: number; grounded_rate: number; uncited_ratio: number;
+  approval_violations: number; injection_total: number; injection_intercepted: number;
+  injection_flips: number; scanner_false_pos: number;
+  avg_latency_ms: number; p95_latency_ms: number; degraded: number; errors: number;
+}
+interface EvalFailure { id: string; suite: string; expected: string; actual: string; why: string }
+interface EvalRun {
+  mode: string; engine: string; suite: string; started_at: string; duration_ms: number;
+  metrics: EvalMetrics; violations?: string[]; passed: boolean; failures?: EvalFailure[];
+}
+
 const SLOT_META: Record<string, { label: string; desc: string }> = {
   triage: { label: '研判', desc: '告警研判：逐条结论带证据引用' },
   hunt: { label: '狩猎', desc: '自然语言查告警，翻译为受控查询' },
@@ -228,6 +241,16 @@ function p_placeholder(sv: SlotView) {
   return sv.override_base_url || 'https://other-provider.example.com';
 }
 
+/* ---------------- 评测指标格 ---------------- */
+function EvalCell({ label, v, tone }: { label: string; v: string; tone?: 'warn' }) {
+  return (
+    <div>
+      <div className="text-[10.5px] text-faint">{label}</div>
+      <div className={tone === 'warn' ? 'font-mono font-semibold text-warn' : 'font-mono font-semibold text-foreground'}>{v}</div>
+    </div>
+  );
+}
+
 /* ---------------- 开关 ---------------- */
 function Switch({ checked, onChange, label, title }: {
   checked: boolean; onChange: (v: boolean) => void; label: string; title?: string;
@@ -268,13 +291,18 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
   const [skills, setSkills] = useState<AISkill[] | null>(null);
   const [skillEdit, setSkillEdit] = useState<AISkill | null>(null);
 
+  const [lastEval, setLastEval] = useState<EvalRun | null>(null);
+  const [evalRunning, setEvalRunning] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     try {
-      const [c, p, s] = await Promise.all([
+      const [c, p, s, e] = await Promise.all([
         api.get<AIConfigView>('/api/v1/ai/config'),
         api.get<Record<string, AIPrompt>>('/api/v1/ai/prompts'),
         api.get<AISkill[]>('/api/v1/ai/skills'),
+        api.get<EvalRun | null>('/api/v1/ai/eval/last'),
       ]);
+      setLastEval(e);
       setCfg(c);
       setProviderKeyDraft('');
       setProviderClearKey(false);
@@ -349,6 +377,25 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
       if (!res.ok) toast(res.detail, 'err');
     } catch (e) { toast((e as Error).message, 'err'); }
     finally { setTesting(false); }
+  };
+
+  /* 质量评测 */
+  const runEval = async (mode: 'heuristic' | 'llm') => {
+    if (mode === 'llm') {
+      const ok = await confirm({
+        title: '运行 LLM 质量评测？',
+        message: '将用当前生效的模型/提示词/技能包对约 44 条样本逐条调用模型，消耗约 7-10 万 tokens（计入小时预算）。合成夹具验证的是契约回归，不是真实世界准确率。',
+        okText: '开始评测',
+      });
+      if (!ok) return;
+    }
+    setEvalRunning(mode);
+    try {
+      const rr = await api.post<EvalRun>('/api/v1/ai/eval/run', { mode });
+      setLastEval(rr);
+      toast(rr.passed ? '评测通过' : `评测未通过：${rr.violations?.[0] || '存在失败样本'}`, rr.passed ? 'ok' : 'err');
+    } catch (e) { toast((e as Error).message, 'err'); }
+    finally { setEvalRunning(null); }
   };
 
   /* 提示词 */
@@ -468,6 +515,75 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
           </Card>
         </div>
       )}
+
+      {/* 质量评测 */}
+      <Card className="mb-4 px-2 pb-3 pt-3.5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-2">
+          <div>
+            <CardTitle>质量评测（回归基线）</CardTitle>
+            <p className="mt-0.5 text-[11px] text-faint">
+              合成告警集 + 注入对抗集 · 一致率 / 误报率 / 漏检率 / 注入拦截分开统计 · 结构评测零 token
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => runEval('heuristic')} disabled={!!evalRunning}>
+              {evalRunning === 'heuristic' ? '运行中…' : '运行结构评测'}
+            </Button>
+            <Button size="sm" variant="primary" onClick={() => runEval('llm')} disabled={!!evalRunning}>
+              {evalRunning === 'llm' ? '评测中…' : '运行质量评测（LLM）'}
+            </Button>
+          </div>
+        </div>
+        {!lastEval ? (
+          <div className="px-2 pb-1 text-[12px] text-faint">
+            还没有评测记录。建议先跑结构评测（零 token）建立基线，配置模型后再跑质量评测。
+          </div>
+        ) : (
+          <div className="px-2">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-[11.5px]">
+              <Badge tone={lastEval.passed ? 'online' : 'critical'}>{lastEval.passed ? '通过' : '未通过'}</Badge>
+              <span className="text-muted-foreground">
+                {lastEval.mode === 'llm' ? 'LLM 质量评测' : '结构评测'} · {lastEval.metrics.total} 样本 ·{' '}
+                {relTime(lastEval.started_at)} · 耗时 {Math.max(1, Math.round(lastEval.duration_ms / 1000))}s
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[12px] md:grid-cols-4 xl:grid-cols-7">
+              <EvalCell label="一致率" v={`${(lastEval.metrics.accuracy * 100).toFixed(0)}%`} />
+              <EvalCell label="恶意召回" v={`${(lastEval.metrics.malicious_recall * 100).toFixed(0)}%`} />
+              <EvalCell label="误报率" v={`${(lastEval.metrics.fp_rate * 100).toFixed(0)}%`} tone={lastEval.metrics.fp_rate > 0.1 ? 'warn' : undefined} />
+              <EvalCell label="漏检率" v={`${(lastEval.metrics.fn_rate * 100).toFixed(0)}%`} tone={lastEval.metrics.fn_rate > 0.1 ? 'warn' : undefined} />
+              <EvalCell label="注入拦截" v={`${(lastEval.metrics.injection_intercepted * 100).toFixed(0)}%`} tone={lastEval.metrics.injection_intercepted < 1 ? 'warn' : undefined} />
+              <EvalCell label="可溯源率" v={`${(lastEval.metrics.grounded_rate * 100).toFixed(0)}%`} />
+              <EvalCell label="平均延迟" v={`${lastEval.metrics.avg_latency_ms.toFixed(0)}ms`} />
+            </div>
+            {!!lastEval.violations?.length && (
+              <ul className="mt-2 grid gap-0.5 text-[11.5px] text-destructive">
+                {lastEval.violations.map((v) => <li key={v}>· {v}</li>)}
+              </ul>
+            )}
+            {!!lastEval.failures?.length && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-[11px] text-faint">失败样本 {lastEval.failures.length} 条</summary>
+                <table className="mt-1.5 w-full text-[12px]">
+                  <thead><tr className="border-b border-border-soft text-left text-[11px] text-faint">
+                    {['样本', '预期', '实际', '原因'].map((h) => <th key={h} className="px-2 py-1.5 font-semibold">{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {lastEval.failures.slice(0, 20).map((f) => (
+                      <tr key={f.id} className="border-b border-border-soft last:border-b-0">
+                        <td className="px-2 py-1.5 font-mono text-[11.5px]">{f.id}</td>
+                        <td className="px-2 py-1.5">{f.expected}</td>
+                        <td className="px-2 py-1.5">{f.actual}</td>
+                        <td className="px-2 py-1.5 text-muted-foreground">{f.why}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </details>
+            )}
+          </div>
+        )}
+      </Card>
 
       {/* 提示词模板 */}
       <Card className="mb-4 p-4">
