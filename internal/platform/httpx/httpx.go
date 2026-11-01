@@ -3,6 +3,7 @@
 package httpx
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -76,6 +77,18 @@ func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack 透传，保证 101 协议升级（实时隧道）可用。
+// 为什么必须显式转发：内嵌接口只提升接口自身的方法集，
+// 动态类型的 Hijack 不会自动出现在包装器的方法集里——
+// 这与上面 Flush 需要显式转发是同一个语言行为。
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer 不支持协议升级")
+	}
+	return hj.Hijack()
 }
 
 // AccessLogMiddleware 输出结构化访问日志（不含请求体、不含 Authorization）。
@@ -182,8 +195,12 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		Message: e.Message,
 		Details: e.Details,
 	}}
-	if e.Status >= 500 {
+	if e.Status >= 500 && !e.Public {
 		body.Error.Message = "服务内部错误，请稍后重试"
+		body.Error.RequestID = logx.RequestID(r.Context())
+	}
+	if e.Status >= 500 {
+		// 请求 ID 无论如何都带上：5xx 报障时定位日志的唯一线索
 		body.Error.RequestID = logx.RequestID(r.Context())
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

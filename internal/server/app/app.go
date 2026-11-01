@@ -19,6 +19,7 @@ import (
 	"hostguard/internal/platform/logx"
 	"hostguard/internal/server/api"
 	"hostguard/internal/server/auth"
+	"hostguard/internal/server/livetunnel"
 	"hostguard/internal/server/repository/sqlite"
 	"hostguard/internal/server/service"
 	"hostguard/internal/server/web"
@@ -242,6 +243,15 @@ func New() (*App, error) {
 		}()
 	}
 
+	// 实时隧道会话注册表：探针反连建立会话后在此登记，
+	// 管理端实时查询代理（api/live.go）据此寻址。
+	// 总开关关闭时不创建（Router 对 nil 跳过端点挂载），探针侧按
+	// "对端不支持"进每小时静默重试，与老服务端兼容矩阵同路径。
+	var tunnelReg *livetunnel.Registry
+	if cfg.LiveQueryEnabled {
+		tunnelReg = livetunnel.NewRegistry(log)
+	}
+
 	router := api.Router(api.Deps{
 		Services:     svc,
 		Tokens:       tokens,
@@ -261,6 +271,9 @@ func New() (*App, error) {
 		Notifier:     notifier,
 		UpgradeFile:    cfg.UpgradeFile,
 		UpgradeVersion: cfg.UpgradeVersion,
+		Tunnel:           tunnelReg,
+		LiveQueryEnabled: cfg.LiveQueryEnabled,
+		LiveQueryFileRead: cfg.LiveQueryFileRead,
 	})
 
 	srv := httpx.NewServer(httpx.ServerConfig{

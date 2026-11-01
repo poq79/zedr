@@ -20,10 +20,12 @@ import (
 	"hostguard/internal/agent/detect"
 	"hostguard/internal/agent/enrich"
 	"hostguard/internal/agent/inventory"
+	"hostguard/internal/agent/liveapi"
 	"hostguard/internal/agent/localapi"
 	"hostguard/internal/agent/persist"
 	"hostguard/internal/agent/quarantine"
 	"hostguard/internal/agent/state"
+	"hostguard/internal/agent/tunnel"
 	"hostguard/internal/agent/uplink"
 	"hostguard/internal/agent/winapi"
 	"hostguard/internal/platform/httpx"
@@ -230,6 +232,34 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.persistenceWatchLoop(ctx)
 	if a.cfg.InventoryEnabled {
 		go a.inventoryLoop(ctx)
+	}
+	// 实时隧道（只读调查通道，docs/LIVE-TUNNEL.md）：零监听、纯出站，
+	// 服务端经隧道发起只读查询、探针在流上应答。失败自动退避重连，
+	// 对端不支持（老 server）进每小时静默模式，不影响上方任何链路。
+	// StartTime 用 a.startedAt（与 /status 的 uptime 同源）——不要放进
+	// scan 回调：state.SetRuntime 只有最后一个回调生效（踩过的坑）。
+	if a.cfg.TunnelEnabled {
+		mgr := tunnel.New(a.log, tunnel.Options{
+			ServerURL: a.cfg.ServerURL,
+			Creds:     a.up.TunnelCreds,
+			Handler: liveapi.New(liveapi.Deps{
+				Version:   a.cfg.Version,
+				Hostname:  winapi.Hostname(),
+				StartTime: a.startedAt,
+				Procs:     a.Procs,
+				Netstat: func() []winapi.NetRow {
+					// GetNetstat 带错误返回而 Deps 收敛为行切片：
+					// 失败时记日志返回空表，让端点保持 200 语义
+					rows, err := winapi.GetNetstat()
+					if err != nil {
+						a.log.Warn("netstat_query_failed", "err", err)
+					}
+					return rows
+				},
+			}),
+		})
+		go mgr.Start(ctx)
+		defer mgr.Stop()
 	}
 
 	<-ctx.Done()

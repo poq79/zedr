@@ -62,6 +62,11 @@ type Config struct {
 	// 默认 false：替换自身二进制是探针所有能力里信任要求最高的一类，
 	// 必须现场显式开启，且与 terminate/quarantine 同一套双层开关纪律。
 	UpgradeEnabled bool
+	// TunnelEnabled 控制是否维持到服务端的实时隧道（docs/LIVE-TUNNEL.md）：
+	// 只读调查通道（文件浏览/进程/连接实时查询）。零监听、纯出站长连接，
+	// 服务端经隧道发起请求、探针只读应答；关闭后实时查询退化为
+	// "隧道未连接"，心跳/上报等既有链路不受影响。
+	TunnelEnabled bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -95,6 +100,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.RuleSignKey = l.Env("HG_AGENT_RULE_SIGN_KEY", "")
 	c.InventoryEnabled = l.Bool("HG_AGENT_INVENTORY", true)
 	c.UpgradeEnabled = l.Bool("HG_AGENT_UPGRADE_ENABLED", false)
+	c.TunnelEnabled = l.Bool("HG_AGENT_TUNNEL_ENABLED", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")

@@ -52,6 +52,13 @@ type Config struct {
 	UpgradeFile    string
 	UpgradeVersion string
 
+	// 实时隧道/实时查询（只读调查面，docs/LIVE-TUNNEL.md）。
+	// LiveQueryEnabled 默认开：只读 + JWT + 全程审计，风险面低于处置类，
+	// 默认关会让"开箱可分析"落空；LiveQueryFileRead 默认关——文件内容预览
+	// 是该体系里信息暴露面最大的端点，与处置类同纪律，现场显式开启。
+	LiveQueryEnabled  bool
+	LiveQueryFileRead bool
+
 	// 下发给所有终端的运行策略（随规则包走，零值=不干预终端本地配置）
 	AgentPolicyScanInterval time.Duration
 	AgentPolicyCollector    string
@@ -119,6 +126,8 @@ func LoadConfig() (*Config, error) {
 	c.OpenAlertTTL = l.Duration("HG_SERVER_OPEN_ALERT_TTL", 0)
 	c.UpgradeFile = l.Env("HG_SERVER_UPGRADE_FILE", "")
 	c.UpgradeVersion = l.Env("HG_SERVER_UPGRADE_VERSION", "")
+	c.LiveQueryEnabled = l.Bool("HG_SERVER_LIVEQUERY_ENABLED", true)
+	c.LiveQueryFileRead = l.Bool("HG_SERVER_LIVEQUERY_FILEREAD", false)
 
 	c.AgentPolicyScanInterval = l.Duration("HG_AGENT_POLICY_SCAN_INTERVAL", 0)
 	c.AgentPolicyCollector = l.Env("HG_AGENT_POLICY_COLLECTOR", "")
@@ -203,6 +212,8 @@ func LoadConfig() (*Config, error) {
 			"JWT 密钥仍是示例默认值，请更换为随机密钥")
 		l.SecurityWarning(c.EnrollToken != "" && c.EnrollToken != "change-me-enroll-token",
 			"终端注册令牌仍是示例默认值，请更换")
+		l.SecurityWarning(!c.LiveQueryFileRead,
+			"已启用实时文件内容预览（HG_SERVER_LIVEQUERY_FILEREAD），管理端可读取终端文件内容，请确认这是预期行为")
 	}
 
 	if err := l.Err(); err != nil {

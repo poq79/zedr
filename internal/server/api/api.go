@@ -16,6 +16,7 @@ import (
 	"hostguard/internal/platform/apperr"
 	"hostguard/internal/platform/httpx"
 	"hostguard/internal/server/auth"
+	"hostguard/internal/server/livetunnel"
 	"hostguard/internal/server/notify"
 	"hostguard/internal/server/service"
 )
@@ -46,6 +47,14 @@ type Deps struct {
 	// 服务端配置；任一为空 = 升级端点按"未启用"返回 503
 	UpgradeFile    string
 	UpgradeVersion string
+
+	// Tunnel 是实时隧道会话注册表（docs/LIVE-TUNNEL.md）；nil = 隧道端点
+	// 与实时查询代理不注册（老部署平滑升级路径）。
+	Tunnel *livetunnel.Registry
+	// LiveQueryEnabled/FileRead 对应 HG_SERVER_LIVEQUERY_ENABLED/FILEREAD，
+	// 执法逻辑见 api/live.go。
+	LiveQueryEnabled  bool
+	LiveQueryFileRead bool
 
 	// sseActive 是当前活跃的实时流连接数。
 	// 用指针而非值：Deps 是按值传递的，而 atomic.Int64 内含 noCopy，
@@ -135,6 +144,12 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/agent/upgrade/binary", agentAuth(agentH.upgradeBinary))
 	mux.Handle("POST /api/v1/agent/commands/result", agentAuth(agentH.commandResult))
 	mux.Handle("POST /api/v1/agent/inventory", agentAuth(agentH.saveInventory))
+	// 实时隧道升级端点：鉴权在 livetunnel.UpgradeHandler 内经回调完成
+	// （101 劫持前必须用规范 JSON 应答失败，与普通中间件的包装语义不同，
+	// 故不走 agentAuth 包装）
+	if d.Tunnel != nil {
+		mux.Handle("GET /api/v1/agent/tunnel", http.HandlerFunc(agentH.tunnelUpgrade))
+	}
 
 	// ---------------- 管理台接口（JWT + RBAC） ----------------
 	adminH := &adminHandler{deps: d}
@@ -161,6 +176,19 @@ func Router(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/alerts/{id}/triage", viewer(adminH.triageAlert))
 	mux.Handle("POST /api/v1/ai/hunt", viewer(adminH.hunt))
 	mux.Handle("GET /api/v1/ai/stats", viewer(adminH.aiStats))
+
+	// AI 配置中心（admin-only）：模型槽位 / 连通性测试 / 提示词模板 / 技能包。
+	// 配置影响全局成本与判定行为，analyst 角色不开放写。
+	mux.Handle("GET /api/v1/ai/config", adminOnly(adminH.aiGetConfig))
+	mux.Handle("PUT /api/v1/ai/config", adminOnly(adminH.aiPutConfig))
+	mux.Handle("POST /api/v1/ai/config/test", adminOnly(adminH.aiTestConfig))
+	mux.Handle("GET /api/v1/ai/prompts", adminOnly(adminH.aiGetPrompts))
+	mux.Handle("PUT /api/v1/ai/prompts/{task}", adminOnly(adminH.aiPutPrompt))
+	mux.Handle("POST /api/v1/ai/prompts/{task}/rollback", adminOnly(adminH.aiRollbackPrompt))
+	mux.Handle("GET /api/v1/ai/skills", adminOnly(adminH.aiListSkills))
+	mux.Handle("POST /api/v1/ai/skills", adminOnly(adminH.aiUpsertSkill))
+	mux.Handle("PUT /api/v1/ai/skills/{id}", adminOnly(adminH.aiUpsertSkill))
+	mux.Handle("DELETE /api/v1/ai/skills/{id}", adminOnly(adminH.aiDeleteSkill))
 
 	mux.Handle("GET /api/v1/hosts", viewer(adminH.listHosts))
 	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))
@@ -189,6 +217,11 @@ func Router(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/incidents/{id}/status", writer(adminH.transitionIncident))
 	mux.Handle("GET /api/v1/hosts/{id}/changes", viewer(adminH.getHostChanges))
 	mux.Handle("POST /api/v1/alerts/{id}/investigate", viewer(adminH.investigateAlert))
+	// 实时查询（只读调查面）：ping 是探活所以 viewer 可用；
+	// 其余走 analyst+（writer 包装）——文件浏览/进程/连接的实时面
+	// 比静态告警敏感，viewer 不放开
+	mux.Handle("GET /api/v1/hosts/{id}/live/ping", viewer(adminH.livePing))
+	mux.Handle("GET /api/v1/hosts/{id}/live/{rest...}", writer(adminH.liveQuery))
 	mux.Handle("GET /api/v1/report/weekly", viewer(adminH.weeklyReport))
 	mux.Handle("GET /api/v1/integrity", viewer(adminH.integrityReport))
 	mux.Handle("GET /api/v1/attack/matrix", viewer(adminH.attackMatrix))

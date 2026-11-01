@@ -33,7 +33,12 @@ type Error struct {
 	Message string         // 面向用户的可读文案（可安全对外）
 	Status  int            // 建议的 HTTP 状态码
 	Details map[string]any // 可选结构化细节（如字段级校验错误）
-	cause   error          // 内部原因，仅日志记录
+	// Public 为 true 时，Status>=500 也保留原始 Message。
+	// 为什么需要：5xx 默认脱敏是防内部细节泄露；但"资源状态类"5xx
+	// （如 tunnel_not_connected，探针隧道未连接）的文案本身就是给
+	// 操作员的行动指引，脱敏成"服务内部错误"反而误导排障方向。
+	Public bool
+	cause  error // 内部原因，仅日志记录
 }
 
 func (e *Error) Error() string {

@@ -9,6 +9,7 @@ import (
 	"hostguard/internal/platform/httpx"
 	"hostguard/internal/platform/rulehash"
 	"hostguard/internal/server/domain"
+	"hostguard/internal/server/livetunnel"
 )
 
 type agentHandler struct{ deps Deps }
@@ -117,6 +118,20 @@ func (h *agentHandler) agentIOCs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", etag)
 	w.Header().Set("X-IOC-Count", itoa(n))
 	httpx.WriteJSON(w, r, http.StatusOK, bundle)
+}
+
+// tunnelUpgrade 处理探针实时隧道升级请求（101 后连接交给 yamux）。
+// 鉴权在本方法内组装（复用与心跳一致的 Authenticate+CheckSecret），
+// 升级细节全部下沉在 livetunnel.UpgradeHandler。
+func (h *agentHandler) tunnelUpgrade(w http.ResponseWriter, r *http.Request) {
+	authFn := func(agentID, secret string) error {
+		agent, err := h.deps.Services.Agent.Authenticate(r.Context(), agentID)
+		if err != nil {
+			return err
+		}
+		return h.deps.Services.Agent.CheckSecret(agent, secret)
+	}
+	livetunnel.UpgradeHandler(h.deps.Log, authFn, h.deps.Tunnel.Track).ServeHTTP(w, r)
 }
 
 // commandResult 接收指令执行回执。
