@@ -30,4 +30,8 @@ logs/
 __pycache__/
 *.pyc
 
+# 前端工程依赖（webapp 构建产物输出到 internal/server/web/static/ 并入库，
+# 保证无 Node 环境也能 go build）
+webapp/node_modules/
+
 *~

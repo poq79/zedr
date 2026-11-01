@@ -10,6 +10,21 @@ cd "$(dirname "$0")/.."
 VERSION="${VERSION:-0.1.0}"
 mkdir -p bin
 
+# ---- 前端（React 19 + Vite + Tailwind v4）----
+# 管理台源码在 webapp/，构建产物输出到 internal/server/web/static/（go:embed）。
+# 有 Node 就重新构建；没有 Node 时若产物已在（static/assets/ 非空）则直接用，
+# 保证纯 Go 环境也能出包。
+if command -v npm >/dev/null 2>&1; then
+  echo ">> building webapp (React) -> internal/server/web/static"
+  npm --prefix webapp run build
+elif [ -n "$(ls internal/server/web/static/assets 2>/dev/null)" ]; then
+  echo ">> node not found, using committed webapp bundle in internal/server/web/static"
+else
+  echo "ERROR: node 不可用且 webapp 产物缺失（internal/server/web/static/assets 为空）。" >&2
+  echo "       请安装 Node ≥20 后运行: npm --prefix webapp install && npm --prefix webapp run build" >&2
+  exit 1
+fi
+
 build() {
   local pkg="$1" out="$2"
   echo ">> building $pkg -> bin/$out"
