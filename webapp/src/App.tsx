@@ -12,6 +12,7 @@ import { OverviewPage } from './pages/Overview';
 import { Alerts } from './pages/Alerts';
 import { AttackMatrixPage } from './pages/AttackMatrix';
 import { HuntPage } from './pages/Hunt';
+import { HostDetailPage } from './pages/HostDetail';
 import { IntelPage } from './pages/Intel';
 import { IncidentsPage, ReportPage, HostsPage, RulesPage, AllowlistPage, AuditPage, UsersPage } from './pages/Misc';
 
@@ -147,6 +148,7 @@ function AppInner() {
                 <Route path="/intel" element={<IntelPage key={`io${refreshTick}`} user={user} />} />
                 <Route path="/report" element={<ReportPage key={`r${refreshTick}`} />} />
                 <Route path="/hosts" element={<HostsPage key={`h${refreshTick}`} />} />
+                <Route path="/hosts/:id" element={<HostDetailPage key="host-detail" />} />
                 <Route path="/rules" element={<RulesPage key={`ru${refreshTick}`} user={user} />} />
                 <Route path="/allowlist" element={<AllowlistPage key={`w${refreshTick}`} user={user} />} />
                 <Route path="/audit" element={<AuditPage key={`l${refreshTick}`} />} />

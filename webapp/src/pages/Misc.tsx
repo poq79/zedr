@@ -1,48 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { KeyRound, Monitor, Plus, RefreshCw, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
-import type { Host, AllowEntry, AuditRow, User as UserRow, Severity, Role, AgentCommand, HostInventorySection, IntegrityReport } from '../lib/types';
+import type { Host, AllowEntry, AuditRow, User as UserRow, Severity, Role, IntegrityReport } from '../lib/types';
 import { SEV_LABEL, relTime, fmtTime } from '../lib/format';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
-import { useToast, useConfirm, Drawer } from '../components/ui/overlays';
+import { useToast, useConfirm } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
 
 /* ================= 主机终端 ================= */
-
-const CMD_LABEL: Record<string, string> = {
-  rescan: '重新扫描', sync_rules: '同步规则', collect: '采集清单',
-  terminate: '终止进程', quarantine_file: '隔离文件', quarantine_restore: '恢复隔离',
-};
-const CMD_STATUS_TONE: Record<string, string> = {
-  pending: 'medium', delivered: 'info', done: 'resolved', failed: 'critical',
-};
-
-/** 资产清单 payload 是 JSON 字符串（服务端不解析，JSON 进 JSON 出）：
-    尽力解析成键值行，解析失败原样展示。 */
-function PayloadRows({ payload }: { payload: string }) {
-  let obj: Record<string, unknown> | null = null;
-  try {
-    const parsed: unknown = JSON.parse(payload);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) obj = parsed as Record<string, unknown>;
-  } catch { /* 原样展示 */ }
-  if (!obj) return <pre className="m-0 overflow-x-auto rounded-[5px] bg-code-bg p-2.5 font-mono text-[11px] text-code-fg">{payload.slice(0, 2000)}</pre>;
-  return (
-    <div className="grid grid-cols-[minmax(120px,max-content)_1fr] gap-x-4 gap-y-1">
-      {Object.entries(obj).map(([k, v]) => (
-        <div key={k} className="contents">
-          <span className="text-[11.5px] text-faint">{k}</span>
-          <span className="truncate font-mono text-[11.5px] text-foreground" title={String(v)}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
+/* 主机详情已升级为整页 /hosts/:id（见 HostDetail.tsx） */
 
 export function HostsPage() {
   const err = useError();
+  const navigate = useNavigate();
   const [hosts, setHosts] = useState<Host[] | null>(null);
-  const [sel, setSel] = useState<Host | null>(null);
 
   const load = useCallback(async () => {
     try { setHosts((await api.get<{ items: Host[] }>('/api/v1/hosts')).items || []); }
@@ -66,7 +39,7 @@ export function HostsPage() {
             </tr></thead>
             <tbody>
               {hosts.map((h) => (
-                <tr key={h.id} onClick={() => setSel(h)}
+                <tr key={h.id} onClick={() => navigate(`/hosts/${h.id}`)}
                   className="cursor-pointer border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary">
                   <td className="px-3.5 py-2.5">
                     <Badge tone={h.status}>{h.status === 'online' ? '在线' : '离线'}</Badge>
@@ -86,163 +59,10 @@ export function HostsPage() {
               ))}
             </tbody>
           </table>
-          <p className="mt-2 px-3.5 text-xs text-faint">点击任意一行打开主机详情：资产清单 · 远程指令 · 指令历史。终端默认每 30 秒心跳一次，超过 3 分钟无心跳标记为离线。</p>
+          <p className="mt-2 px-3.5 text-xs text-faint">点击任意一行进入主机详情整页：系统概要 · 网络适配器 · 监听端口 · 服务 · 计划任务 · 自启动 · 处置指令 · 指令历史。终端默认每 30 秒心跳一次。</p>
         </Card>
       )}
-      <HostDrawer host={sel} onClose={() => setSel(null)} />
     </div>
-  );
-}
-
-/* ---------- 主机详情抽屉：概要 / 远程指令 / 资产清单 / 指令历史 ---------- */
-
-function HostDrawer({ host, onClose }: { host: Host | null; onClose: () => void }) {
-  const toast = useToast();
-  const confirm = useConfirm();
-  const [inv, setInv] = useState<HostInventorySection[] | null>(null);
-  const [cmds, setCmds] = useState<AgentCommand[] | null>(null);
-  const [cmdBusy, setCmdBusy] = useState('');
-  const [qPath, setQPath] = useState('');
-  const [qPid, setQPid] = useState('');
-
-  const open = !!host;
-  useEffect(() => {
-    if (!host) return;
-    setInv(null); setCmds(null); setQPath(''); setQPid('');
-    api.get<{ sections: HostInventorySection[] }>(`/api/v1/hosts/${encodeURIComponent(host.id)}/inventory`)
-      .then((r) => setInv(r.sections || []))
-      .catch(() => setInv([]));
-    api.get<{ items: AgentCommand[] }>('/api/v1/commands')
-      .then((r) => setCmds((r.items || []).filter((c) => c.agent_id === host.id)))
-      .catch(() => setCmds([]));
-  }, [host]);
-
-  const send = async (type: string, payload = '', dangerNote?: { title: string; message: string; danger?: boolean; okText?: string }) => {
-    if (!host) return;
-    if (dangerNote) {
-      const ok = await confirm(dangerNote);
-      if (!ok) return;
-    }
-    setCmdBusy(type + payload);
-    try {
-      await api.post(`/api/v1/hosts/${encodeURIComponent(host.id)}/commands`, { type, payload });
-      toast(`指令 ${CMD_LABEL[type] || type} 已下发，等待终端执行`);
-      const r = await api.get<{ items: AgentCommand[] }>('/api/v1/commands');
-      setCmds((r.items || []).filter((c) => c.agent_id === host.id));
-    } catch (ex) { toast((ex as Error).message, 'err'); }
-    finally { setCmdBusy(''); }
-  };
-
-  const history = (cmds || []).filter((c) => c.type !== 'collect' || c.status !== 'pending').slice(0, 12);
-
-  return (
-    <Drawer open={open} onClose={onClose} width={860}
-      title={host ? host.hostname : ''}
-      sub={host ? <span className="font-mono">{host.id} · {host.os_version} · {host.arch} · 探针 v{host.version}</span> : undefined}
-      foot={host && (
-        <div className="flex w-full flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => send('rescan')} disabled={!!cmdBusy}><RefreshCw size={13} className={cmdBusy === 'rescan' ? 'anim-spin' : ''} /> 重新扫描</Button>
-          <Button size="sm" onClick={() => send('sync_rules')} disabled={!!cmdBusy}>同步规则</Button>
-          <Button size="sm" onClick={() => send('collect')} disabled={!!cmdBusy}>采集清单</Button>
-          <div className="flex-1" />
-          <span className="text-[11px] text-ghost">处置类指令需服务端与终端双侧开关开启</span>
-        </div>
-      )}
-    >
-      {host && (
-        <div className="flex flex-col gap-5">
-          {/* 概要 */}
-          <section>
-            <CardTitle className="mb-2.5">概要</CardTitle>
-            <div className="grid grid-cols-[minmax(120px,max-content)_1fr] gap-x-4 gap-y-1.5 rounded-md border border-border-soft bg-secondary/50 p-3.5">
-              {[
-                ['状态', <Badge key="s" tone={host.status}>{host.status === 'online' ? '在线' : '离线'}</Badge>],
-                ['运行账号', <span key="u" className="font-mono text-[12px]">{host.username || '-'}</span>],
-                ['进程 / CPU / 内存', <span key="p" className="font-mono text-[12px] tabular-nums">{host.proc_count || 0} · {(host.cpu_percent || 0).toFixed(1)}% · {(host.mem_mb || 0).toFixed(0)}MB</span>],
-                ['时钟偏移', <span key="k" className="font-mono text-[12px] tabular-nums">{host.clock_skew_ms != null ? `${host.clock_skew_ms}ms` : '-'}</span>],
-                ['最后心跳', <span key="h" className="text-[12px]">{fmtTime(host.last_seen_at)}</span>],
-              ].map(([k, v]) => (
-                <div key={String(k)} className="contents"><span className="text-[11.5px] text-faint">{k}</span><span>{v}</span></div>
-              ))}
-            </div>
-          </section>
-
-          {/* 处置类指令（危险，双层确认） */}
-          <section>
-            <CardTitle className="mb-2.5">处置指令</CardTitle>
-            <div className="flex flex-col gap-2 rounded-md border border-border-soft bg-destructive-soft/40 p-3.5">
-              <div className="flex items-center gap-2">
-                <Input value={qPath} onChange={(e) => setQPath(e.target.value)} placeholder="文件完整路径，例 C:\Users\...\sample.exe" className="flex-1 font-mono text-[12px]" spellCheck={false} />
-                <Button variant="danger" size="sm" disabled={!qPath.trim() || !!cmdBusy}
-                  onClick={() => send('quarantine_file', qPath.trim(), {
-                    title: '隔离该文件？', danger: true, okText: '隔离',
-                    message: `将把 ${qPath.trim()} 移入终端侧隔离区并阻断执行。\n路径以终端实际文件为准；终端侧还有第二道确认开关。`,
-                  })}>隔离文件</Button>
-                <Button size="sm" disabled={!qPath.trim() || !!cmdBusy}
-                  onClick={() => send('quarantine_restore', qPath.trim(), {
-                    title: '恢复该文件？', okText: '恢复',
-                    message: `将把 ${qPath.trim()} 从隔离区还原到原路径。`,
-                  })}>恢复隔离</Button>
-              </div>
-              <div className="flex items-center gap-2">
-                <Input value={qPid} onChange={(e) => setQPid(e.target.value)} placeholder="目标进程 PID" className="w-[220px] font-mono text-[12px]" inputMode="numeric" />
-                <Button variant="danger" size="sm" disabled={!qPid.trim() || !!cmdBusy}
-                  onClick={() => send('terminate', qPid.trim(), {
-                    title: `终止进程 PID ${qPid.trim()}？`, danger: true, okText: '终止',
-                    message: `将向终端下发进程终止指令（PID ${qPid.trim()}）。\n请确认 PID 属于恶意进程——误杀系统进程可能导致蓝屏或服务中断。`,
-                  })}>终止进程</Button>
-                <span className="text-[11px] text-ghost">隔离/终止前请先在告警详情里核对证据</span>
-              </div>
-            </div>
-          </section>
-
-          {/* 资产清单 */}
-          <section>
-            <CardTitle className="mb-2.5">资产清单（探针 30s 差量上报）</CardTitle>
-            {!inv ? <SkeletonRows rows={3} /> : !inv.length ? (
-              <div className="rounded-md border border-border-soft bg-card px-4 py-6 text-center text-[12.5px] text-faint">暂无清单数据——离线主机或探针版本较旧</div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {inv.map((s) => (
-                  <details key={s.name} className="group rounded-md border border-border-soft bg-card">
-                    <summary className="flex cursor-pointer list-none items-center gap-3 px-3.5 py-2.5 select-none hover:bg-accent">
-                      <span className="font-mono text-[12.5px] font-medium">{s.name}</span>
-                      <span className="font-mono text-[10.5px] text-ghost" title={s.hash}>#{s.hash.slice(0, 8)}</span>
-                      <span className="flex-1" />
-                      <span className="text-[11px] text-faint">{relTime(s.updated_at)}</span>
-                      <span className="text-ghost transition-transform group-open:rotate-90">›</span>
-                    </summary>
-                    <div className="border-t border-border-soft px-3.5 py-3"><PayloadRows payload={s.payload} /></div>
-                  </details>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* 指令历史 */}
-          <section>
-            <CardTitle className="mb-2.5">指令历史（最近）</CardTitle>
-            {!cmds ? <SkeletonRows rows={2} /> : !history.length ? (
-              <div className="rounded-md border border-border-soft bg-card px-4 py-6 text-center text-[12.5px] text-faint">这台主机还没有指令记录</div>
-            ) : (
-              <div className="flex flex-col divide-y divide-border-soft rounded-md border border-border-soft bg-card">
-                {history.map((c) => (
-                  <div key={c.id} className="flex flex-wrap items-center gap-2.5 px-3.5 py-2.5">
-                    <span className="font-mono text-[12px] font-medium">{CMD_LABEL[c.type] || c.type}</span>
-                    <Badge tone={CMD_STATUS_TONE[c.status] || 'neutral'}>{c.status}</Badge>
-                    {c.payload && <span className="max-w-[320px] truncate font-mono text-[11px] text-muted-foreground" title={c.payload}>{c.payload}</span>}
-                    <span className="flex-1" />
-                    {c.result && <span className="max-w-[240px] truncate font-mono text-[11px] text-faint" title={c.result}>{c.result}</span>}
-                    <span className="text-[11px] text-faint" title={fmtTime(c.created_at)}>{relTime(c.created_at)}</span>
-                    <span className="font-mono text-[10.5px] text-ghost" title={c.id}>{c.id.slice(0, 8)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-    </Drawer>
   );
 }
 
@@ -460,6 +280,19 @@ export function AllowlistPage({ user }: { user: { role: Role } }) {
 
 /* ================= 审计日志 ================= */
 
+/* 审计动作语义化：原始 action 串保留在 title 里可查，界面给中文与色彩 */
+const AUDIT_LABEL: Record<string, string> = {
+  'alert.status': '告警处置', 'alert.bulk_status': '批量处置', 'alert.triage': 'AI 研判',
+  'ai.hunt': 'AI 狩猎', 'host.delete': '删除主机', 'host.command': '下发指令',
+  'ioc.add': '添加 IOC', 'ioc.delete': '删除 IOC',
+  'rule.upsert': '规则变更', 'rule.toggle': '规则启停', 'rule.delete': '删除规则',
+  'allowlist.add': '添加白名单', 'allowlist.delete': '删除白名单',
+  'auth.login': '登录', 'auth.logout': '退出登录', 'auth.change_password': '修改密码',
+  'user.create': '创建账号',
+};
+const auditTone = (a: string): string =>
+  /delete|terminate/.test(a) ? 'critical' : /command|status|bulk/.test(a) ? 'info' : /add|upsert/.test(a) ? 'ok' : 'neutral';
+
 export function AuditPage() {
   const err = useError();
   const [rows, setRows] = useState<AuditRow[] | null>(null);
@@ -487,8 +320,10 @@ export function AuditPage() {
             <tr key={l.id} className="border-b border-border-soft last:border-b-0 hover:bg-secondary">
               <td className="px-3.5 py-2.5 text-xs text-faint">{fmtTime((l as AuditRow & { created_at: string }).created_at)}</td>
               <td className="px-3.5 py-2.5 text-xs">{(l as AuditRow & { username?: string }).username || '-'}</td>
-              <td className="px-3.5 py-2.5 font-mono text-xs">{l.action}</td>
-              <td className="px-3.5 py-2.5 font-mono text-xs break-all text-faint">{(l as AuditRow & { target?: string }).target || '-'}</td>
+              <td className="px-3.5 py-2.5">
+                <Badge tone={auditTone(l.action)} title={l.action}>{AUDIT_LABEL[l.action] || l.action}</Badge>
+              </td>
+              <td className="px-3.5 py-2.5 font-mono text-xs break-all text-faint" title={(l as AuditRow & { target?: string }).target}>{(l as AuditRow & { target?: string }).target || '-'}</td>
               <td className="px-3.5 py-2.5 text-xs">{l.detail || '-'}</td>
               <td className="px-3.5 py-2.5 font-mono text-xs text-faint">{(l as AuditRow & { ip?: string }).ip || '-'}</td>
             </tr>
