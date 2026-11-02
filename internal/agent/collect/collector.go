@@ -29,6 +29,10 @@ type Collector struct {
 	prev    map[uint32]rawProc      // 上一轮的进程
 	history map[uint32]historyEntry // 已退出进程，用于血缘回溯
 	order   []uint32                // history 的 FIFO 顺序
+	// known 保存上一轮为每个 PID 富化出的完整身份（路径/命令行/账号/
+	// 启动时间）。进程退出时随 rawProc 一起进 history——只留一个进程名
+	// 的话，攻击链里"父进程是谁、执行了什么"会在父进程退出后永久丢失。
+	known map[uint32]ProcessInfo
 
 	lastFullScan  time.Time
 	deepScanEvery time.Duration
@@ -37,6 +41,8 @@ type Collector struct {
 
 type historyEntry struct {
 	rawProc
+	// Info 是退出前最后一次成功富化的身份快照（零值表示当时未采集到）。
+	Info     ProcessInfo
 	ExitedAt time.Time
 }
 
@@ -57,6 +63,7 @@ func New(sourceName string, deepScanEvery time.Duration) (*Collector, error) {
 		srcNote:       note,
 		prev:          make(map[uint32]rawProc, 512),
 		history:       make(map[uint32]historyEntry, 2048),
+		known:         make(map[uint32]ProcessInfo, 512),
 		deepScanEvery: deepScanEvery,
 		maxHistory:    2048,
 	}, nil
@@ -95,13 +102,19 @@ func (c *Collector) Poll(forceDeep bool) ([]ProcessInfo, *Snapshot, error) {
 		if existed && !isNewProcess(old, cur) {
 			continue
 		}
+		if existed {
+			// PID 复用：旧进程没等到"消失"那一轮就被新进程顶替了。
+			// 先把它按旧身份归档，否则父链里会凭空少一代。
+			c.pushHistoryLocked(pid, old, c.known[pid])
+		}
 		fresh = append(fresh, cur)
 	}
 
 	// 记录本轮消失的进程，用于血缘回溯
 	for pid, old := range c.prev {
 		if _, still := table.Procs[pid]; !still {
-			c.pushHistoryLocked(pid, old)
+			c.pushHistoryLocked(pid, old, c.known[pid])
+			delete(c.known, pid)
 		}
 	}
 	c.prev = table.Procs
@@ -109,7 +122,11 @@ func (c *Collector) Poll(forceDeep bool) ([]ProcessInfo, *Snapshot, error) {
 
 	out := make([]ProcessInfo, 0, len(fresh))
 	for _, rp := range fresh {
-		out = append(out, c.describe(rp))
+		pi := c.describe(rp)
+		out = append(out, pi)
+		c.mu.Lock()
+		c.known[pi.PID] = pi
+		c.mu.Unlock()
 	}
 	return out, table, nil
 }
@@ -189,11 +206,11 @@ type ProcessInfo struct {
 	StartTime time.Time
 }
 
-func (c *Collector) pushHistoryLocked(pid uint32, rp rawProc) {
+func (c *Collector) pushHistoryLocked(pid uint32, rp rawProc, info ProcessInfo) {
 	if _, exists := c.history[pid]; !exists {
 		c.order = append(c.order, pid)
 	}
-	c.history[pid] = historyEntry{rawProc: rp, ExitedAt: time.Now()}
+	c.history[pid] = historyEntry{rawProc: rp, Info: info, ExitedAt: time.Now()}
 
 	if len(c.order) > c.maxHistory {
 		drop := len(c.order) - c.maxHistory
@@ -207,6 +224,10 @@ func (c *Collector) pushHistoryLocked(pid uint32, rp rawProc) {
 // Ancestry 从 pid 向上回溯父进程链，返回由近到远的祖先列表。
 //
 // 同时返回父进程是否仍存活：父进程已退出是"规避型启动"的常见特征。
+//
+// 历史条目现在带完整身份：父进程退出后仍能给出路径与命令行，告警证据
+// 不会退化成"只有进程名"。同时用启动时间做 PID 复用防护——父进程必须
+// 比子进程先存在，否则这个 PID 属于另一个进程实例。
 func (c *Collector) Ancestry(snap *Snapshot, pid uint32) ([]model.AncestorLink, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -214,6 +235,7 @@ func (c *Collector) Ancestry(snap *Snapshot, pid uint32) ([]model.AncestorLink, 
 	var chain []model.AncestorLink
 	cur := pid
 	parentAlive := false
+	childStart := c.startTimeOfLocked(snap, pid)
 
 	for i := 0; i < 12; i++ {
 		raw, ok := snap.Procs[cur]
@@ -230,33 +252,86 @@ func (c *Collector) Ancestry(snap *Snapshot, pid uint32) ([]model.AncestorLink, 
 		}
 
 		parentRaw, parentInSnap := snap.Procs[ppid]
-		name := ""
-		path := ""
+		name, path, cmd := "", "", ""
+		parentStart := time.Time{}
+
+		// 优先用富化快照（含路径/命令行），比现场再查一次 API 更可靠：
+		// 父进程可能在这一瞬间刚退出，现场查询会失败。
+		if info, ok := c.known[ppid]; ok && info.PID != 0 {
+			name, path, cmd, parentStart = info.Name, info.Path, info.CmdLine, info.StartTime
+		}
 		if parentInSnap {
-			name = parentRaw.Name
-		} else if h, ok := c.history[ppid]; ok {
-			name = h.Name
+			if name == "" {
+				name = parentRaw.Name
+			}
+			if parentStart.IsZero() && parentRaw.CreateTime > 0 {
+				parentStart = filetimeToTime(parentRaw.CreateTime)
+			}
+		} else {
+			h, ok := c.history[ppid]
+			if !ok {
+				break
+			}
+			if name == "" {
+				name = h.Name
+			}
+			if path == "" {
+				path = h.Info.Path
+			}
+			if cmd == "" {
+				cmd = h.Info.CmdLine
+			}
+			if parentStart.IsZero() {
+				parentStart = h.Info.StartTime
+			}
+			// 退出时间兜底：历史条目的 ExitedAt 是"观测到消失"的时刻，
+			// 只能挡住明显早于子进程启动的复用，不能当作精确退出时间。
+			if !childStart.IsZero() && !h.ExitedAt.IsZero() && h.ExitedAt.Before(childStart) {
+				break
+			}
 		}
 		if name == "" {
 			break
 		}
-		// 只对第一层父进程查完整路径（其余层开销大且价值低）
-		if i == 0 {
+		// 强不变量：父进程必须先于子进程存在。启动时间反了 = 同一 PID
+		// 的另一个实例，继续连会把两代无关进程拼成一条假血缘。
+		if !parentStart.IsZero() && !childStart.IsZero() && parentStart.After(childStart) {
+			break
+		}
+		// 只对第一层父进程做现场路径兜底（其余层开销大且价值低）。
+		if i == 0 && path == "" {
 			if p, err := winapi.ImagePath(ppid); err == nil {
 				path = p
 			}
 		}
 
 		chain = append(chain, model.AncestorLink{
-			PID: ppid, PPID: raw.PPID, Name: name, Path: path,
+			PID: ppid, PPID: raw.PPID, Name: name, Path: path, Cmd: cmd,
 		})
 		if i == 0 {
 			parentAlive = parentInSnap
+			if !parentStart.IsZero() {
+				childStart = parentStart // 下一层按父进程的启动时间继续校验
+			}
 		}
 		cur = ppid
 	}
 
 	return chain, parentAlive
+}
+
+// startTimeOfLocked 返回某进程已掌握的启动时间（已知富化 > 快照 > 历史）。
+func (c *Collector) startTimeOfLocked(snap *Snapshot, pid uint32) time.Time {
+	if info, ok := c.known[pid]; ok && !info.StartTime.IsZero() {
+		return info.StartTime
+	}
+	if raw, ok := snap.Procs[pid]; ok && raw.CreateTime > 0 {
+		return filetimeToTime(raw.CreateTime)
+	}
+	if h, ok := c.history[pid]; ok {
+		return h.Info.StartTime
+	}
+	return time.Time{}
 }
 
 // NameOf 返回快照中某 PID 的进程名。
