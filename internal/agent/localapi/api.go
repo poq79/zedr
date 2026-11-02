@@ -13,6 +13,9 @@ import (
 	"strings"
 
 	"zedr/internal/agent/allow"
+	"zedr/internal/agent/hygiene"
+	"zedr/internal/agent/persist"
+	"zedr/internal/agent/quarantine"
 	"zedr/internal/agent/state"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
@@ -30,6 +33,23 @@ type Backend interface {
 	Allowlist() []allow.Entry
 	RemoveAllow(typ, value string) error
 	WhitelistSize() map[string]int
+	// PersistItems 返回持久化基线（自启动）全部条目；供桌面端"驻留"视图。
+	PersistItems() []persist.Item
+	// QuarantineEntries 返回隔离区当前记录；处置能力默认关闭，多数时候为空。
+	QuarantineEntries() []quarantine.Entry
+
+	// ---- 泛安全体检（按需采集，全部只读；见 internal/agent/hygiene）----
+
+	// Apps 返回已安装软件清单（Win32 卸载表 + Store 应用）。
+	Apps() []hygiene.InstalledApp
+	// Posture 返回安全配置姿势体检（UAC/RDP/SMBv1/补丁/隐私设置等）。
+	Posture() []hygiene.Check
+	// Exposure 返回网络暴露面（监听端点归属 + hosts + 系统代理）。
+	Exposure() hygiene.ExposureReport
+	// BrowserAudit 返回浏览器扩展清单与策略劫持面。
+	BrowserAudit() hygiene.BrowserReport
+	// PersistAudit 返回自启动项现场画像（签名/文件缺失/基线外）。
+	PersistAudit() []hygiene.PersistAudit
 }
 
 // Deps 是构造参数。
@@ -202,6 +222,53 @@ func (s *Server) routes() http.Handler {
 	api("POST /api/local/rescan", func(w http.ResponseWriter, r *http.Request) {
 		s.deps.Backend.Rescan()
 		httpx.WriteNoContent(w)
+	})
+
+	// 驻留视图：持久化基线（7 类自启动位置）全部条目。
+	// 只读快照（内存 map 拷贝），成本与条目数线性；桌面端 15s 轮询可承受。
+	api("GET /api/local/persist", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+			"items": s.deps.Backend.PersistItems(),
+		})
+	})
+
+	// 隔离区当前记录。terminate/quarantine 双层开关默认关闭，
+	// 这里多数时候是空列表——空是正常态，不是错误。
+	api("GET /api/local/quarantine", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+			"items": s.deps.Backend.QuarantineEntries(),
+		})
+	})
+
+	// ---- 泛安全体检：按需采集（打开对应视图才调用），全部只读 ----
+
+	api("GET /api/local/apps", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+			"items": s.deps.Backend.Apps(),
+		})
+	})
+
+	api("GET /api/local/posture", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+			"checks": s.deps.Backend.Posture(),
+		})
+	})
+
+	api("GET /api/local/exposure", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusOK, s.deps.Backend.Exposure())
+	})
+
+	api("GET /api/local/browser", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusOK, s.deps.Backend.BrowserAudit())
+	})
+
+	// 自启动项现场画像（与 /api/local/persist 的基线快照互补）。
+	// 首次调用要逐文件验签，可能花一两秒——这是 Autoruns 的固有成本，
+	// Agent 侧有 (path,size,mtime) 缓存，二次打开近零成本。
+	api("GET /api/local/persist/audit", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+			"items": s.deps.Backend.PersistAudit(),
+		})
 	})
 
 	if fsys := FS(); fsys != nil {

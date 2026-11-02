@@ -17,6 +17,7 @@ import (
 	"zedr/internal/agent/allow"
 	"zedr/internal/agent/baseline"
 	"zedr/internal/agent/collect"
+	"zedr/internal/agent/hygiene"
 	"zedr/internal/agent/detect"
 	"zedr/internal/agent/enrich"
 	"zedr/internal/agent/inventory"
@@ -52,6 +53,9 @@ type Agent struct {
 	// 行为采集层：文件落地监控 + 持久化项监控
 	fw *winapi.FileWatcher
 	pm *persist.Monitor
+
+	// 泛安全体检：驻留项画像缓存随 Agent 存活（文件签名验读一次后复用）
+	auditor *hygiene.Auditor
 
 	// 资产清单：inventoryLoop 赋值；invReady 之后才对可 diff 节做
 	// 条目级变更告警（首轮是建基线，不是"全是新增"）。
@@ -114,6 +118,8 @@ func New(version string) (*Agent, error) {
 	enr := enrich.New(cfg.MaxHashMB)
 	base := baseline.Load(cfg.Path("baseline.json"))
 	alw := allow.New(cfg.Path("allowlist.json"))
+	// 泛安全体检器：只在本地面板被打开时工作，启动成本为零
+	auditor := hygiene.NewAuditor()
 
 	eng := detect.New(enr, base, alw, detect.Config{
 		WarmupUntil: time.Now().Add(cfg.Warmup),
@@ -165,7 +171,8 @@ func New(version string) (*Agent, error) {
 	a := &Agent{
 		cfg: cfg, log: log, store: store,
 		coll: coll, enr: enr, base: base, alw: alw, eng: eng, up: up,
-		pm: pm,
+		pm:      pm,
+		auditor: auditor,
 		qtn: qtn,
 		cpu:       &winapi.CPUSampler{},
 		startedAt: time.Now(),
@@ -1513,6 +1520,58 @@ func (a *Agent) RemoveAllow(typ, value string) error { return a.alw.RemoveLocal(
 
 // WhitelistSize 返回白名单条目数。
 func (a *Agent) WhitelistSize() map[string]int { return a.alw.Size() }
+
+// PersistItems 返回持久化基线（自启动）全部条目，供桌面端"驻留"视图。
+func (a *Agent) PersistItems() []persist.Item {
+	if a.pm == nil {
+		return nil
+	}
+	return a.pm.Items()
+}
+
+// QuarantineEntries 返回隔离区当前记录。
+func (a *Agent) QuarantineEntries() []quarantine.Entry {
+	if a.qtn == nil {
+		return nil
+	}
+	return a.qtn.List()
+}
+
+// ---------------------------------------------------------------- 泛安全体检（localapi.Backend 实现）
+
+// Apps 返回已安装软件清单。按需采集，不进扫描循环。
+func (a *Agent) Apps() []hygiene.InstalledApp { return hygiene.Apps() }
+
+// Posture 返回安全配置姿势体检项。
+func (a *Agent) Posture() []hygiene.Check { return hygiene.Posture() }
+
+// Exposure 返回网络暴露面；进程名归属用探针已有的进程视图。
+func (a *Agent) Exposure() hygiene.ExposureReport {
+	pidName := make(map[uint32]string)
+	for _, p := range a.store.Procs(2000) {
+		if p.PID > 0 {
+			pidName[p.PID] = p.Name
+		}
+	}
+	return hygiene.Exposure(pidName)
+}
+
+// BrowserAudit 返回浏览器扩展与策略审计。
+func (a *Agent) BrowserAudit() hygiene.BrowserReport { return hygiene.BrowserAudit() }
+
+// PersistAudit 返回自启动项现场画像；基线外标记基于持久化监控当前基线。
+func (a *Agent) PersistAudit() []hygiene.PersistAudit {
+	if a.auditor == nil {
+		return nil
+	}
+	baseline := make(map[string]bool)
+	if a.pm != nil {
+		for _, it := range a.pm.Items() {
+			baseline[it.Key] = true
+		}
+	}
+	return a.auditor.Audit(baseline)
+}
 
 
 // ---------------------------------------------------------------- 服务端策略

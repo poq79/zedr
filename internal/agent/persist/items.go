@@ -8,14 +8,14 @@ import (
 // Item 是持久化基线条目的对外只读快照（值拷贝，不暴露内部 map 引用）。
 type Item struct {
 	// Key 是基线主键（"type|location|name" 形态，跨采集周期稳定）。
-	Key string
+	Key string `json:"key"`
 	// Kind 是持久化类型（winapi.Persist* 常量）。老基线缺 type 列时
 	// 从 key 首段兜底解析。
-	Kind string
+	Kind string `json:"kind"`
 	// Location 是注册表路径 / 目录 / 任务路径；老基线缺列时为空。
-	Location string
+	Location string `json:"location"`
 	// Value 是命令行或镜像路径。
-	Value string
+	Value string `json:"value"`
 }
 
 // Items 返回当前基线里的全部持久化条目（7 类自启动位置），按 Key 升序。
