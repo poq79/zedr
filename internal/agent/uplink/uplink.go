@@ -228,6 +228,25 @@ func (c *Client) Dropped() int64 {
 	return c.dropped
 }
 
+// RuleVersion 返回最近一次成功应用的规则包版本。
+//
+// 为什么由 uplink 暴露而不是让 app 自己记：版本号是在 FetchRules
+// 校验/接受之后才更新的，只有这里知道"终端实际在用哪一版"。
+// 心跳必须上报真值——此前硬编码 0，服务端看到的终端规则版本永远是
+// 假的，规则灰度/回滚在运营面上完全不可见。
+func (c *Client) RuleVersion() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastRuleVersion
+}
+
+// IOCVersion 返回最近一次成功应用的 IOC 包版本（语义同 RuleVersion）。
+func (c *Client) IOCVersion() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastIOCVersion
+}
+
 // Flush 批量上报队列中的告警。
 func (c *Client) Flush(ctx context.Context) (int, error) {
 	c.mu.Lock()

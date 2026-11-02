@@ -71,6 +71,9 @@ type RuntimeInfo struct {
 	CPUPercent   float64   `json:"cpu_percent"`
 	MemMB        float64   `json:"mem_mb"`
 	RuleCount    int       `json:"rule_count"`
+	// RuleVersion 是终端实际应用的规则包版本（0=尚未成功拉取）。
+	// 与心跳上报同源，本地 UI 和服务端看到的是同一个事实。
+	RuleVersion  int       `json:"rule_version"`
 	BaselineSize int64     `json:"baseline_size"`
 	PendingAlerts int      `json:"pending_alerts"`
 	DroppedAlerts int64    `json:"dropped_alerts"`
