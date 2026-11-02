@@ -498,6 +498,51 @@ kbd {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .status-v em { margin-left: 4px; font-style: normal; font-family: var(--font-sans); font-size: 9.5px; color: var(--ghost); }
+.status-link { color: inherit; text-decoration: none; }
+.status-link:hover { color: var(--fg); text-decoration: underline; }
+
+/* 同类告警聚合：组头给结论和规模，成员行缩进看进程 */
+.feed-group { border-bottom: 1px solid var(--line-soft); }
+.feed-group:last-child { border-bottom: 0; }
+.feed-group-head {
+  position: relative;
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 10px 11px 12px;
+  cursor: pointer;
+  transition: background var(--speed-quick) var(--ease);
+}
+.feed-group-head:hover, .feed-group-head:focus-visible { background: var(--accent); outline: none; }
+.feed-group-head::before {
+  content: ""; position: absolute; left: 0; top: 10px; bottom: 10px;
+  width: 2px; border-radius: 2px; background: transparent;
+}
+.feed-group-head.sev-critical::before { background: var(--crit); }
+.feed-group-head.sev-high::before { background: var(--danger); }
+.feed-group-head.sev-medium::before { background: var(--warn); }
+.feed-group-title {
+  flex: 1; min-width: 0;
+  font-size: 12.5px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.feed-group-head .chev { flex: 0 0 14px; color: var(--faint); }
+.feed-group-head .chev svg { width: 14px; height: 14px; }
+.feed-group-body .feed-row { padding-left: 30px; }
+.feed-group-body .feed-row::before { left: 16px; opacity: .45; }
+.feed-group-body .feed-row:last-child { border-bottom: 0; }
+
+/* 驻留：按类型分组的自启动清单 */
+.persist-list { display: flex; flex-direction: column; }
+.persist-row { padding: 9px 2px; border-bottom: 1px solid var(--line-soft); min-width: 0; }
+.persist-row:last-child { border-bottom: 0; }
+.persist-value {
+  font-family: var(--font-mono); font-size: 11px; color: var(--fg);
+  word-break: break-all;
+}
+.persist-loc {
+  margin-top: 3px;
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--ghost);
+  word-break: break-all;
+}
 
 /* ------------------------------------------------------------
    活动
@@ -1016,3 +1061,45 @@ html.light .palette-scrim { background: rgba(0, 0, 0, .24); }
   :root { --line: rgba(255, 255, 255, .28); --line-soft: rgba(255, 255, 255, .18); --faint: #a1a1aa; }
   html.light { --line: rgba(20, 20, 25, .28); --line-soft: rgba(20, 20, 25, .18); --faint: #4a4a52; }
 }
+
+/* ------------------------------------------------------------
+   泛安全体检（posture / apps / browser / 驻留画像）
+   ------------------------------------------------------------ */
+
+/* 体检结论条：一句话结论 + 解释，不摆 KPI */
+.posture-verdict {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel);
+  font-size: 13px; font-weight: 500;
+  align-items: flex-start;
+}
+.posture-verdict .dot { margin-right: 8px; display: inline-block; vertical-align: 1px; }
+.posture-verdict-sub { font-size: 11px; font-weight: 400; color: var(--muted); }
+
+.check-group-note { margin: -4px 0 10px; font-size: 10.5px; color: var(--faint); }
+
+.check-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 2px; border-bottom: 1px solid var(--line-soft);
+}
+.check-list .check-row:last-child { border-bottom: 0; }
+.check-row .dot { margin-top: 4px; }
+.check-body { min-width: 0; flex: 1; }
+.check-title { font-size: 12px; color: var(--fg); font-weight: 500; }
+.check-value { margin-left: 8px; font-size: 11px; font-weight: 400; color: var(--muted); }
+.check-why { margin-top: 3px; font-size: 10.5px; color: var(--faint); line-height: 1.55; }
+.check-advice {
+  margin-top: 4px; font-size: 10.5px; color: var(--muted);
+  padding-left: 8px; border-left: 2px solid var(--line);
+}
+.host-list {
+  margin-top: 8px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px;
+  font-size: 10.5px; line-height: 1.7; color: var(--muted);
+}
+
+/* 驻留行徽标 */
+.persist-flags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.persist-flags:empty { display: none; }

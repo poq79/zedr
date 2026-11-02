@@ -24,6 +24,16 @@ const ALERT_THRESHOLD = 38;
 const SEV = { critical: '严重', high: '高危', medium: '中危', low: '低危', info: '提示' };
 const VERDICT = { malicious: '恶意', suspicious: '可疑', safe: '安全' };
 const LAYER = { static: '静态', keyword: '关键词', rule: '规则', lineage: '血缘', behavior: '行为' };
+// 持久化类型（winapi.Persist* 常量）的中文标签；未知类型回退原文。
+const PERSIST_KIND = {
+  registry_run: '注册表 Run',
+  registry_runonce: '注册表 RunOnce',
+  winlogon: 'Winlogon',
+  startup_folder: '启动文件夹',
+  service: '服务',
+  scheduled_task: '计划任务',
+  ifeo: 'IFEO 劫持防护',
+};
 
 const ICONS = {
   grid: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
@@ -60,8 +70,13 @@ const ICONS = {
   network: '<rect x="9" y="3" width="6" height="5" rx="1"/><rect x="2" y="16" width="6" height="5" rx="1"/><rect x="16" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M5 16v-2h14v2"/>',
   terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/>',
   list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
+  layers: '<path d="m12 2 9 4.9-9 4.9L3 6.9 12 2Z"/><path d="m3 11.8 9 4.9 9-4.9"/><path d="m3 16.7 9 4.9 9-4.9"/>',
   zap: '<path d="M13 2 4.5 13H11l-1 9L19.5 11H13Z"/>',
   filter: '<path d="M3 5h18l-7 8v6l-4 2v-8Z"/>',
+  box: '<path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+  clipboardCheck: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 2h6v4H9z"/><path d="m9 14 2 2 4-5"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>',
+  puzzle: '<path d="M4 11h2a2 2 0 1 1 4 0h2V9a2 2 0 1 1 0-4V3h-2a2 2 0 1 0-4 0H4v4H2a2 2 0 1 0 0 4h2Z"/><rect x="4" y="13" width="9" height="8" rx="1.5"/>',
 };
 
 function icon(name, cls = '') {
@@ -72,6 +87,10 @@ const ROUTES = {
   overview: { title: '总览', sub: '本机安全状态' },
   activity: { title: '活动', sub: '告警与观察记录' },
   processes: { title: '进程', sub: '实时进程视图' },
+  persist: { title: '驻留', sub: '自启动与隔离区' },
+  posture: { title: '安全体检', sub: '配置姿势 · 更新 · 网络暴露面' },
+  apps: { title: '软件资产', sub: '这台电脑装了什么' },
+  browser: { title: '浏览器', sub: '扩展清单与劫持面' },
   trust: { title: '信任与隐私', sub: '白名单、数据说明与版本' },
 };
 
@@ -82,8 +101,22 @@ const state = {
   procs: [],
   alerts: [],
   allow: [],
+  persistItems: [],
+  quarantine: [],
   privacy: null,
   privacyError: '',
+  // 泛安全体检数据（懒加载：进入对应视图才拉取，不进轮询）
+  posture: null,
+  exposure: null,
+  apps: null,
+  browser: null,
+  persistAudit: null,
+  postureError: '',
+  appsError: '',
+  browserError: '',
+  persistAuditError: '',
+  appsQuery: '',
+  persistFilter: 'all',
   loading: true,
   error: null,
   needToken: false,
@@ -93,6 +126,8 @@ const state = {
   activityQuery: '',
   procQuery: '',
   procSort: 'score',
+  persistQuery: '',
+  collapsedGroups: new Set(),
   expandedPid: null,
   focusAfterPaint: false,
   addFormOpen: false,
@@ -107,6 +142,11 @@ const state = {
   lastAlertToast: 0,
   coreInflight: false,
   procsInflight: false,
+  // 各视图最近一次渲染的数据签名：轮询数据没变就不重建 DOM。
+  // 桌面端是常驻界面，3s 全量重建几百行既费 CPU 又打断选择/焦点。
+  paintedSigs: {},
+  persistSig: '',
+  quarantineSig: '',
 };
 
 /* ------------------------------------------------------------ 令牌 */
@@ -306,7 +346,7 @@ async function refreshCore(initial = false) {
       state.loading = false;
       renderRoute(true);
     } else {
-      paintRoute();
+      paintRoute(true);
       updateChrome();
     }
   } finally {
@@ -340,6 +380,36 @@ async function refreshAllow() {
   }
 }
 
+async function refreshPersist() {
+  try {
+    const p = await api('/api/local/persist');
+    const items = p.items || [];
+    const sig = JSON.stringify(items);
+    if (sig !== state.persistSig) {
+      state.persistSig = sig;
+      state.persistItems = items;
+      if (state.route === 'persist') paintPersist();
+    }
+  } catch (e) {
+    if (!state.needToken) state.error = e.message;
+  }
+}
+
+async function refreshQuarantine() {
+  try {
+    const q = await api('/api/local/quarantine');
+    const items = q.items || [];
+    const sig = JSON.stringify(items);
+    if (sig !== state.quarantineSig) {
+      state.quarantineSig = sig;
+      state.quarantine = items;
+      if (state.route === 'persist') paintPersist();
+    }
+  } catch (e) {
+    if (!state.needToken) state.error = e.message;
+  }
+}
+
 async function refreshPrivacy() {
   try {
     state.privacy = await api('/api/local/privacy');
@@ -350,11 +420,57 @@ async function refreshPrivacy() {
   if (state.route === 'trust') paintTrust();
 }
 
+/* ---- 泛安全体检（懒加载：首次进入视图时拉取；显式刷新走按钮） ---- */
+
+async function refreshPosture() {
+  try {
+    const [po, ex] = await Promise.all([
+      api('/api/local/posture'),
+      api('/api/local/exposure').catch(() => null),
+    ]);
+    state.posture = po.checks || [];
+    if (ex) state.exposure = ex;
+  } catch (e) {
+    if (!state.needToken) state.postureError = e.message;
+  }
+  if (state.route === 'posture') paintPosture();
+  if (state.route === 'trust') paintTrust();
+}
+
+async function refreshApps() {
+  try {
+    const pl = await api('/api/local/apps');
+    state.apps = pl.items || [];
+  } catch (e) {
+    if (!state.needToken) state.appsError = e.message;
+  }
+  if (state.route === 'apps') paintApps();
+}
+
+async function refreshBrowser() {
+  try {
+    state.browser = await api('/api/local/browser');
+  } catch (e) {
+    if (!state.needToken) state.browserError = e.message;
+  }
+  if (state.route === 'browser') paintBrowser();
+}
+
+async function refreshPersistAudit() {
+  try {
+    const pl = await api('/api/local/persist/audit');
+    state.persistAudit = pl.items || [];
+  } catch (e) {
+    if (!state.needToken) state.persistAuditError = e.message;
+  }
+  if (state.route === 'persist') paintPersist();
+}
+
 async function initialLoad() {
   state.loading = !state.status;
   renderRoute(true);
   await refreshCore(true);
-  await Promise.all([refreshProcs(), refreshAllow()]);
+  await Promise.all([refreshProcs(), refreshAllow(), refreshPersist(), refreshQuarantine()]);
   if (!state.privacy && !state.needToken) refreshPrivacy();
 }
 
@@ -378,6 +494,8 @@ function renderRoute(force = false) {
   const rebuild = force || state.renderedRoute !== r;
   if (rebuild) {
     state.renderedRoute = r;
+    // 壳是新建的，DOM 为空：清掉渲染签名让 paint* 必然重绘一次
+    if (rebuild) state.paintedSigs = {};
     if (state.loading && !state.status) {
       $('#viewRoot').innerHTML = skeletonHTML(r);
     } else if (state.error && !state.status) {
@@ -429,6 +547,62 @@ function pageShell(route) {
       <div class="faint" id="procFoot" style="margin-top:10px;font-size:10px"></div>`;
   }
 
+  if (route === 'persist') {
+    const f = (v, label) => `<button data-act="persist-filter" data-filter="${v}" class="${state.persistFilter === v ? 'on' : ''}" aria-pressed="${state.persistFilter === v}">${label}</button>`;
+    return `
+      <div id="persistRoot">
+        <div class="toolbar">
+          <div class="search-box">${icon('search')}<input type="search" id="persistSearch" placeholder="搜索命令、路径或类型" value="${esc(state.persistQuery)}" aria-label="搜索自启动项" /></div>
+          <div class="seg" role="group" aria-label="体检筛选">${f('all', '全部')}${f('attention', '需关注')}</div>
+          <span class="count" id="persistCount"></span>
+        </div>
+        <div class="faint" id="persistAuditNote" style="margin:-6px 0 10px;font-size:10px"></div>
+        <div id="persistGroups"></div>
+
+        <section class="section" aria-labelledby="quarTitle">
+          <div class="section-head">
+            <h2 id="quarTitle">隔离区</h2>
+            <span class="count faint mono" id="quarCount"></span>
+          </div>
+          <div id="quarantineBlock"></div>
+        </section>
+      </div>`;
+  }
+
+  if (route === 'posture') {
+    return `
+      <div id="postureRoot">
+        <div id="postureSummary"></div>
+        <div id="postureChecks"></div>
+        <section class="section" aria-labelledby="exposureTitle">
+          <div class="section-head">
+            <h2 id="exposureTitle">网络暴露面</h2>
+            <button class="btn sm" data-act="refresh-hygiene">${icon('refresh')}重新体检</button>
+          </div>
+          <div id="exposureBlock"></div>
+        </section>
+      </div>`;
+  }
+
+  if (route === 'apps') {
+    return `
+      <div id="appsRoot">
+        <div class="toolbar">
+          <div class="search-box">${icon('search')}<input type="search" id="appsSearch" placeholder="搜索软件名、发布者或路径" value="${esc(state.appsQuery)}" aria-label="搜索软件" /></div>
+          <span class="count" id="appsCount"></span>
+        </div>
+        <div id="appsBody"></div>
+      </div>`;
+  }
+
+  if (route === 'browser') {
+    return `
+      <div id="browserRoot">
+        <div id="browserSummary"></div>
+        <div id="browserBody"></div>
+      </div>`;
+  }
+
   return `
     <div id="trustRoot">
       <section class="section" style="margin-top:0" aria-labelledby="trustTitle">
@@ -446,6 +620,11 @@ function pageShell(route) {
         <div id="privacyBlock"></div>
       </section>
 
+      <section class="section" aria-labelledby="privSettingTitle">
+        <div class="section-head"><h2 id="privSettingTitle">Windows 隐私设置体检</h2></div>
+        <div id="privSettingBlock"></div>
+      </section>
+
       <section class="section" aria-labelledby="aboutTitle">
         <div class="section-head"><h2 id="aboutTitle">关于本机</h2></div>
         <div class="about-grid" id="aboutBlock"></div>
@@ -453,12 +632,34 @@ function pageShell(route) {
     </div>`;
 }
 
-function paintRoute() {
+function paintRoute(force = false) {
+  if (force) state.paintedSigs = {};
   switch (state.route) {
     case 'overview': paintOverview(); break;
     case 'activity': paintActivity(); break;
     case 'processes': paintProcesses(); break;
-    case 'trust': paintTrust(); break;
+    case 'persist':
+      // 体检画像按需拉取一次：逐文件验签有真实成本，不进轮询
+      if (state.persistAudit === null && !state.persistAuditError) refreshPersistAudit();
+      paintPersist();
+      break;
+    case 'posture':
+      if (state.posture === null && !state.postureError) refreshPosture();
+      paintPosture();
+      break;
+    case 'apps':
+      if (state.apps === null && !state.appsError) refreshApps();
+      paintApps();
+      break;
+    case 'browser':
+      if (state.browser === null && !state.browserError) refreshBrowser();
+      paintBrowser();
+      break;
+    case 'trust':
+      // 隐私设置体检复用 posture 数据；单独打开 trust 页时懒加载
+      if (state.posture === null && !state.postureError) refreshPosture();
+      paintTrust();
+      break;
   }
 }
 
@@ -629,7 +830,7 @@ function paintOverview() {
     statusRow('规则版本', `${ruleVersionLabel(s)} · ${fmt(s.rule_count || 0)} 条`),
     statusRow('基线样本', fmt(s.baseline_size || 0)),
     statusRow('IOC 指标', fmt(s.ioc_count || 0)),
-    statusRow('自启动项', fmt(s.persist_count || 0)),
+    statusRow('自启动项', `<a class="status-link" href="#/persist" title="查看驻留详情">${fmt(s.persist_count || 0)}</a>`),
     statusRow('落地监控', s.file_watch ? `${fmt(s.watched_dirs || 0)} 个目录` : '未启用'),
     statusRow('上报队列', `${fmt(s.pending_alerts || 0)} 待发${s.dropped_alerts ? ` · ${fmt(s.dropped_alerts)} 丢弃` : ''}`),
     statusRow('上次心跳', `<span data-rel="${esc(s.last_heartbeat)}">${rel(s.last_heartbeat)}</span>`),
@@ -682,9 +883,9 @@ function statusRow(k, vHTML) {
   return `<div class="status-row"><span class="status-k">${esc(k)}</span><span class="status-v">${vHTML}</span></div>`;
 }
 
-function alertFeedRow(a) {
+function alertFeedRow(a, member = false) {
   return `
-    <div class="feed-row sev-${esc(a.severity)}" role="button" tabindex="0" data-act="open-alert" data-id="${esc(a.id)}" aria-label="查看告警：${esc(a.title)}">
+    <div class="feed-row sev-${esc(a.severity)}${member ? ' member' : ''}" role="button" tabindex="0" data-act="open-alert" data-id="${esc(a.id)}" aria-label="查看告警：${esc(a.title)}">
       <span class="sev-dot ${esc(a.severity)}"></span>
       <span>
         <div class="feed-title">${esc(a.process_name || a.title)}</div>
@@ -730,6 +931,15 @@ function activityEntries() {
 }
 
 function paintActivity() {
+  // 告警列表可能上百行：数据/筛选/折叠都没变就不重建
+  const watchSig = state.procs
+    .filter((p) => (p.score || 0) >= 20 && (p.score || 0) < ALERT_THRESHOLD)
+    .map((p) => [p.pid, p.score, p.name, p.first_seen]);
+  const sig = JSON.stringify([state.alerts, state.activityFilter, state.activityQuery,
+    [...state.collapsedGroups].sort(), watchSig]);
+  if (state.paintedSigs.activity === sig) return;
+  state.paintedSigs.activity = sig;
+
   const all = activityEntries();
   const q = state.activityQuery.trim().toLowerCase();
   const filtered = all.filter((it) => {
@@ -785,11 +995,57 @@ function paintActivity() {
   }
   let html = '';
   for (const [day, items] of groups) {
-    html += `<div class="day-label">${esc(day)}</div><div class="feed">`;
-    html += items.map((it) => it.kind === 'alert' ? alertFeedRow(it.a) : watchFeedRow(it.p)).join('');
-    html += '</div>';
+    html += `<div class="day-label">${esc(day)}</div><div class="feed">${renderActivityItems(items)}</div>`;
   }
   box.innerHTML = html;
+}
+
+// 同一时间窗内同一规则反复命中不同进程是常态（批量脚本、安装器、
+// 探针自身的测试二进制），逐行平铺会让标题噪声淹没进程信息。
+// 这里把连续同标题的告警聚合成一组：组头给结论和规模，成员行看进程。
+// 观察中条目与标题不同的告警保持独立行。
+function renderActivityItems(items) {
+  const out = [];
+  let run = null;
+  const flush = () => {
+    if (!run) return;
+    out.push(run.items.length > 1 ? alertGroupHTML(run) : alertFeedRow(run.items[0].a));
+    run = null;
+  };
+  for (const it of items) {
+    if (it.kind !== 'alert') {
+      flush();
+      out.push(watchFeedRow(it.p));
+      continue;
+    }
+    if (run && run.title === it.a.title && run.severity === it.a.severity) {
+      run.items.push(it);
+    } else {
+      flush();
+      run = { title: it.a.title, severity: it.a.severity, items: [it] };
+    }
+  }
+  flush();
+  return out.join('');
+}
+
+function alertGroupHTML(run) {
+  const collapsed = state.collapsedGroups.has(run.title);
+  const latest = run.items[0]; // 已按时间倒序，首个即最新
+  const maxScore = run.items.reduce((m, it) => Math.max(m, Number(it.a.score) || 0), 0);
+  return `<div class="feed-group">
+    <div class="feed-group-head sev-${esc(run.severity)}" role="button" tabindex="0"
+      data-act="toggle-group" data-title="${esc(run.title)}" aria-expanded="${!collapsed}"
+      aria-label="${collapsed ? '展开' : '收起'}同类告警：${esc(run.title)}">
+      <span class="sev-dot ${esc(run.severity)}"></span>
+      <span class="feed-group-title">${esc(run.title)}</span>
+      <span class="badge">${fmt(run.items.length)} 条</span>
+      <span class="feed-time" data-rel="${esc(latest.at)}">${rel(latest.at)}</span>
+      <span class="feed-score">最高 ${fmt(maxScore)} 分</span>
+      <span class="chev">${icon(collapsed ? 'chevronRight' : 'chevronDown')}</span>
+    </div>
+    ${collapsed ? '' : `<div class="feed-group-body">${run.items.map((it) => alertFeedRow(it.a, true)).join('')}</div>`}
+  </div>`;
 }
 
 /* ------------------------------------------------------------ 页面：进程 */
@@ -809,6 +1065,11 @@ function filteredProcs() {
 function paintProcesses() {
   const body = $('#procBody');
   if (!body) return;
+
+  // 300 行 tbody 每 3s 重建既费 CPU 又会打断文本选择：数据没变就跳过
+  const sig = JSON.stringify([state.procs, state.procQuery, state.procSort, state.expandedPid, state.allow]);
+  if (state.paintedSigs.processes === sig) return;
+  state.paintedSigs.processes = sig;
 
   const focusPid = state.focusAfterPaint ? state.expandedPid : null;
   state.focusAfterPaint = false;
@@ -906,6 +1167,379 @@ function procDetail(p, trusted) {
     </td></tr>`;
 }
 
+/* ------------------------------------------------------------ 页面：驻留 */
+
+// attentionFlags 是"需关注"过滤的判定集合：文件缺失/无签名/基线外/
+// 最高权限。无描述（no_info）不进过滤——大量正常系统工具没有版本
+// 资源，把它算进"需关注"会让过滤器失去意义。
+const ATTENTION_FLAGS = new Set(['file_missing', 'unsigned', 'new', 'elevated']);
+
+function paintPersist(force = false) {
+  const root = $('#persistRoot');
+  if (!root) return;
+  const ae = document.activeElement;
+  if (!force && ae && root.contains(ae) && ae.tagName === 'INPUT') return;
+
+  // 423+ 行的清单不该每 3s 重建一次：数据与查询都没变就直接跳过
+  const auditSig = state.persistAudit ? state.persistAudit.length : '';
+  const sig = `${state.persistSig}|${state.quarantineSig}|${state.persistQuery}|${state.persistFilter}|${auditSig}`;
+  if (!force && state.paintedSigs.persist === sig) return;
+  state.paintedSigs.persist = sig;
+
+  const auditByKey = new Map((state.persistAudit || []).map((a) => [a.key, a]));
+  const hasAudit = state.persistAudit !== null;
+
+  const q = state.persistQuery.trim().toLowerCase();
+  let items = state.persistItems.map((it) => ({ ...it, audit: auditByKey.get(it.key) || null }));
+  // 需关注过滤只对有体检画像的条目生效；画像未就绪时该档为空并给出说明
+  if (state.persistFilter === 'attention') {
+    items = items.filter((it) => (it.audit?.flags || []).some((f) => ATTENTION_FLAGS.has(f)));
+  }
+  items = items.filter((it) => !q
+    || `${it.kind || ''} ${it.location || ''} ${it.value || ''}`.toLowerCase().includes(q));
+
+  const count = $('#persistCount');
+  if (count) count.textContent = `共 ${fmt(items.length)} 项`;
+
+  const note = $('#persistAuditNote');
+  if (note) {
+    if (!hasAudit) {
+      note.innerHTML = state.persistAuditError
+        ? `体检画像读取失败：${esc(state.persistAuditError)} <button class="btn sm" data-act="refresh-hygiene">重试</button>`
+        : '体检画像生成中（逐文件校验签名，首次约需数秒）…';
+    } else {
+      const audits = state.persistAudit || [];
+      const nUnsigned = audits.filter((a) => (a.flags || []).includes('unsigned')).length;
+      const nMissing = audits.filter((a) => (a.flags || []).includes('file_missing')).length;
+      const nNew = audits.filter((a) => (a.flags || []).includes('new')).length;
+      note.textContent = `体检：${fmt(audits.length)} 项自启动 · 未签名 ${fmt(nUnsigned)} · 文件缺失 ${fmt(nMissing)} · 基线外新增 ${fmt(nNew)}` +
+        (nUnsigned + nMissing + nNew === 0 ? ' · 全部可信' : '');
+    }
+  }
+
+  const box = $('#persistGroups');
+  if (box) {
+    if (!items.length) {
+      const filtering = q || state.persistFilter === 'attention';
+      box.innerHTML = emptyState(filtering ? 'search' : 'shieldCheck',
+        filtering ? '没有符合条件的自启动项' : '还没有自启动项记录',
+        state.persistFilter === 'attention'
+          ? '全部自启动项都通过体检：没有未签名、文件缺失或基线外的新增项。这是好事。'
+          : q ? '换个关键词，或清空搜索查看全部。'
+            : '探针正在扫描持久化位置，首个扫描周期后会自动建立基线。');
+    } else {
+      // 按类型分组展示：7 类自启动位置的风险面不同，混在一起没有可读性。
+      // 已知类型按固定顺序，未知类型排在最后（向前兼容新采集口径）。
+      const byKind = new Map();
+      for (const it of items) {
+        const k = it.kind || 'unknown';
+        if (!byKind.has(k)) byKind.set(k, []);
+        byKind.get(k).push(it);
+      }
+      const order = Object.keys(PERSIST_KIND);
+      const kinds = [...byKind.keys()].sort((a, b) => {
+        const ia = order.indexOf(a);
+        const ib = order.indexOf(b);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+      });
+      box.innerHTML = kinds.map((k) => {
+        const list = byKind.get(k);
+        return `<div class="day-label">${esc(PERSIST_KIND[k] || k)} · ${fmt(list.length)}</div>
+          <div class="persist-list">${list.map(persistRow).join('')}</div>`;
+      }).join('');
+    }
+  }
+
+  const qc = $('#quarCount');
+  if (qc) qc.textContent = state.quarantine.length ? `${fmt(state.quarantine.length)} 条记录` : '';
+  const qb = $('#quarantineBlock');
+  if (qb) qb.innerHTML = quarantineHTML();
+}
+
+// persistFlagBadges 把体检 flags 与签名/发布者画像转成行内徽标。
+function persistFlagBadges(audit) {
+  if (!audit) return '';
+  const badges = [];
+  for (const f of audit.flags || []) {
+    if (f === 'file_missing') badges.push('<span class="badge warn" title="指向的文件已不存在（可能是卸载残留，也可能是恶意项先删了文件）">文件缺失</span>');
+    else if (f === 'unsigned') badges.push('<span class="badge crit" title="文件存在但没有可信签名；签名校验失败（篡改）也会归入此类">未签名</span>');
+    else if (f === 'no_info') badges.push('<span class="badge" title="没有发布者与描述信息">无信息</span>');
+    else if (f === 'elevated') badges.push('<span class="badge warn" title="以最高权限运行">高权限</span>');
+    else if (f === 'new') badges.push('<span class="badge warn" title="尚未进入持久化基线（新出现的自启动点）">新增</span>');
+  }
+  const who = audit.file?.signer || audit.file?.company || '';
+  return `${badges.join('')}${who ? `<span class="badge ok" title="签名/版本信息里的发布者">${esc(who)}</span>` : ''}`;
+}
+
+function persistRow(it) {
+  return `<div class="persist-row">
+    <div class="persist-value" title="${esc(it.value)}">${esc(it.value || '—')}</div>
+    <div class="persist-flags">${persistFlagBadges(it.audit)}</div>
+    ${it.location ? `<div class="persist-loc" title="${esc(it.location)}">${esc(it.location)}</div>` : ''}
+  </div>`;
+}
+
+function quarantineHTML() {
+  if (!state.quarantine.length) {
+    return emptyState('lock', '隔离区为空',
+      '响应动作（文件隔离/恢复）默认双层开关关闭，只有服务端与终端两侧都显式开启时才会发生。空是正常态。', 'ok');
+  }
+  return `<div class="trust-list">${state.quarantine.map((e) => `
+    <div class="trust-row">
+      <span class="badge crit">已隔离</span>
+      <div>
+        <div class="trust-value">${esc(e.original_path)}</div>
+        <div class="trust-note">${esc(e.reason || '—')}${e.by ? ` · 操作方：${esc(e.by)}` : ''}</div>
+        <div class="trust-time">${fullTime(e.quarantined_at)} · ${fmt(Math.max(1, Math.round((e.size || 0) / 1024)))} KB</div>
+      </div>
+      <div class="trust-actions"></div>
+    </div>`).join('')}</div>`;
+}
+
+/* ------------------------------------------------------------ 页面：安全体检 */
+
+// 体检项三色语义与告警一致：err 红 / warn 黄 / ok 绿 / info 中性。
+const CHECK_STATE_LABEL = { ok: '正常', warn: '需关注', err: '高风险', info: '说明' };
+
+const CHECK_GROUPS = [
+  { id: 'config', title: '安全配置', note: '本机设置项。改成更安全的一档需要你手动操作，这里只给指引、不代改。' },
+  { id: 'update', title: '系统更新', note: '打了补丁没重启 = 保护没生效，这项体检最容易救急。' },
+  { id: 'privacy', title: '隐私设置', note: '这些是知情选择而不是漏洞：开着不一定会出事，但会扩大画像。' },
+];
+
+function paintPosture(force = false) {
+  const root = $('#postureRoot');
+  if (!root) return;
+  const ae = document.activeElement;
+  if (!force && ae && root.contains(ae) && ae.tagName === 'INPUT') return;
+
+  const summary = $('#postureSummary');
+  const checksBox = $('#postureChecks');
+  if (!summary || !checksBox) return;
+
+  if (state.posture === null) {
+    summary.innerHTML = '<div class="skel skel-line" style="width:40%"></div>';
+    checksBox.innerHTML = Array.from({ length: 6 }).map(() => '<div class="skel skel-row"></div>').join('');
+    paintExposure();
+    return;
+  }
+
+  const checks = state.posture;
+  const nErr = checks.filter((c) => c.state === 'err').length;
+  const nWarn = checks.filter((c) => c.state === 'warn').length;
+  const nOk = checks.filter((c) => c.state === 'ok').length;
+
+  // 结论先行：一句话说清体检结果，而不是摆数字
+  let verdict, detail;
+  if (nErr > 0) {
+    verdict = `<span class="dot bad"></span>体检发现 ${fmt(nErr)} 项高风险配置`;
+    detail = '下面逐项说明了为什么重要和怎么改。改不改由你决定——这里不会替你动手。';
+  } else if (nWarn > 0) {
+    verdict = `<span class="dot warn"></span>没有高风险项，${fmt(nWarn)} 项值得看一眼`;
+    detail = '多为"取决于你是否需要"的配置（比如远程桌面开着），逐项确认即可。';
+  } else {
+    verdict = `<span class="dot ok"></span>安全配置体检通过`;
+    detail = `${fmt(nOk)} 项配置处于推荐状态；另有若干"说明"项是事实陈述，不需要动作。`;
+  }
+  summary.innerHTML = `
+    <div class="posture-verdict">${verdict}<span class="posture-verdict-sub">${detail}</span></div>`;
+
+  checksBox.innerHTML = CHECK_GROUPS.map((g) => {
+    const list = checks.filter((c) => c.group === g.id);
+    if (!list.length) return '';
+    return `<section class="section" aria-labelledby="pg-${g.id}">
+      <div class="section-head"><h2 id="pg-${g.id}">${esc(g.title)}</h2></div>
+      <p class="check-group-note">${esc(g.note)}</p>
+      <div class="check-list">${list.map(checkRow).join('')}</div>
+    </section>`;
+  }).join('');
+
+  paintExposure();
+}
+
+function checkRow(c) {
+  const dotCls = c.state === 'err' ? 'bad' : c.state;
+  return `<div class="check-row">
+    <span class="dot ${dotCls}" title="${CHECK_STATE_LABEL[c.state] || c.state}"></span>
+    <div class="check-body">
+      <div class="check-title">${esc(c.title)}<span class="check-value">${esc(c.value || '')}</span></div>
+      <div class="check-why">${esc(c.why || '')}</div>
+      ${c.advice ? `<div class="check-advice">怎么改：${esc(c.advice)}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function paintExposure() {
+  const box = $('#exposureBlock');
+  if (!box) return;
+
+  if (state.exposure === null) {
+    box.innerHTML = '<div class="skel skel-row"></div><div class="skel skel-row"></div>';
+    return;
+  }
+  const exp = state.exposure;
+  const listeners = exp.listeners || [];
+
+  const scopeBadge = (s) => s === 'any'
+    ? '<span class="badge crit" title="绑定在 0.0.0.0/::，同一网络里的所有设备都能连到这个端口">任意网卡可达</span>'
+    : s === 'lan' ? '<span class="badge warn" title="绑定在具体网卡地址上，局域网内可达">局域网可达</span>'
+      : '<span class="badge ok" title="只监听本机回环地址，外部设备连不到">仅本机</span>';
+
+  const hostRows = (exp.hosts?.entries || []);
+  const hostsHTML = !exp.hosts?.readable
+    ? `<p class="check-why">${esc(exp.hosts?.note || '无法读取 hosts 文件')}</p>`
+    : hostRows.length === 0
+      ? `<p class="check-why">hosts 文件只有默认内容，没有自定义映射。这是好事。</p>`
+      : `<p class="check-why">hosts 里有 ${fmt(hostRows.length)} 条自定义映射（默认只有 localhost）。把杀毒/银行/更新域名指到别处是经典劫持手法；本机无法验证"指得对不对"，请逐条核对是否是你或你装的软件加的：</p>
+         <div class="mono host-list">${hostRows.map((h) => `<div>${esc(h.ip)}&nbsp;&nbsp;${esc(h.hostname)}</div>`).join('')}</div>`;
+
+  const proxy = exp.proxy || {};
+  const proxyHTML = (proxy.enabled && proxy.server)
+    ? `<p class="check-why">系统代理已设置：<span class="mono">${esc(proxy.server)}</span>。本地代理工具（回环地址）属正常场景；不认识的代理地址值得警惕。</p>`
+    : proxy.auto_config_url
+      ? `<p class="check-why">系统代理走 PAC 脚本：<span class="mono">${esc(proxy.auto_config_url)}</span>。如果不是企业配置或你自己的工具设置的，应当核查。</p>`
+      : `<p class="check-why">未设置系统代理，流量走直连。这是默认状态。</p>`;
+
+  box.innerHTML = `
+    <div class="day-label">监听端口 · ${fmt(listeners.length)}</div>
+    ${listeners.length === 0
+      ? '<p class="check-why">没有发现监听端口。这台机器对外不提供任何服务。</p>'
+      : `<div class="table-wrap"><table>
+          <thead><tr><th style="width:64px">协议</th><th>监听地址</th><th style="width:110px">可达范围</th><th style="width:180px">进程</th></tr></thead>
+          <tbody>${listeners.map((l) => `<tr>
+            <td class="mono">${esc(l.proto)}</td>
+            <td class="mono">${esc(l.addr)}</td>
+            <td>${scopeBadge(l.scope)}</td>
+            <td>${esc(l.process || '（进程已退出或无权限）')}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+        <p class="check-why">不认识的监听端口是暴露面的第一线索；点进「进程」页可以看到它的完整路径与血缘。</p>`}
+    <div class="day-label">hosts 文件</div>
+    ${hostsHTML}
+    <div class="day-label">系统代理</div>
+    ${proxyHTML}`;
+}
+
+/* ------------------------------------------------------------ 页面：软件资产 */
+
+function paintApps(force = false) {
+  const root = $('#appsRoot');
+  if (!root) return;
+  const ae = document.activeElement;
+  if (!force && ae && root.contains(ae) && ae.tagName === 'INPUT') return;
+
+  const count = $('#appsCount');
+  const body = $('#appsBody');
+  if (!count || !body) return;
+
+  if (state.apps === null) {
+    count.textContent = state.appsError ? '' : '加载中…';
+    body.innerHTML = state.appsError
+      ? emptyState('info', '暂时读不到软件清单', esc(state.appsError))
+      : Array.from({ length: 10 }).map(() => '<div class="skel skel-row"></div>').join('');
+    return;
+  }
+
+  const q = state.appsQuery.trim().toLowerCase();
+  const items = state.apps.filter((a) => !q
+    || `${a.name || ''} ${a.publisher || ''} ${a.location || ''}`.toLowerCase().includes(q));
+
+  const hidden = state.apps.filter((a) => a.hidden || a.no_remove).length;
+  count.textContent = q ? `${fmt(items.length)} / ${fmt(state.apps.length)}` : `共 ${fmt(items.length)} 项`;
+
+  // 结论行：隐藏卸载入口的软件正常软件极少做，值得点名
+  const head = `<p class="check-why" style="margin-bottom:12px">${
+    hidden > 0
+      ? `共 ${fmt(state.apps.length)} 个软件，其中 <strong>${fmt(hidden)} 个</strong>把自己从系统卸载列表里藏了起来（正常软件极少这样做，常见于捆装组件）——下表已用徽标标出。`
+      : `共 ${fmt(state.apps.length)} 个软件（Win32 + Microsoft Store），没有发现隐藏卸载入口的条目。`}</p>`;
+
+  if (!items.length) {
+    body.innerHTML = head + emptyState('search', '没有匹配的软件', '换个关键词，或清空搜索查看全部。');
+    return;
+  }
+
+  body.innerHTML = head + `<div class="table-wrap"><table>
+    <thead><tr>
+      <th>软件</th><th style="width:170px">发布者</th><th style="width:110px">版本</th>
+      <th style="width:96px">安装日期</th><th style="width:76px">大小</th>
+    </tr></thead>
+    <tbody>${items.map((a) => `<tr>
+      <td><div class="proc-name">${esc(a.name)}${a.source === 'store' ? '<span class="badge" style="margin-left:6px">Store</span>' : ''}${a.hidden ? '<span class="badge warn" title="SystemComponent=1：不出现在系统\"应用和功能\"里">已隐藏</span>' : ''}${a.no_remove ? '<span class="badge crit" title="卸载入口被移除（NoRemove=1）">不可卸载</span>' : ''}</div>
+        ${a.location ? `<div class="proc-path mono" title="${esc(a.location)}">${esc(a.location)}</div>` : ''}</td>
+      <td>${esc(a.publisher || '—')}</td>
+      <td class="mono">${esc(a.version || '—')}</td>
+      <td class="mono">${esc(fmtInstallDate(a.install_date))}</td>
+      <td class="mono">${a.size_kb ? fmt(Math.round(a.size_kb / 1024)) + ' MB' : '—'}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>
+  <p class="check-why">清单来自本机注册表，只读采集；大小与安装日期是系统记录的估算值，缺失属正常。</p>`;
+}
+
+function fmtInstallDate(raw) {
+  // Uninstall 键的 InstallDate 通常为 yyyymmdd 字符串
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(raw || '');
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : (raw || '—');
+}
+
+/* ------------------------------------------------------------ 页面：浏览器 */
+
+const BROWSER_LABEL = { chrome: 'Chrome', edge: 'Edge', firefox: 'Firefox' };
+
+function paintBrowser(force = false) {
+  const root = $('#browserRoot');
+  if (!root) return;
+  const ae = document.activeElement;
+  if (!force && ae && root.contains(ae) && ae.tagName === 'INPUT') return;
+
+  const summary = $('#browserSummary');
+  const body = $('#browserBody');
+  if (!summary || !body) return;
+
+  if (state.browser === null) {
+    summary.innerHTML = '<div class="skel skel-line" style="width:40%"></div>';
+    body.innerHTML = Array.from({ length: 6 }).map(() => '<div class="skel skel-row"></div>').join('');
+    return;
+  }
+
+  const exts = state.browser.extensions || [];
+  const policies = state.browser.policies || [];
+  const scanned = state.browser.scanned || [];
+  const wide = exts.filter((e) => e.host_wide).length;
+  const risky = exts.filter((e) => (e.risky_perms || []).length > 0).length;
+
+  const scanText = scanned.map((s) => BROWSER_LABEL[s] || s).join(' · ') || '未发现已安装的浏览器';
+  summary.innerHTML = `
+    <p class="check-why" style="margin-bottom:12px">扫描了 ${esc(scanText)}，发现 <strong>${fmt(exts.length)}</strong> 个扩展。
+      ${wide ? `其中 <strong>${fmt(wide)}</strong> 个能读取你打开的所有网页。` : '没有发现能读取全部网页的扩展。'}
+      ${risky ? `${fmt(risky)} 个持有敏感权限（本机通信/代理/调试等）。` : ''}</p>
+    ${policies.length ? `<p class="check-why" style="margin-bottom:12px"><strong>发现策略强装扩展（${policies.map((p) => `${BROWSER_LABEL[p.browser] || p.browser} ${p.count} 个`).join('、')}）</strong>——企业管理正常配置，但也是流氓软件与红队公认的持久化位置；若你不在这类环境里，请立即核查。</p>` : ''}`;
+
+  if (!exts.length) {
+    body.innerHTML = emptyState('shieldCheck', scanned.length ? '没有安装任何扩展' : '没有发现浏览器',
+      scanned.length ? '浏览器是干净的。' : '未检测到常见浏览器，或用户数据目录尚未创建。');
+    return;
+  }
+
+  const byBrowser = new Map();
+  for (const e of exts) {
+    if (!byBrowser.has(e.browser)) byBrowser.set(e.browser, []);
+    byBrowser.get(e.browser).push(e);
+  }
+  body.innerHTML = [...byBrowser.entries()].map(([b, list]) => `
+    <div class="day-label">${esc(BROWSER_LABEL[b] || b)} · ${fmt(list.length)}</div>
+    <div class="trust-list">${list.map((e) => `<div class="trust-row">
+      <div>
+        <div class="trust-value">${esc(e.name)}<span class="mono" style="color:var(--ghost);font-size:9.5px;margin-left:6px">${esc(e.version || '')}</span></div>
+        <div class="trust-note mono" style="word-break:break-all">${esc(e.id)}</div>
+        <div class="trust-time">${esc(e.profile)}</div>
+      </div>
+      <div class="trust-actions" style="opacity:1">
+        ${e.host_wide ? '<span class="badge warn" title="声明了 <all_urls> 或等价主机权限：能读写你访问的每个网页">全部网站</span>' : ''}
+        ${(e.risky_perms || []).map((p) => `<span class="badge" title="敏感权限：${esc(p)}">${esc(p)}</span>`).join('')}
+      </div>
+    </div>`).join('')}</div>`).join('');
+}
+
 /* ------------------------------------------------------------ 页面：信任与隐私 */
 
 function paintTrust(force = false) {
@@ -948,6 +1582,22 @@ function paintTrust(force = false) {
       privacy.innerHTML = `<div class="skel skel-line" style="width:60%"></div>
         <div class="skel skel-line" style="width:90%;margin-top:10px"></div>
         <div class="skel skel-line" style="width:75%;margin-top:10px"></div>`;
+    }
+  }
+
+  // Windows 隐私设置体检：复用 posture 数据（group=privacy），不单独发请求
+  const privBlock = $('#privSettingBlock');
+  if (privBlock) {
+    if (state.posture === null) {
+      privBlock.innerHTML = state.postureError
+        ? `<p class="check-why">暂时读不到体检数据：${esc(state.postureError)}</p>`
+        : '<div class="skel skel-line" style="width:70%"></div>';
+    } else {
+      const priv = state.posture.filter((c) => c.group === 'privacy');
+      privBlock.innerHTML = priv.length
+        ? `<p class="check-why" style="margin-bottom:10px">这些开关决定 Windows 自己收集什么。它们是知情选择而不是漏洞——这里只陈述现状与改法，不会替你改。</p>
+           <div class="check-list">${priv.map(checkRow).join('')}</div>`
+        : '<p class="check-why">本机暂无隐私设置体检数据。</p>';
     }
   }
 
@@ -1375,6 +2025,10 @@ function paletteActions() {
     { label: '前往总览', icon: 'grid', hint: '页面', run: () => go('overview') },
     { label: '前往活动', icon: 'activity', hint: '页面', run: () => go('activity') },
     { label: '前往进程', icon: 'chip', hint: '页面', run: () => go('processes') },
+    { label: '前往驻留', icon: 'layers', hint: '页面', run: () => go('persist') },
+    { label: '前往安全体检', icon: 'clipboardCheck', hint: '页面', run: () => go('posture') },
+    { label: '前往软件资产', icon: 'box', hint: '页面', run: () => go('apps') },
+    { label: '前往浏览器', icon: 'globe', hint: '页面', run: () => go('browser') },
     { label: '前往信任与隐私', icon: 'shieldCheck', hint: '页面', run: () => go('trust') },
     { label: isStale() ? '重试连接' : '立即扫描', icon: 'refresh', hint: '动作', run: isStale() ? initialLoad : scan },
     { label: `切换到${isDark ? '浅色' : '深色'}主题`, icon: isDark ? 'sun' : 'moon', hint: '外观', run: toggleTheme },
@@ -1487,7 +2141,7 @@ function toggleTheme() {
 async function scan() {
   if (state.scanning) return;
   state.scanning = true;
-  paintRoute();
+  paintRoute(true);
   updateChrome();
   try {
     await api('/api/local/rescan', { method: 'POST' });
@@ -1497,7 +2151,7 @@ async function scan() {
   } finally {
     setTimeout(() => {
       state.scanning = false;
-      paintRoute();
+      paintRoute(true);
       updateChrome();
     }, 1200);
   }
@@ -1653,8 +2307,9 @@ function tickRel() {
   $$('[data-rel]').forEach((el) => { el.textContent = rel(el.dataset.rel); });
   updateChrome();
   // 长时间没有新数据时，把总览/活动切到"数据已过期"的叙述，
-  // 避免界面在探针失联时仍然显示"一切正常"。
-  if (isStale() && (state.route === 'overview' || state.route === 'activity')) paintRoute();
+  // 避免界面在探针失联时仍然显示"一切正常"。失联是时间推导的，
+  // 不在数据签名里，所以这里强制重绘。
+  if (isStale() && (state.route === 'overview' || state.route === 'activity')) paintRoute(true);
 }
 
 /* ------------------------------------------------------------ 事件 */
@@ -1694,6 +2349,13 @@ async function onClick(e) {
       state.procSort = 'score';
       go('processes');
       break;
+    case 'toggle-group': {
+      const title = t.dataset.title || '';
+      if (state.collapsedGroups.has(title)) state.collapsedGroups.delete(title);
+      else state.collapsedGroups.add(title);
+      paintActivity();
+      break;
+    }
     case 'allow-proc': allowPath(t.dataset.path || ''); break;
     case 'copy-path': copyText(t.dataset.copy, '路径已复制'); break;
     case 'allow-alert': allowAlert(t.dataset.kind); break;
@@ -1723,6 +2385,38 @@ async function onClick(e) {
       state.activityFilter = t.dataset.filter || 'all';
       paintActivity();
       break;
+    case 'persist-filter':
+      state.persistFilter = t.dataset.filter || 'all';
+      paintPersist(true);
+      break;
+    case 'refresh-hygiene': {
+      // 显式重跑体检：清缓存重新拉取（驻留画像的签名缓存也在 Agent 侧
+      // 按 (path,size,mtime) 失效，文件变了自然会重验）
+      if (state.route === 'posture') {
+        state.posture = null;
+        state.exposure = null;
+        state.postureError = '';
+        refreshPosture();
+        paintPosture(true);
+      } else if (state.route === 'apps') {
+        state.apps = null;
+        state.appsError = '';
+        refreshApps();
+        paintApps(true);
+      } else if (state.route === 'browser') {
+        state.browser = null;
+        state.browserError = '';
+        refreshBrowser();
+        paintBrowser(true);
+      } else if (state.route === 'persist') {
+        state.persistAudit = null;
+        state.persistAuditError = '';
+        refreshPersistAudit();
+        paintPersist(true);
+      }
+      toast('正在重新体检…', 'info');
+      break;
+    }
     case 'sort':
       state.procSort = t.dataset.sort || 'score';
       paintProcesses();
@@ -1831,7 +2525,11 @@ function onKey(e) {
   if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
     const tag = (document.activeElement?.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-    const search = state.route === 'processes' ? $('#procSearch') : state.route === 'activity' ? $('#activitySearch') : null;
+    const search = state.route === 'processes' ? $('#procSearch')
+      : state.route === 'activity' ? $('#activitySearch')
+        : state.route === 'persist' ? $('#persistSearch')
+          : state.route === 'apps' ? $('#appsSearch')
+            : null;
     if (search) {
       e.preventDefault();
       search.focus();
@@ -1856,6 +2554,12 @@ function onInput(e) {
     }
   } else if (t.id === 'allowNote') {
     state.addNote = t.value;
+  } else if (t.id === 'persistSearch') {
+    state.persistQuery = t.value;
+    paintPersist();
+  } else if (t.id === 'appsSearch') {
+    state.appsQuery = t.value;
+    paintApps();
   } else if (t.id === 'paletteInput' && state.palette) {
     state.palette.query = t.value;
     state.palette.index = 0;
@@ -1996,9 +2700,25 @@ function skeletonHTML(route) {
     return `<div class="skel" style="width:260px;height:30px;margin-bottom:14px"></div>
       <div class="table-wrap" style="padding:14px">${Array.from({ length: 8 }).map(() => '<div class="skel skel-row"></div>').join('')}</div>`;
   }
+  if (route === 'persist') {
+    return `<div class="skel" style="width:260px;height:30px;margin-bottom:14px"></div>
+      ${Array.from({ length: 6 }).map(() => '<div class="skel skel-row"></div>').join('')}`;
+  }
   if (route === 'trust') {
     return `<div class="skel" style="width:200px;height:14px"></div>
       ${Array.from({ length: 4 }).map(() => '<div class="skel skel-row"></div>').join('')}`;
+  }
+  if (route === 'posture') {
+    return `<div class="skel" style="width:280px;height:30px;margin-bottom:14px"></div>
+      ${Array.from({ length: 7 }).map(() => '<div class="skel skel-row"></div>').join('')}`;
+  }
+  if (route === 'apps') {
+    return `<div class="skel" style="width:260px;height:30px;margin-bottom:14px"></div>
+      <div class="table-wrap" style="padding:14px">${Array.from({ length: 10 }).map(() => '<div class="skel skel-row"></div>').join('')}</div>`;
+  }
+  if (route === 'browser') {
+    return `<div class="skel" style="width:280px;height:14px;margin-bottom:14px"></div>
+      ${Array.from({ length: 5 }).map(() => '<div class="skel skel-row"></div>').join('')}`;
   }
   return `<div class="skel skel-hero"></div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin-top:22px">
@@ -2041,7 +2761,12 @@ function boot() {
     pollTick++;
     await refreshCore();
     if (pollTick % 3 === 0) refreshProcs();
-    if (pollTick % 5 === 0) refreshAllow();
+    if (pollTick % 5 === 0) {
+      refreshAllow();
+      // 驻留/隔离数据变化频率低，与白名单同节奏（15s）即可
+      refreshPersist();
+      refreshQuarantine();
+    }
   }, 3000);
 
   setInterval(tickRel, 5000);
