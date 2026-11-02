@@ -415,7 +415,10 @@ export function LiveProcsTab({ agentId, user, onAnalyzeFile }: {
                     </td>
                     <td className="px-3 py-1.5 font-mono text-[11.5px] tabular-nums text-muted-foreground">{c.pid || '—'}</td>
                     <td className="max-w-[150px] px-3 py-1.5"><span className="block truncate font-mono text-[11.5px] text-faint" title={c.proc_user}>{c.proc_user || '—'}</span></td>
-                    <td className="px-3 py-1.5 font-mono text-[11.5px] text-faint">{c.proc_started_at ? fmtTime(c.proc_started_at) : '—'}</td>
+                    {/* 启动时间不可得时探针会回填异常小值（实测出现 1970-01-22 这类
+                        纪元偏移值）；小于 2000-01-01 一律按"未知"处理，显示原始假时间
+                        会让分析员误判进程年龄 */}
+                    <td className="px-3 py-1.5 font-mono text-[11.5px] text-faint">{(c.proc_started_at && c.proc_started_at >= 946684800) ? fmtTime(c.proc_started_at) : '—'}</td>
                   </tr>
                 ))}
               </tbody>

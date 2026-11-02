@@ -105,6 +105,13 @@ func New(d Deps) http.Handler {
 	// 主机详情深化（§13）：安全基线 / 账户与会话（handler 不依赖 Deps）
 	mux.HandleFunc("GET /baseline", HandleBaseline())
 	mux.HandleFunc("GET /accounts", HandleAccounts())
+	// 进程取证（§15）：句柄 / 占用者 / 线程 / 内存元数据
+	mux.HandleFunc("GET /handles", s.handleHandles)
+	mux.HandleFunc("GET /handleowners", s.handleHandleOwners)
+	mux.HandleFunc("GET /threads", s.handleThreads)
+	mux.HandleFunc("GET /memscan", s.handleMemScan)
+	mux.HandleFunc("GET /persistence", HandlePersistence())
+	mux.HandleFunc("GET /peers", s.handlePeers)
 	return recoverWrap(mux)
 }
 
