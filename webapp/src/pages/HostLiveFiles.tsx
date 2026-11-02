@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ChevronUp, CircleAlert, Copy, EyeOff, FileQuestion, Fingerprint, Folder, FolderSearch,
-  Globe, RefreshCw, ScanSearch, Search, ShieldBan, ShieldCheck, TriangleAlert, Unplug,
+  Globe, Hand, RefreshCw, ScanSearch, Search, ShieldBan, ShieldCheck, TriangleAlert, Unplug,
 } from 'lucide-react';
 import { api, live, ApiError, liveErrorKind } from '../lib/api';
 import type {
-  LiveAds, LiveAnalyze, LiveFsEntry, LiveFsList, LiveHash, LiveSearchEntry,
+  LiveAds, LiveAnalyze, LiveFsEntry, LiveFsList, LiveHandleOwners, LiveHash, LiveSearchEntry,
   LiveSearchResult, LiveStrings, User,
 } from '../lib/types';
 import { fmtBytes, fmtTime } from '../lib/format';
@@ -508,6 +508,13 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
   const [adsData, setAdsData] = useState<LiveAds | null>(null);
   const [adsErr, setAdsErr] = useState('');
 
+  /* §15.2「谁打开了它」：全系统 File 句柄扫描，按需执行（默认不发请求） */
+  const [owners, setOwners] = useState<LiveHandleOwners | null>(null);
+  const [ownersBusy, setOwnersBusy] = useState(false);
+  const [ownersErr, setOwnersErr] = useState('');
+  /* 请求序号：扫描耗时可达数秒，抽屉换文件后旧响应落地必须丢弃 */
+  const ownersSeq = useRef(0);
+
   /* 文本预览：fs/read 字节流直通，Content-Type 以 text/ 开头才渲染 */
   useEffect(() => {
     if (!sel) return;
@@ -581,9 +588,35 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
     } finally { setAnaBusy(false); }
   };
 
-  /* 抽屉重开时清理上一次的哈希/预览/分析（不同文件不共用结果） */
+  /* 「谁打开了它」按需执行：探针要扫全系统 File 句柄并逐个解析对象名，
+     成本明显高于 stat/hash，不随抽屉打开自动拉取。结果是部分覆盖，
+     覆盖度以响应的 scanned/resolved/note 为准，不把"没命中"说成"没人占用"。 */
+  const runOwners = async () => {
+    if (!sel) return;
+    const seq = ++ownersSeq.current;
+    setOwnersBusy(true); setOwnersErr(''); setOwners(null);
+    try {
+      const d = await live.handleowners(agentId, fullPath);
+      if (seq === ownersSeq.current) setOwners(d);
+    } catch (ex) {
+      if (seq === ownersSeq.current) setOwnersErr(featNote(ex));
+    } finally {
+      if (seq === ownersSeq.current) setOwnersBusy(false);
+    }
+  };
+
+  /* 抽屉重开/换文件时清理上一次的哈希/预览/分析/占用者（不同文件不共用结果）。
+     换文件也要作废在途的占用扫描——不然旧路径的 owners 会挂在新文件抽屉里。 */
   useEffect(() => {
-    if (!sel) { setHash(null); setHashErr(''); setPreview({ state: 'loading' }); setPreviewTick((t) => t + 1); setAna(null); setAnaErr(''); setAdsData(null); setAdsErr(''); }
+    ownersSeq.current++;
+    setOwners(null); setOwnersErr(''); setOwnersBusy(false);
+  }, [fullPath]);
+
+  useEffect(() => {
+    if (!sel) {
+      setHash(null); setHashErr(''); setPreview({ state: 'loading' }); setPreviewTick((t) => t + 1);
+      setAna(null); setAnaErr(''); setAdsData(null); setAdsErr('');
+    }
   }, [sel]);
 
   const doAllow = async () => {
@@ -749,6 +782,74 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
               </div>
             )}
           </Section>
+
+          {/* 占用进程只展示不跳转：HostDetail 目前只向本 Tab 暴露 openPath 回调，
+              没有"切到实时进程 Tab 并打开指定 PID 抽屉"的通道（本会话文件所有权
+              不含 HostDetail，不能新增回调）。列表给足 PID，操作员可到「实时进程」
+              Tab 按 PID 搜索打开对应抽屉；后端契约与跳转能力已就绪，只差宿主回调。 */}
+          {!sel.entry.is_dir && (
+            <Section title="谁打开了它" extra={
+              <Button size="sm" variant="ghost" disabled={ownersBusy} onClick={() => void runOwners()}>
+                <Hand size={13} /> {ownersBusy ? '扫描中…' : owners ? '重新扫描' : '谁打开了它'}
+              </Button>
+            }>
+              {ownersBusy && <SkeletonRows rows={2} />}
+              {!ownersBusy && ownersErr && <div className="text-[12.5px] text-destructive">{ownersErr}</div>}
+              {!ownersBusy && !ownersErr && !owners && (
+                <p className="text-xs leading-[1.8] text-faint">
+                  枚举全系统 File 类型句柄并解析对象名，找出正持有该文件的进程。扫描有真实成本（探针侧约 5 秒预算），按需执行；结果是部分覆盖。
+                </p>
+              )}
+              {!ownersBusy && owners && (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-[11px] text-ghost">
+                      已扫描 {owners.scanned ?? 0} 个文件句柄 · 解析成功 {owners.resolved ?? 0}
+                    </span>
+                    {owners.truncated && <Badge tone="medium">扫描预算耗尽，列表可能不完整</Badge>}
+                  </div>
+                  {(owners.owners || []).length ? (
+                    <div className="rounded-md border border-border-soft">
+                      <table className="w-full text-[12px]">
+                        <thead>
+                          <tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+                            <th className="px-3 py-2 font-semibold">进程名</th>
+                            <th className="w-[80px] px-3 py-2 font-semibold">PID</th>
+                            <th className="px-3 py-2 font-semibold">镜像路径</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(owners.owners || []).map((o, i) => (
+                            <tr key={`${o.pid}-${i}`} className="border-b border-border-soft last:border-b-0">
+                              <td className="max-w-[180px] px-3 py-1.5 font-medium">
+                                <span className="block truncate" title={o.name}>{o.name || '—'}</span>
+                              </td>
+                              <td className="px-3 py-1.5 font-mono text-[11.5px] tabular-nums">{o.pid}</td>
+                              <td className="px-3 py-1.5">
+                                <span className="block truncate font-mono text-[11.5px] text-muted-foreground" title={o.path}>{o.path || '—'}</span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-border-soft bg-secondary/40 px-3 py-2.5 text-[12.5px] text-faint">
+                      当前无进程持有该文件句柄
+                    </div>
+                  )}
+                  {owners.note && <p className="text-[11px] leading-[1.7] text-faint">{owners.note}</p>}
+                  <p className="text-[11px] leading-[1.7] text-faint">
+                    {owners.truncated
+                      ? '扫描预算耗尽，列表可能不完整——可稍后重试或到「实时进程」Tab 按 PID 逐一核对。'
+                      : (owners.owners || []).length
+                        ? '可在「实时进程」Tab 按 PID 搜索并打开进程抽屉查看命令行与模块。'
+                        : '未命中也可能来自覆盖度限制：非 File 类型句柄、无权打开的进程都不在结果里。'}
+                  </p>
+                </div>
+              )}
+            </Section>
+          )}
 
           <Section title="深度分析" extra={
             <Button size="sm" variant="ghost" onClick={() => void runAnalyze()} disabled={anaBusy || sel.entry.is_dir}>
