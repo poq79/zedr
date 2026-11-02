@@ -5,6 +5,7 @@ import { initDense, initTheme } from './lib/theme';
 import type { Alert, User } from './lib/types';
 import { AppShell } from './components/AppShell';
 import { CommandPalette } from './components/CommandPalette';
+import { AiAssistant } from './components/AiAssistant';
 import { ShortcutsDialog } from './components/ShortcutsDialog';
 import { ConfirmProvider, ToastProvider, useToast } from './components/ui/overlays';
 import { LoginPage } from './pages/Login';
@@ -161,6 +162,7 @@ function AppInner() {
         />
       </Routes>
       <CommandPalette open={cmdOpen} setOpen={setCmdOpen} onExport={exportCurrent} onShortcuts={() => setKeysOpen(true)} />
+      <AiAssistant />
       <ShortcutsDialog open={keysOpen} onClose={() => setKeysOpen(false)} />
     </>
   );

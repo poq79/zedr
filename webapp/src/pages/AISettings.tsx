@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useConfirm, useToast } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
-import { relTime } from '../lib/format';
+import { relTime, SEV_LABEL } from '../lib/format';
 
 /* AI 平台：统一模型服务接入（Provider）+ 任务槽位差异 + 成本上限
    + 提示词模板 + 技能包。全部 admin-only；保存即时热生效（引擎热重载）。
@@ -615,6 +615,8 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
         )}
       </Card>
 
+      <OpsQueueCard />
+
       {/* 提示词模板 */}
       <Card className="mb-4 p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -734,5 +736,76 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
         )}
       </Drawer>
     </div>
+  );
+}
+
+/* ---------------- AI 值班队列（方向 C） ---------------- */
+interface OpsItem {
+  id: string; alert_id: string; title: string; hostname: string; severity: string;
+  score: number; verdict: string; confidence: number; summary: string;
+  actions?: { type: string; target?: string; detail?: string }[];
+  engine: string; created_at: string; status: string;
+  reviewed_by?: string; reviewed_at?: string;
+}
+
+function OpsQueueCard() {
+  const toast = useToast();
+  const [items, setItems] = useState<OpsItem[] | null>(null);
+  const [busy, setBusy] = useState('');
+  const load = useCallback(async () => {
+    try { setItems(await api.get<OpsItem[]>('/api/v1/ai/ops/queue')); } catch { setItems([]); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const review = async (it: OpsItem, action: 'approve' | 'dismiss') => {
+    setBusy(it.id);
+    try {
+      await api.post(`/api/v1/ai/ops/${encodeURIComponent(it.id)}/review`, { action });
+      toast(action === 'approve' ? '已认可建议（处置仍需人工执行）' : '已忽略该建议');
+      load();
+    } catch (e) { toast((e as Error).message, 'err'); }
+    finally { setBusy(''); }
+  };
+
+  const pending = (items || []).filter((x) => x.status === 'pending');
+  return (
+    <Card className="mb-4 px-2 pb-3 pt-3.5">
+      <div className="mb-2 flex items-center justify-between px-2">
+        <div>
+          <CardTitle>AI 值班队列</CardTitle>
+          <p className="mt-0.5 text-[11px] text-faint">critical 告警自动触发确定性调查并入队；审批只记录决定，绝不自动执行处置</p>
+        </div>
+        {items && <Badge tone={pending.length ? 'medium' : 'neutral'}>{pending.length} 待审</Badge>}
+      </div>
+      {!items ? <SkeletonRows rows={2} /> : !items.length ? (
+        <div className="px-2 pb-1 text-[12px] text-faint">暂无建议——critical 告警出现时会自动入队。</div>
+      ) : (
+        <div className="grid gap-1.5 px-2">
+          {items.slice(0, 10).map((it) => (
+            <div key={it.id} className="rounded-md border border-border-soft bg-card px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                <Badge tone={it.severity}>{SEV_LABEL[it.severity] || it.severity}</Badge>
+                <b className="min-w-0 flex-1 truncate" title={it.title}>{it.title}</b>
+                <span className="text-faint">{it.hostname} · {it.score} 分</span>
+                <Badge tone={it.status === 'pending' ? 'medium' : it.status === 'approved' ? 'resolved' : 'neutral'}>
+                  {it.status === 'pending' ? '待审' : it.status === 'approved' ? '已认可' : '已忽略'}
+                </Badge>
+              </div>
+              <div className="mt-1 text-[11.5px] leading-[1.6] text-muted-foreground">{it.summary}</div>
+              {!!it.actions?.length && (
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {it.actions.map((a, i) => <span key={i} className="rounded border border-border-soft px-1.5 py-0.5 font-mono text-[10.5px] text-faint">{a.type}:{a.target}</span>)}
+                </div>
+              )}
+              {it.status === 'pending' && (
+                <div className="mt-1.5 flex gap-1.5">
+                  <Button size="sm" variant="primary" disabled={busy === it.id} onClick={() => review(it, 'approve')}>认可建议</Button>
+                  <Button size="sm" variant="ghost" disabled={busy === it.id} onClick={() => review(it, 'dismiss')}>忽略</Button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
