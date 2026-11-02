@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 func scanFlagged(t *testing.T, s string) InjectionScan {

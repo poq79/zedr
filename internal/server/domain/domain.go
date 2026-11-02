@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/model"
+	"zedr/internal/model"
 )
 
 // 共享枚举别名：保证服务端内部书写简短，同时与线协议完全同源。

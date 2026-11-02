@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 type statsRepo struct{ s *Store }

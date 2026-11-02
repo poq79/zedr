@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/idgen"
-	"hostguard/internal/server/domain"
+	"zedr/internal/model"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/idgen"
+	"zedr/internal/server/domain"
 )
 
 // iocMaxEntries 是 IOC 库的容量上限。

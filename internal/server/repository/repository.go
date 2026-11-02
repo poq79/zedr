@@ -8,7 +8,7 @@ import (
 	"context"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 // Repos 汇总所有仓储。

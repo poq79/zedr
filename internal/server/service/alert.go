@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/idgen"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/repository"
+	"zedr/internal/model"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/idgen"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/repository"
 )
 
 func sha256Hex(s string) string {

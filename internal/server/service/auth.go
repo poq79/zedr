@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/idgen"
-	"hostguard/internal/server/auth"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/repository"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/idgen"
+	"zedr/internal/server/auth"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/repository"
 )
 
 // AuthService 负责登录、刷新令牌轮转与登出。

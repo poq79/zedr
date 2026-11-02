@@ -13,7 +13,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"hostguard/internal/server/repository"
+	"zedr/internal/server/repository"
 )
 
 // Store 持有 *sql.DB 并实现所有仓储接口。

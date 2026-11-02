@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/server/domain"
+	"zedr/internal/model"
+	"zedr/internal/server/domain"
 )
 
 // TestClusterByGap 验证事件聚类的时间间隔切分逻辑。

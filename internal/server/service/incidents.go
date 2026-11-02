@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/repository"
+	"zedr/internal/model"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/repository"
 )
 
 // incidentSyncInterval 是事件聚类的节流下限：列表查询触发懒同步时，

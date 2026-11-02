@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 type inventoryRepo struct{ s *Store }

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/ai"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/repository"
-	"hostguard/internal/server/repository/sqlite"
+	"zedr/internal/ai"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/repository"
+	"zedr/internal/server/repository/sqlite"
 )
 
 // newAIServiceTest 开临时 SQLite 库并搭一个最小 AIService。

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/server/domain"
+	"zedr/internal/model"
+	"zedr/internal/server/domain"
 )
 
 // ---------------------------------------------------------------- /metrics

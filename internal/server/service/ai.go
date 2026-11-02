@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"time"
 
-	"hostguard/internal/ai"
-	"hostguard/internal/model"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/repository"
+	"zedr/internal/ai"
+	"zedr/internal/model"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/repository"
 )
 
 // AIService 把存储层的告警转换成分析引擎的输入，并做结果回填。

@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"hostguard/internal/server/auth"
-	"hostguard/internal/ai"
-	"hostguard/internal/server/repository"
+	"zedr/internal/server/auth"
+	"zedr/internal/ai"
+	"zedr/internal/server/repository"
 )
 
 // Config 是服务层可调参数。

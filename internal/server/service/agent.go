@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/platform/idgen"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/repository"
+	"zedr/internal/model"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/idgen"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/repository"
 )
 
 // AgentService 负责终端注册、心跳、指令下发。

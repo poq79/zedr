@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/model"
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/repository/sqlite"
+	"zedr/internal/model"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/repository/sqlite"
 )
 
 // TestSyncCoversBeyondSinglePage 同主机 250 条 open 告警、相邻间隔 1 分钟

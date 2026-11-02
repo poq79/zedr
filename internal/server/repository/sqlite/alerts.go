@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 type alertRepo struct{ s *Store }

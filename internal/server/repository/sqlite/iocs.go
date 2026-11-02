@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 type iocRepo struct{ s *Store }

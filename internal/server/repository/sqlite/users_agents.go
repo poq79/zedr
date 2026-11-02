@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"hostguard/internal/server/domain"
+	"zedr/internal/server/domain"
 )
 
 type userRepo struct{ s *Store }

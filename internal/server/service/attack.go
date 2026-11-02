@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"hostguard/internal/attack"
-	"hostguard/internal/server/domain"
+	"zedr/internal/attack"
+	"zedr/internal/server/domain"
 )
 
 // AttackMatrix 构建战术×技术覆盖矩阵。

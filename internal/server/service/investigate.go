@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/server/domain"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/server/domain"
 )
 
 // InvestigationStep 是自动调查的一步：结论必须带证据引用。

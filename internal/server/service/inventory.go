@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"hostguard/internal/platform/apperr"
-	"hostguard/internal/server/domain"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/server/domain"
 )
 
 // InventorySection 是探针上报的一节资产清单（接收结构）。

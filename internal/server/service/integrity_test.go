@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"hostguard/internal/server/domain"
-	"hostguard/internal/server/repository/sqlite"
+	"zedr/internal/server/domain"
+	"zedr/internal/server/repository/sqlite"
 )
 
 // TestIntegrityChain 端到端验证"告警防篡改链"：
