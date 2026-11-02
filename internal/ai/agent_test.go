@@ -240,3 +240,45 @@ func TestAgentWithoutModelDegrades(t *testing.T) {
 		t.Fatal("无模型时 AgentAvailable 应为 false")
 	}
 }
+
+// Agent Chat：历史传入 + 工具调用 + 最终 answer 解析；历史条数与长度被钳制。
+func TestAgentChatLoop(t *testing.T) {
+	fm := &fakeAgentModel{responses: []string{
+		`TOOLCALL:c1:host_recent_alerts:{"limit":5}`,
+		`{"answer":"最近 24 小时有 0 条未签名告警（引用：无）。"}`,
+	}}
+	eng := newAgentEngine(t, fm)
+	ex := &recordingExecutor{result: `{"count":0}`}
+	hist := []ChatTurn{
+		{Role: "user", Content: strings.Repeat("旧问题", 2000)},
+		{Role: "assistant", Content: "旧回答"},
+	}
+	rep := eng.AgentChat(context.Background(), "最近有没有未签名告警？", hist, agentToolsForTest(), ex)
+	if rep.Degraded {
+		t.Fatalf("不应降级: %s", rep.DegradedReason)
+	}
+	if !strings.Contains(rep.Answer, "未签名") || rep.ToolCalls != 1 {
+		t.Fatalf("回答/工具调用不对: %+v", rep)
+	}
+	// 第一次请求的 messages：system + 钳制后的历史 + 当前问题
+	msgs, _ := fm.requests[0]["messages"].([]any)
+	if len(msgs) != 4 { // system + user(hist) + assistant(hist) + user(question)
+		t.Fatalf("历史消息数不对: %d", len(msgs))
+	}
+	last := msgs[len(msgs)-1].(map[string]any)
+	if last["role"] != "user" || !strings.Contains(last["content"].(string), "未签名") {
+		t.Fatalf("最后一条应是当前问题: %v", last)
+	}
+}
+
+// 未配置模型：chat 诚实降级，不抛出错误。
+func TestAgentChatWithoutModel(t *testing.T) {
+	eng := NewEngine(Config{Provider: "none"}, testLogger())
+	rep := eng.AgentChat(context.Background(), "帮我查最近告警", nil, agentToolsForTest(), &recordingExecutor{})
+	if !rep.Degraded || !strings.Contains(rep.DegradedReason, "未配置") {
+		t.Fatalf("应降级并说明原因: %+v", rep)
+	}
+	if rep.Answer != "" {
+		t.Fatal("降级时不应编造回答")
+	}
+}

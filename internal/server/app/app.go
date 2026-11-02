@@ -254,9 +254,9 @@ func New() (*App, error) {
 					defer func() { <-sem }()
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					if _, err := svc.AI.Investigate(ctx, id); err != nil {
-						log.Warn("auto_investigate_failed", "alert_id", id, "err", err)
-					}
+					// AutoOps = 确定性调查 + 值班队列入队（方向 C）；
+					// 刻意不用 LLM 自动调查：critical 爆发时每条都跑 agent 循环会烧穿预算。
+					svc.AI.AutoOps(ctx, id)
 				}(alert.ID)
 			}
 		}()

@@ -202,6 +202,10 @@ func Router(d Deps) http.Handler {
 	// AI 质量评测（admin-only）：heuristic 结构自检零成本；llm 模式消耗真实 token
 	mux.Handle("POST /api/v1/ai/eval/run", adminOnly(adminH.aiRunEval))
 	mux.Handle("GET /api/v1/ai/eval/last", adminOnly(adminH.aiLastEval))
+	// 网页内 AI 助手（方向 B）与 AI 值班队列（方向 C）
+	mux.Handle("POST /api/v1/ai/chat", viewer(adminH.aiChat))
+	mux.Handle("GET /api/v1/ai/ops/queue", viewer(adminH.aiOpsQueue))
+	mux.Handle("POST /api/v1/ai/ops/{id}/review", writer(adminH.aiOpsReview))
 
 	mux.Handle("GET /api/v1/hosts", viewer(adminH.listHosts))
 	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))

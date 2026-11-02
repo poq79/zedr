@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"zedr/internal/ai"
 	"zedr/internal/platform/httpx"
 )
 
@@ -43,4 +44,66 @@ func boolText(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// aiChat 是管理台 AI 助手的对话端点（方向 B）。
+func (h *adminHandler) aiChat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Question string      `json:"question"`
+		History  []aiTurn    `json:"history"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	hist := make([]ai.ChatTurn, 0, len(req.History))
+	for _, t := range req.History {
+		hist = append(hist, ai.ChatTurn{Role: t.Role, Content: t.Content})
+	}
+	rep, err := h.deps.Services.AI.Chat(r.Context(), req.Question, hist)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	if p := principal(r); p != nil {
+		h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "ai.chat", "",
+			"engine="+rep.Engine+",tools="+itoa(rep.ToolCalls)+",degraded="+boolText(rep.Degraded), httpx.ClientIP(r))
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, rep)
+}
+
+type aiTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// aiOpsQueue 返回 AI 值班队列（方向 C）。
+func (h *adminHandler) aiOpsQueue(w http.ResponseWriter, r *http.Request) {
+	list, err := h.deps.Services.AI.ListOpsQueue(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, list)
+}
+
+// aiOpsReview 审批一条值班建议（只改队列状态，不触发任何处置）。
+func (h *adminHandler) aiOpsReview(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	item, err := h.deps.Services.AI.ReviewOps(r.Context(), r.PathValue("id"), req.Action, actorName(r))
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	if p := principal(r); p != nil {
+		h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "ai.ops.review", item.ID,
+			"alert="+item.AlertID+",action="+req.Action, httpx.ClientIP(r))
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, item)
 }
