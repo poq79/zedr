@@ -27,6 +27,10 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
   high-value directories), **USN Journal catch-up for file drops that happened
   while the agent was stopped**, and persistence monitoring (Run keys, startup
   folder, services, scheduled tasks, Winlogon, IFEO) with baseline-on-first-run.
+- **Delivery you can trust** — alerts spool to disk (segmented NDJSON, bounded,
+  replayed after restart/offline), rule packs are strictly validated at load
+  time (unknown fields/operators are rejected instead of silently never
+  matching), and per-agent ingest backpressure protects the server database.
 - **Investigation workspace** — alert clustering into incidents, per-host
   timeline, integrity-chained audit trail, AI triage (grounded citations,
   prompt-injection resistant, pluggable backend, deterministic fallback), and

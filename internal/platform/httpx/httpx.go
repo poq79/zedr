@@ -322,10 +322,21 @@ func NewTokenBucket(rps, burst float64) *TokenBucket {
 	}
 }
 
-// Allow 判断 key 是否放行。
+// Allow 判断 key 是否放行（消耗 1 个令牌）。
 func (t *TokenBucket) Allow(key string) bool {
+	return t.AllowN(key, 1)
+}
+
+// AllowN 判断 key 是否可放行 n 个令牌。
+//
+// 告警上报限流按"条数"而不是"请求数"计费：一个请求带 500 条告警
+// 与 1 条告警对服务端的压力完全不同，按请求数限流会放过真正的突发。
+func (t *TokenBucket) AllowN(key string, n float64) bool {
 	if t == nil || t.rps <= 0 {
 		return true
+	}
+	if n < 0 {
+		n = 0
 	}
 	now := time.Now()
 	t.mu.Lock()
@@ -342,19 +353,20 @@ func (t *TokenBucket) Allow(key string) bool {
 
 	b, ok := t.buckets[key]
 	if !ok {
-		t.buckets[key] = &bucket{tokens: t.burst - 1, last: now}
-		return true
+		b = &bucket{tokens: t.burst, last: now}
+		t.buckets[key] = b
+	} else {
+		elapsed := now.Sub(b.last).Seconds()
+		b.tokens += elapsed * t.rps
+		b.last = now
+		if b.tokens > t.burst {
+			b.tokens = t.burst
+		}
 	}
-	elapsed := now.Sub(b.last).Seconds()
-	b.tokens += elapsed * t.rps
-	if b.tokens > t.burst {
-		b.tokens = t.burst
-	}
-	b.last = now
-	if b.tokens < 1 {
+	if n > b.tokens {
 		return false
 	}
-	b.tokens--
+	b.tokens -= n
 	return true
 }
 

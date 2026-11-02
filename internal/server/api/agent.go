@@ -64,6 +64,19 @@ func (h *agentHandler) reportAlerts(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
+	// 背压闸：先按"本批条数"扣每终端速率额度，再占一个在途批次槽。
+	// 拒绝只是让终端退避重试（探针侧 spool 保留告警），不是丢弃。
+	if h.deps.Ingest != nil {
+		release, err := h.deps.Ingest.Admit(a.ID, len(req.Alerts))
+		if err != nil {
+			if apperr.From(err).Code == apperr.CodeTooManyRequests {
+				w.Header().Set("Retry-After", "2")
+			}
+			httpx.WriteError(w, r, err)
+			return
+		}
+		defer release()
+	}
 	res, err := h.deps.Services.Alert.Ingest(r.Context(), a, req)
 	if err != nil {
 		httpx.WriteError(w, r, err)

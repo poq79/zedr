@@ -86,6 +86,12 @@ type Config struct {
 	LoginRPS    float64
 	LoginBurst  float64
 	RateBurst       float64
+	// Ingest 是终端告警上报的背压参数：每终端按"告警条数"限速，
+	// 并有全局在途批次上限（保护 SQLite 单写者）。
+	// RPS=0 关闭限速；MaxInflight 建议 4-16。
+	IngestAlertRPS  float64
+	IngestAlertBurst float64
+	IngestMaxInflight int
 	KillEnabled     bool
 	QuarantineEnabled bool
 	RetentionDays   int
@@ -157,6 +163,16 @@ func LoadConfig() (*Config, error) {
 	c.RateBurst = l.Float("HG_SERVER_RATE_LIMIT_BURST", 60)
 	c.LoginRPS = l.Float("HG_SERVER_LOGIN_RPS", 0.5)   // 登录：约每 2 秒 1 次
 	c.LoginBurst = float64(l.Int("HG_SERVER_LOGIN_BURST", 5))
+	// 告警上报背压：默认允许单终端 200 条/秒、突发 1000 条（两批 500），
+	// 全局最多 8 个批次同时写库。正常终端每秒远低于此，只有失控/被入侵
+	// 的终端才会撞到闸门——撞到后端会保留 spool 重试，不会丢告警。
+	c.IngestAlertRPS = l.Float("HG_SERVER_INGEST_ALERT_RPS", 200)
+	c.IngestAlertBurst = l.Float("HG_SERVER_INGEST_ALERT_BURST", 1000)
+	c.IngestMaxInflight = l.Int("HG_SERVER_INGEST_MAX_INFLIGHT", 8)
+	l.Check(c.IngestAlertRPS >= 0, "HG_SERVER_INGEST_ALERT_RPS 不能为负数（0=关闭限速）")
+	l.Check(c.IngestAlertBurst >= 1, "HG_SERVER_INGEST_ALERT_BURST 至少为 1")
+	l.Check(c.IngestMaxInflight >= 1 && c.IngestMaxInflight <= 64,
+		"HG_SERVER_INGEST_MAX_INFLIGHT 必须在 1-64 之间")
 	c.KillEnabled = l.Bool("HG_SERVER_KILL_ENABLED", false)
 	c.QuarantineEnabled = l.Bool("HG_SERVER_QUARANTINE_ENABLED", false)
 	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 30)

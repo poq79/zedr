@@ -16,6 +16,7 @@ import (
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
 	"zedr/internal/server/auth"
+	"zedr/internal/server/ingestguard"
 	"zedr/internal/server/livetunnel"
 	"zedr/internal/server/notify"
 	"zedr/internal/server/service"
@@ -51,6 +52,9 @@ type Deps struct {
 	// Tunnel 是实时隧道会话注册表（docs/LIVE-TUNNEL.md）；nil = 隧道端点
 	// 与实时查询代理不注册（老部署平滑升级路径）。
 	Tunnel *livetunnel.Registry
+	// Ingest 是终端告警上报的背压闸（每终端限速 + 在途批次上限）。
+	// nil = 不限制，兼容测试与老部署的默认行为。
+	Ingest *ingestguard.Guard
 	// LiveQueryEnabled/FileRead 对应 HG_SERVER_LIVEQUERY_ENABLED/FILEREAD，
 	// 执法逻辑见 api/live.go。
 	LiveQueryEnabled  bool

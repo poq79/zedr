@@ -20,6 +20,7 @@ import (
 	"zedr/internal/platform/logx"
 	"zedr/internal/server/api"
 	"zedr/internal/server/auth"
+	"zedr/internal/server/ingestguard"
 	"zedr/internal/server/livetunnel"
 	"zedr/internal/server/repository/sqlite"
 	"zedr/internal/server/service"
@@ -291,6 +292,7 @@ func New() (*App, error) {
 		Tunnel:           tunnelReg,
 		LiveQueryEnabled: cfg.LiveQueryEnabled,
 		LiveQueryFileRead: cfg.LiveQueryFileRead,
+		Ingest: ingestguard.New(cfg.IngestAlertRPS, cfg.IngestAlertBurst, cfg.IngestMaxInflight),
 	})
 
 	srv := httpx.NewServer(httpx.ServerConfig{
