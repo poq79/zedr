@@ -1,15 +1,16 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Bot, ChevronRight, CircleAlert, Container, Database, Globe, Monitor, RefreshCw,
-  ScanSearch, Terminal, TriangleAlert, Unplug,
+  ScanSearch, Skull, Terminal, TriangleAlert, Unplug,
 } from 'lucide-react';
-import { ApiError, live, liveErrorKind } from '../lib/api';
+import { api, ApiError, live, liveErrorKind } from '../lib/api';
 import type {
   ReconAssetItem, ReconCategory, ReconExposureLevel, ReconFindingLike, ReconListen,
   ReconProcess, ReconResult,
 } from '../lib/types';
 import { fmtTime } from '../lib/format';
 import { Badge, Button, Card, CardTitle, EmptyState, Skeleton, SkeletonRows } from '../components/ui/basics';
+import { useConfirm, useToast } from '../components/ui/overlays';
 import { cn } from '../lib/utils';
 import type { ReconFixtureApi } from '../lib/reconFixture';
 
@@ -613,10 +614,11 @@ function ReconOverview({
 /* ---------------- 六类分组卡 + 资产行 ---------------- */
 
 function CategoryCard({
-  ck, cat, filter, collapsed, onToggle, openIds, onToggleItem,
+  ck, cat, agentId, filter, collapsed, onToggle, openIds, onToggleItem,
 }: {
   ck: string;
   cat: ReconCategory;
+  agentId: string;
   filter: LevelFilter;
   collapsed: boolean;
   onToggle: () => void;
@@ -629,6 +631,7 @@ function CategoryCard({
   const meta = CATEGORY_META[cat.key || ''];
   const title = meta?.title || cat.title || cat.key || '未分类';
   const Icon = meta?.Icon || ScanSearch;
+  const isAI = (cat.key || '').toLowerCase() === 'ai';
   return (
     <Card>
       <button type="button" onClick={onToggle} aria-expanded={!collapsed}
@@ -647,6 +650,11 @@ function CategoryCard({
 
       {!collapsed && (
         <div className="border-t border-border-soft">
+          {isAI && (
+            <p className="border-b border-border-soft bg-secondary/20 px-3.5 py-2 text-[11px] text-faint">
+              AI 资产可经指令通道终止进程（双层开关控制）；模型与数据目录需现场人工处置
+            </p>
+          )}
           {cat.error && (
             <div className="m-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive-soft px-3 py-2 text-[12.5px] text-destructive">
               <CircleAlert size={14} className="mt-0.5 shrink-0" />
@@ -665,7 +673,8 @@ function CategoryCard({
               {visible.map((it, i) => {
                 const ak = `${ck}:${it.id || i}`;
                 return (
-                  <AssetRow key={ak} item={it} open={!!openIds[ak]}
+                  <AssetRow key={ak} item={it} open={!!openIds[ak]} agentId={agentId}
+                    isAI={isAI || (it.category || '').toLowerCase() === 'ai'}
                     onToggle={() => onToggleItem(ak)} />
                 );
               })}
@@ -677,7 +686,12 @@ function CategoryCard({
   );
 }
 
-function AssetRow({ item, open, onToggle }: { item: ReconAssetItem; open: boolean; onToggle: () => void }) {
+function AssetRow({ item, open, agentId, isAI, onToggle }: {
+  item: ReconAssetItem; open: boolean; agentId: string; isAI: boolean; onToggle: () => void;
+}) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [termBusy, setTermBusy] = useState(false);
   const kind = (item.kind || 'asset').toUpperCase().replace(/[_-]+/g, ' ');
   const listens = Array.isArray(item.listens) ? item.listens : [];
   const ports = listens.map(fmtListen).filter(Boolean).join(', ');
@@ -694,37 +708,75 @@ function AssetRow({ item, open, onToggle }: { item: ReconAssetItem; open: boolea
   const title = item.title || kind;
   const empty = !hasDetails && !evidence.length && !proc && !findings.length && !item.endpoint;
 
+  /* AI 资产管控（LIVE-TUNNEL §14.3）：只对带真实 PID 的进程给按钮。
+     PID 4 是 System，终止必失败且属系统关键进程，不给入口。 */
+  const pid = proc ? Number(proc.pid) : 0;
+  const canTerminate = isAI && Number.isFinite(pid) && pid > 0 && pid !== 4;
+
+  const doTerminate = async () => {
+    if (!canTerminate || termBusy) return;
+    const name = proc?.name || title;
+    const ok = await confirm({
+      title: `确认终止 ${name}（PID ${pid}）？`,
+      message: '处置走指令通道，需服务端与探针双层开关开启。',
+      danger: true,
+      okText: '终止',
+    });
+    if (!ok) return;
+    setTermBusy(true);
+    try {
+      // 处置走指令铁律（LIVE-TUNNEL §2）：与实时进程页同口径，payload 为 PID 字符串
+      await api.post(`/api/v1/hosts/${encodeURIComponent(agentId)}/commands`, { type: 'terminate', payload: String(pid) });
+      toast('终止指令已下发（待探针回执）');
+    } catch (ex) {
+      toast(ex instanceof Error ? ex.message : String(ex), 'err');
+    } finally {
+      setTermBusy(false);
+    }
+  };
+
   return (
     <div className="border-b border-border-soft last:border-b-0">
-      <button type="button" onClick={onToggle} aria-expanded={open}
-        className="flex w-full cursor-pointer items-start gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-secondary/60 focus-visible:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-        <ChevronRight size={13}
-          className={cn('mt-0.5 shrink-0 text-ghost transition-transform duration-150', open && 'rotate-90')} />
-        <Badge tone="neutral" className="mt-px shrink-0 font-mono text-[10.5px]">{kind}</Badge>
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <span className="font-medium break-words">{title}</span>
-            {item.endpoint && (
-              <span className="max-w-full truncate font-mono text-[10.5px] text-ghost" title={item.endpoint}>{item.endpoint}</span>
-            )}
+      <div className="flex items-stretch">
+        <button type="button" onClick={onToggle} aria-expanded={open}
+          className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-secondary/60 focus-visible:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          <ChevronRight size={13}
+            className={cn('mt-0.5 shrink-0 text-ghost transition-transform duration-150', open && 'rotate-90')} />
+          <Badge tone="neutral" className="mt-px shrink-0 font-mono text-[10.5px]">{kind}</Badge>
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <span className="font-medium break-words">{title}</span>
+              {item.endpoint && (
+                <span className="max-w-full truncate font-mono text-[10.5px] text-ghost" title={item.endpoint}>{item.endpoint}</span>
+              )}
+            </span>
+            <span className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-faint">
+              {ports && <span className="font-mono">{ports}</span>}
+              {procText && <span>{procText}</span>}
+              {!ports && !procText && <span>无监听端口与进程信息</span>}
+            </span>
           </span>
-          <span className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-faint">
-            {ports && <span className="font-mono">{ports}</span>}
-            {procText && <span>{procText}</span>}
-            {!ports && !procText && <span>无监听端口与进程信息</span>}
-          </span>
-        </span>
-        {findings.length > 0 && (
-          <span className="mt-0.5 flex shrink-0 items-center gap-1 text-[11px] text-warn" title={`该资产有 ${findings.length} 项问题`}>
-            <TriangleAlert size={12} />
-            <span className="font-mono tabular-nums">{findings.length}</span>
-          </span>
+          {findings.length > 0 && (
+            <span className="mt-0.5 flex shrink-0 items-center gap-1 text-[11px] text-warn" title={`该资产有 ${findings.length} 项问题`}>
+              <TriangleAlert size={12} />
+              <span className="font-mono tabular-nums">{findings.length}</span>
+            </span>
+          )}
+          <Badge tone={lvMeta.tone} className="mt-px shrink-0"
+            title={evidence.length ? `暴露判定：${evidence.join('；')}` : `暴露级别：${lvMeta.label}`}>
+            {lvMeta.label}
+          </Badge>
+        </button>
+        {canTerminate && (
+          <div className="flex shrink-0 items-center pr-3 pl-1">
+            <Button type="button" size="sm" variant="danger" disabled={termBusy} onClick={() => void doTerminate()}
+              title={`终止 PID ${pid}`}>
+              <Skull size={12} />
+              终止进程
+            </Button>
+          </div>
         )}
-        <Badge tone={lvMeta.tone} className="mt-px shrink-0"
-          title={evidence.length ? `暴露判定：${evidence.join('；')}` : `暴露级别：${lvMeta.label}`}>
-          {lvMeta.label}
-        </Badge>
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-border-soft bg-secondary/20 px-3.5 py-3">
@@ -957,7 +1009,7 @@ export function HostReconTab({ agentId }: { agentId: string }) {
             categories.map((c, i) => {
               const ck = c.key || `cat-${i}`;
               return (
-                <CategoryCard key={ck} ck={ck} cat={c} filter={levelFilter}
+                <CategoryCard key={ck} ck={ck} cat={c} agentId={agentId} filter={levelFilter}
                   collapsed={!!collapsed[ck]}
                   onToggle={() => setCollapsed((v) => ({ ...v, [ck]: !v[ck] }))}
                   openIds={openIds}

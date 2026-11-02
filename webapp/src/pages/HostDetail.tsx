@@ -209,21 +209,44 @@ function hashErrNote(e: unknown): string {
   }
 }
 
-/* 按需签名校验：一个按钮 + 一行结果，不缓存跨行结果（展开行各自持有状态）。
+/* 签名校验结果前端缓存（LIVE-TUNNEL §14.3）：同路径 30s 内重复点击不重复
+   请求——哈希与 Authenticode 校验在探针侧现场计算，成本不可忽略。
+   键为小写路径（服务/任务展开行来自同一台主机，路径即事实源）；
+   请求失败不写缓存，避免把瞬时错误（隧道忙/离线）钉住 30 秒。 */
+const HASH_CACHE_TTL_MS = 30_000;
+const hashCache = new Map<string, { at: number; data: LiveHash }>();
+
+/* 按需签名校验：一个按钮 + 一行结果，各展开行各自持有可见状态；
+   实际哈希结果按小写路径走模块级 30s 缓存（见上），避免重复点击重复哈希。
    fs/hash 是 analyst+ 且不需要 FILEREAD 权限，见 LIVE-TUNNEL §13 契约说明。 */
 function HashCheck({ agentId, path, canLive }: { agentId: string; path: string; canLive: boolean }) {
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<LiveHash | null>(null);
   const [err, setErr] = useState('');
+  const [cached, setCached] = useState(false);
 
   const run = async () => {
     if (!path) return;
+    // key 必须含 agentId：30 秒内切换主机且路径相同时，纯路径键会串用
+    // 另一台主机的哈希结果（同名系统文件路径极为常见）
+    const key = agentId + ":" + path.trim().toLowerCase();
+    const hit = hashCache.get(key);
+    if (hit && Date.now() - hit.at < HASH_CACHE_TTL_MS) {
+      setRes(hit.data);
+      setErr('');
+      setCached(true);
+      return;
+    }
     setBusy(true); setErr('');
     try {
-      setRes(await live.hash(agentId, path));
+      const data = await live.hash(agentId, path);
+      hashCache.set(key, { at: Date.now(), data });
+      setRes(data);
+      setCached(false);
     } catch (e) {
       setRes(null);
       setErr(hashErrNote(e));
+      setCached(false);
     } finally {
       setBusy(false);
     }
@@ -246,6 +269,9 @@ function HashCheck({ agentId, path, canLive }: { agentId: string; path: string; 
       {res && meta && (
         <span className="flex flex-wrap items-center gap-2">
           <Badge tone={meta.tone}>{meta.label}</Badge>
+          {cached && (
+            <span className="text-[11px] text-ghost" title="30 秒内重复查询，未重新哈希">缓存</span>
+          )}
           <span className="font-mono text-[11px] text-muted-foreground" title={res.sha256}>
             SHA256 {res.sha256.slice(0, 16)}…
           </span>
