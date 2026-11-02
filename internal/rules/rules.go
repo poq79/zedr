@@ -69,22 +69,150 @@ type Eval struct {
 }
 
 // Compile 解析规则定义 JSON。
+//
+// 严格校验字段与操作符：拼错一个字段名在运行时只会"永远不命中"，
+// 没有报错、没有日志，是最难发现的规则失效方式（本仓库 5.1 节
+// 的引号编码事故就是同类：规则看似存在，实际从未生效）。
+// 因此未知字段/操作符、非法正则/glob、类型不匹配、未知 JSON 键
+// 一律在加载期拒绝，让问题在保存规则时就暴露。
 func Compile(defJSON string) (*Definition, error) {
+	if strings.TrimSpace(defJSON) == "" {
+		return nil, fmt.Errorf("规则定义不能为空")
+	}
 	var d Definition
-	if err := json.Unmarshal([]byte(defJSON), &d); err != nil {
+	dec := json.NewDecoder(strings.NewReader(defJSON))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&d); err != nil {
 		return nil, fmt.Errorf("规则定义 JSON 解析失败: %w", err)
 	}
 	if len(d.All) == 0 && len(d.Any) == 0 && len(d.None) == 0 {
 		return nil, fmt.Errorf("规则定义至少要包含 all / any / none 之一")
 	}
+	idx := 0
 	for _, group := range [][]Condition{d.All, d.Any, d.None} {
 		for _, c := range group {
-			if c.Field == "" || c.Op == "" {
-				return nil, fmt.Errorf("条件缺少 field 或 op")
+			idx++
+			if err := validateCondition(idx, c); err != nil {
+				return nil, err
 			}
 		}
 	}
 	return &d, nil
+}
+
+// fieldKind 是字段的取值类型，用来在编译期挡住明显的类型错配。
+type fieldKind int
+
+const (
+	kindString fieldKind = iota
+	kindBool
+	kindInt
+	kindStringList
+	kindIntList
+)
+
+// validFields 是规则 DSL 的完整字段表。新增 Target 字段时必须同步
+// 这里，否则规则能写但加载会被拒绝——这是有意的：宁可在保存时报错。
+var validFields = map[string]fieldKind{
+	"process.name": kindString, "proc.name": kindString,
+	"process.path": kindString, "proc.path": kindString,
+	"process.cmdline": kindString, "proc.cmdline": kindString,
+	"process.user": kindString, "proc.user": kindString,
+	"process.signed":         kindBool,
+	"process.signature_ok":   kindBool,
+	"process.signer":         kindString,
+	"process.elevated":       kindBool,
+	"process.in_system":      kindBool,
+	"process.dir_writable":   kindBool,
+	"process.session":        kindInt,
+	"process.depth":          kindInt,
+	"parent.name":            kindString,
+	"parent.path":            kindString,
+	"ancestor.names":         kindStringList,
+	"network.count":          kindInt,
+	"network.remote_ports":   kindIntList,
+	"network.has_public_remote": kindBool,
+	"module.unsigned_count":  kindInt,
+	"module.non_system_count": kindInt,
+}
+
+var validOps = map[string]struct{}{
+	"exists": {}, "eq": {}, "ne": {}, "gt": {}, "lt": {}, "gte": {}, "lte": {},
+	"in": {}, "nin": {}, "contains": {}, "icontains": {}, "ncontains": {},
+	"prefix": {}, "isuffix": {}, "suffix": {}, "glob": {}, "regex": {},
+	"any_in_list": {}, "list_contains": {}, "list_has_any": {}, "bool_eq": {},
+}
+
+func validateCondition(idx int, c Condition) error {
+	kind, ok := validFields[c.Field]
+	if !ok {
+		return fmt.Errorf("第 %d 个条件: 未知字段 %q（拼写错误会让规则永远不命中）", idx, c.Field)
+	}
+	if _, ok := validOps[c.Op]; !ok {
+		return fmt.Errorf("第 %d 个条件: 未知操作符 %q", idx, c.Op)
+	}
+	if c.Value == nil && c.Op != "exists" {
+		return fmt.Errorf("第 %d 个条件: 操作符 %q 缺少 value", idx, c.Op)
+	}
+
+	switch c.Op {
+	case "regex":
+		s, ok := c.Value.(string)
+		if !ok {
+			return fmt.Errorf("第 %d 个条件: regex 的 value 必须是字符串", idx)
+		}
+		if _, err := compileRegex(s); err != nil {
+			return fmt.Errorf("第 %d 个条件: 正则非法: %w", idx, err)
+		}
+	case "glob":
+		s, ok := c.Value.(string)
+		if !ok {
+			return fmt.Errorf("第 %d 个条件: glob 的 value 必须是字符串", idx)
+		}
+		if _, err := filepath.Match(strings.ToLower(s), ""); err != nil {
+			return fmt.Errorf("第 %d 个条件: glob 非法: %w", idx, err)
+		}
+	case "gt", "lt", "gte", "lte":
+		if kind == kindBool || kind == kindStringList || kind == kindIntList {
+			return fmt.Errorf("第 %d 个条件: 字段 %q 不支持数值比较", idx, c.Field)
+		}
+		if kind == kindInt {
+			if _, ok := toFloat(c.Value); !ok {
+				return fmt.Errorf("第 %d 个条件: 字段 %q 需要数值，得到 %T", idx, c.Field, c.Value)
+			}
+		}
+	case "bool_eq":
+		if kind != kindBool {
+			return fmt.Errorf("第 %d 个条件: bool_eq 只能用于布尔字段，%q 不是", idx, c.Field)
+		}
+		if _, ok := toBool(c.Value); !ok {
+			return fmt.Errorf("第 %d 个条件: bool_eq 的 value 必须是布尔值", idx)
+		}
+	case "in", "nin":
+		switch c.Value.(type) {
+		case string, []string, []any, float64, int, int64, bool:
+		default:
+			return fmt.Errorf("第 %d 个条件: %s 的 value 必须是列表或标量", idx, c.Op)
+		}
+	case "any_in_list", "list_has_any":
+		if kind != kindStringList && kind != kindIntList {
+			return fmt.Errorf("第 %d 个条件: %s 只能用于列表字段，%q 不是", idx, c.Op, c.Field)
+		}
+		switch c.Value.(type) {
+		case string, []string, []any:
+		default:
+			return fmt.Errorf("第 %d 个条件: %s 的 value 必须是列表或字符串", idx, c.Op)
+		}
+	case "list_contains":
+		if kind != kindStringList && kind != kindIntList {
+			return fmt.Errorf("第 %d 个条件: list_contains 只能用于列表字段，%q 不是", idx, c.Field)
+		}
+	case "contains", "icontains", "ncontains", "prefix", "isuffix", "suffix":
+		if kind != kindString && kind != kindStringList {
+			return fmt.Errorf("第 %d 个条件: 字段 %q 不支持字符串匹配", idx, c.Field)
+		}
+	}
+	return nil
 }
 
 var regexCache sync.Map // pattern -> *regexp.Regexp
