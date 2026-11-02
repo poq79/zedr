@@ -91,6 +91,12 @@ cp .env.example .env             # set HG_SERVER_JWT_SECRET + HG_SERVER_ENROLL_T
 ```
 
 Console: `http://127.0.0.1:8080` · local panel: `http://127.0.0.1:8843` (loopback only).
+Beyond detection, the local panel ships read-only hygiene views: installed
+software (with hidden-uninstaller flags), Autoruns-style startup audit
+(signature / file-missing flags), security posture & patch checks
+(green/yellow/red with reasons), network exposure (listeners → process,
+hosts, proxy), and browser extension review — evidence and guidance only,
+no one-click "fixing".
 
 Install the agent as a Windows service (auto failure-recovery configured):
 
