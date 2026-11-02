@@ -218,12 +218,13 @@ SCENARIOS = [
     # ---- S17：网络行为检测（NW 规则族，走旁路告警链路）----
     # 扫描行为告警不经过进程检测引擎打分（进程行 score 恒为 0），
     # 判定与 INV- 场景同口径：读 /api/local/alerts 里 evidence.signals 的 ID。
-    # 网络前提（2026-11-03 实测）：SYN_SENT 只有在目标"静默丢弃 SYN"时
-    # 才能存活到 2s 快照采样——企业网的 stealth-drop 目标可见；家庭网关/
-    # TEST-NET 网段秒回 RST/ICMP 时连接完全不可观测，本场景会如实报漏检
-    # （是环境限制不是产品缺陷，单主机实验室的正向验证依赖第二台主机）。
+    # 2026-11-03 实测本机 PASS（NW-001/60 + NW-004/55 双告警）：TEST-NET-3
+    # 的 SYN 被上游静默丢弃，SYN_SENT 存活 20s+ 可稳定采样。诚实边界：
+    # 若目标网络对 SYN 秒回 RST/ICMP（少见），SYN_SENT 短于采样间隔会漏——
+    # 那是轮询采样语义的固有边界（DETECTION §3.6.1c），非本场景可调。
     # 注意：该场景必须在探针启动 ≥5 分钟后运行（引擎冷启动静默期同样
-    # 作用于网络行为告警），矩阵里排在最后正是为此。
+    # 作用于网络行为告警），矩阵里排在最后正是为此；且 bin/zedr-diag.exe
+    # 必须是含 -netburst 的新版（旧版 flag 报错直接退出、零连接）。
     dict(id="S17", name="端口扫描行为（16 端口 SYN 扇出，NW-001）",
          run=lambda: _port_scan(),
          probe=("portscan.exe", "", WORK_MARK), expect=["NW-001"]),
