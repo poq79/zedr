@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronRight, RefreshCw, ScanSearch, Search, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowLeft, ChevronRight, CircleAlert, RefreshCw, ScanSearch, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { api, ApiError, live, liveErrorKind } from '../lib/api';
-import type { AgentCommand, Alert, Host, HostInventorySection, LiveHash, LiveNetConn, LiveProcRow, User } from '../lib/types';
+import type { AgentCommand, Alert, Host, HostInventorySection, LiveHash, LiveNetConn, LivePeers, LiveProcRow, User } from '../lib/types';
 import { relTime, fmtTime, SEV_LABEL } from '../lib/format';
 import { Badge, Button, Card, CardTitle, Input, SkeletonRows, Tabs } from '../components/ui/basics';
 import { useToast, useConfirm } from '../components/ui/overlays';
@@ -13,6 +13,7 @@ import { LiveProcsTab, LiveProbeInfo } from './HostLiveProcs';
 import { HostReconTab } from './HostReconTab';
 import { HostBaselineTab } from './HostBaselineTab';
 import { HostAccountsTab } from './HostAccountsTab';
+import { HostPersistenceTab } from './HostPersistenceTab';
 
 /* 主机详情（整页，/hosts/:id）。
    资产清单 7 节各有明确 schema（服务/任务/自启动动辄数百行），
@@ -432,6 +433,7 @@ export function HostDetailPage({ user }: { user: User }) {
               { key: 'live', label: '实时文件' },
               { key: 'recon', label: '资产侦查' },
               { key: 'baseline', label: '安全基线' },
+              { key: 'persistence', label: '持久化总览' },
               { key: 'accounts', label: '账户与会话' },
               { key: 'changes', label: '变更', count: changes?.length },
               { key: 'ops', label: '处置与历史', count: cmds?.length },
@@ -521,6 +523,9 @@ export function HostDetailPage({ user }: { user: User }) {
                 {sec('adapters') && <AdaptersTable rows={parseAny(sec('adapters')!)} />}
               </SectionCard>
 
+              {/* 外联对端是独立的实时聚合端点：失败不影响下方静态监听清单 */}
+              <PeersCard agentId={id} canLive={canLive} />
+
               <SectionCard title="监听端口" extra={sec('listeners') && <ListenersSummary s={sec('listeners')!} />}>
                 {sec('listeners') && (
                   <ListenersTable s={sec('listeners')!} agentId={id} canLive={canLive}
@@ -540,6 +545,7 @@ export function HostDetailPage({ user }: { user: User }) {
             )}
             {tab === 'recon' && <HostReconTab agentId={id} />}
             {tab === 'baseline' && <HostBaselineTab agentId={id} />}
+            {tab === 'persistence' && <HostPersistenceTab agentId={id} canLive={canLive} />}
             {tab === 'accounts' && <HostAccountsTab agentId={id} />}
             {tab === 'changes' && (
               <Card className="p-4">
@@ -807,6 +813,199 @@ interface ListenerView {
   cls: ProcClass;
   exposure: BindExposure;
   conns: LiveNetConn[];
+}
+
+/* ===== 外联对端（实时，LIVE-TUNNEL §16.2 / F9）=====
+   独立端点、独立卡片：网络 Tab 的静态监听清单不依赖它，反之亦然。
+   语义：仅 ESTABLISHED——LISTEN 归监听端口表，TIME_WAIT 等瞬态不承载
+   "谁在说话"的判断，聚合进来只会制造噪声。 */
+const PEER_CLASS_META: Record<string, { label: string; tone: string; hint: string }> = {
+  public: { label: '公网', tone: 'medium', hint: '公网地址：对外通信，优先审视归属进程与端口' },
+  private: { label: '内网', tone: 'neutral', hint: '私网/链路本地地址（同网段或 VPN 另一侧）' },
+  loopback: { label: '本机', tone: 'neutral', hint: '回环地址，仅本机进程间通信' },
+  multicast: { label: '组播', tone: 'neutral', hint: '组播地址' },
+  reserved: { label: '保留', tone: 'neutral', hint: '保留/未分类地址' },
+};
+
+type PeerErr = { kind: 'tunnel' | 'busy' | 'off' | 'unsupported' | 'other'; note: string };
+
+function peerErrOf(e: unknown): PeerErr {
+  if (e instanceof ApiError && e.status === 404) {
+    return { kind: 'unsupported', note: '该探针或服务端版本不支持外联对端聚合' };
+  }
+  switch (liveErrorKind(e)) {
+    case 'tunnel': return { kind: 'tunnel', note: '探针隧道未连接' };
+    case 'busy': return { kind: 'busy', note: '探针忙，稍后重试' };
+    case 'off': return { kind: 'off', note: '实时查询未启用或权限不足' };
+    case 'unsupported': return { kind: 'unsupported', note: '该探针或服务端版本不支持外联对端聚合' };
+    default: return { kind: 'other', note: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function PeersCard({ agentId, canLive }: { agentId: string; canLive: boolean }) {
+  const [res, setRes] = useState<LivePeers | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<PeerErr | null>(null);
+  const [view, setView] = useState<'peer' | 'proc'>('peer');
+  const [freshAt, setFreshAt] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await live.peers(agentId);
+      setRes(d);
+      setErr(null);
+      // generated_at 是探针时刻；缺省时退回本地时刻并如实标注
+      setFreshAt(d.generated_at ? fmtTime(d.generated_at) : new Date().toLocaleTimeString('zh-CN', { hour12: false }));
+    } catch (e) {
+      // 失败清空：外联是现场快照，不拿过期连接表冒充当前状态
+      setRes(null);
+      setErr(peerErrOf(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    if (!canLive) { setRes(null); setErr(null); setFreshAt(''); return; }
+    setRes(null); setErr(null); setFreshAt('');
+    void load();
+  }, [load, canLive]);
+
+  const counts = res?.counts;
+  const peers = res?.peers || [];
+  const procs = res?.by_process || [];
+
+  const countsRow = counts && (
+    <span className="flex flex-wrap items-center gap-2 font-mono text-[11px] tabular-nums text-ghost">
+      <span>ESTABLISHED <b className="font-semibold text-muted-foreground">{counts.established ?? 0}</b></span>
+      <span>公网 <b className="font-semibold text-warn">{counts.public ?? 0}</b></span>
+      <span>内网 <b className="font-semibold text-muted-foreground">{counts.private ?? 0}</b></span>
+    </span>
+  );
+
+  return (
+    <Card className="p-4">
+      <div className="mb-2.5 flex flex-wrap items-center gap-2.5">
+        <CardTitle>外联对端（实时）</CardTitle>
+        {countsRow}
+        {res?.truncated && (
+          <Badge tone="medium" title="对端超过 200 个或按进程超过 50 个，列表已截断">结果已截断</Badge>
+        )}
+        <div className="flex-1" />
+        <div className="flex items-center gap-1 rounded-md border border-border-soft bg-card p-0.5" role="group" aria-label="对端视图切换">
+          {([['peer', '按对端'], ['proc', '按进程']] as const).map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setView(k)} aria-pressed={view === k}
+              className={cn('cursor-pointer rounded-[5px] px-2.5 py-1 text-[11.5px] transition-colors',
+                view === k ? 'bg-secondary font-medium text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {freshAt && <span className="text-[11px] text-ghost">更新于 {freshAt}</span>}
+        <Button size="sm" variant="ghost" disabled={!canLive || loading} onClick={() => void load()}
+          title={canLive ? '重新拉取实时连接表聚合' : '需要分析师及以上角色'}>
+          <RefreshCw size={13} className={cn(loading && 'anim-spin')} />
+          {loading ? '刷新中…' : '刷新'}
+        </Button>
+      </div>
+
+      {!canLive ? (
+        <div className="rounded-md border border-border-soft bg-secondary/40 px-3.5 py-6 text-center text-[12.5px] text-faint">
+          外联对端需要分析师及以上角色才能读取实时连接表
+        </div>
+      ) : !res && !err ? (
+        <SkeletonRows rows={4} />
+      ) : err ? (
+        <div className="flex flex-wrap items-center gap-2.5 rounded-md border border-warn/30 bg-warn-soft px-3.5 py-2.5 text-[12.5px]">
+          <CircleAlert size={15} className="shrink-0 text-warn" />
+          <span className="min-w-0 flex-1">
+            {err.kind === 'unsupported' ? '该探针版本不支持外联对端聚合——升级探针后可查看。' : err.note}
+          </span>
+          <Button size="sm" onClick={() => void load()} disabled={loading}>重试</Button>
+        </div>
+      ) : view === 'peer' ? (
+        !peers.length ? (
+          <div className="rounded-md border border-border-soft bg-secondary/40 px-3.5 py-6 text-center text-[12.5px] text-faint">
+            当前没有 ESTABLISHED 外联连接——安静不代表安全，可对照下方监听端口表看暴露面
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12.5px]">
+              <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+                {['对端 IP', '归属', '远端端口', '连接数', '涉及进程'].map((h) => (
+                  <th key={h} className="px-3 py-2 font-semibold">{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {peers.map((p) => {
+                  const meta = PEER_CLASS_META[p.class] || { label: p.class || '未分类', tone: 'neutral', hint: '探针未给出内外网分类' };
+                  const ports = p.ports || [];
+                  return (
+                    <tr key={p.ip} className="border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary">
+                      <td className="px-3 py-1.5">
+                        <span className="font-mono text-[11.5px] font-medium" title={p.ip}>{p.ip || '—'}</span>
+                      </td>
+                      <td className="px-3 py-1.5"><Badge tone={meta.tone} title={meta.hint}>{meta.label}</Badge></td>
+                      <td className="px-3 py-1.5">
+                        <span className="block max-w-[280px] truncate font-mono text-[11.5px] tabular-nums text-muted-foreground"
+                          title={ports.map((x) => `${x.port}（${x.conns}）`).join('、')}>
+                          {ports.slice(0, 5).map((x) => x.port).join('、') || '—'}
+                          {ports.length > 5 && <span className="text-faint"> 等 {ports.length} 个</span>}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 font-mono tabular-nums">{p.conns || 0}</td>
+                      <td className="px-3 py-1.5">
+                        <span className="flex flex-wrap items-center gap-1">
+                          {(p.procs || []).slice(0, 3).map((name) => (
+                            <Badge key={name} tone="neutral" className="font-mono">{name}</Badge>
+                          ))}
+                          {(p.procs || []).length > 3 && (
+                            <span className="text-[11px] text-faint">+{(p.procs || []).length - 3}</span>
+                          )}
+                          {!(p.procs || []).length && <span className="text-faint">—</span>}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : (
+        !procs.length ? (
+          <div className="rounded-md border border-border-soft bg-secondary/40 px-3.5 py-6 text-center text-[12.5px] text-faint">
+            当前没有进程持有 ESTABLISHED 连接
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12.5px]">
+              <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+                {['PID', '进程', '连接数', '对端数'].map((h) => (
+                  <th key={h} className="px-3 py-2 font-semibold">{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {procs.map((p, i) => (
+                  <tr key={`${p.pid}:${i}`} className="border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary">
+                    <td className="px-3 py-1.5 font-mono tabular-nums text-faint">{p.pid || '—'}</td>
+                    <td className="px-3 py-1.5"><span className="block max-w-[280px] truncate font-mono text-[11.5px] font-medium" title={p.name}>{p.name || '—'}</span></td>
+                    <td className="px-3 py-1.5 font-mono tabular-nums">{p.conns || 0}</td>
+                    <td className="px-3 py-1.5 font-mono tabular-nums">{p.peer_count || 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+
+      <p className="mt-2 text-[11px] text-ghost">
+        实时快照（仅 ESTABLISHED）：按对端最多 200 行、按进程最多 50 行。连接表与静态监听清单相互独立，任一方失败不影响另一方。
+      </p>
+    </Card>
+  );
 }
 
 function ListenersTable({ s, agentId, canLive, onOpenRecon }: {

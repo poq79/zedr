@@ -201,7 +201,8 @@ export interface LiveNetConn {
   proc_name?: string;
   proc_path?: string;
   proc_user?: string;
-  proc_started_at?: string;
+  /** 进程真实启动时刻，unix 秒（探针 int64；不是 ISO 字符串） */
+  proc_started_at?: number;
   proc_cmdline?: string;
   proc_elevated?: boolean;
   exited?: boolean;
@@ -570,4 +571,65 @@ export interface LiveMemScan {
   suspicious: LiveMemSuspicious[];
   truncated: boolean;
   note?: string;
+}
+
+/* ---- 非进程域三个模块（docs/LIVE-TUNNEL.md §16，第七轮 F9）----
+   persistence / peers 为探针侧聚合端点，字段名逐字对齐 §16.1/§16.2；
+   老探针未挂 handler → 501、老服务端预算表未收录 → 404，前端同口径降级。 */
+
+/** 持久化项来源：服务（auto/delayed-auto）/ 计划任务 / 启动项 */
+export type PersistenceSource = 'service' | 'task' | 'startup';
+
+/** 单条持久化项；exe_path 由探针从 command 基础提取，可能为空（无绝对路径） */
+export interface PersistenceItem {
+  source: PersistenceSource | string;
+  name: string;
+  command: string;
+  exe_path: string;
+  user: string;
+  /** task enabled=false 表示任务已禁用（仍列出便于审视） */
+  enabled: boolean;
+  /** service=服务名路径；task=任务路径；startup=注册表/目录位置 */
+  location: string;
+}
+
+/** GET /hosts/{id}/live/persistence —— 三来源聚合，上限 2000 条 / 10s 预算 */
+export interface LivePersistence {
+  generated_at?: string;
+  truncated?: boolean;
+  counts?: { service: number; task: number; startup: number };
+  items?: PersistenceItem[];
+}
+
+/** 对端端口聚合：conns 为该端口上的连接数 */
+export interface PeerPort {
+  port: number;
+  conns: number;
+}
+
+/** 单个远端 IP 的聚合行；procs 是 "name(pid)" 字符串（探针侧已格式化） */
+export interface PeerRow {
+  ip: string;
+  /** public | private | loopback | reserved（探针 net 标准库划分，可能扩展） */
+  class: string;
+  ports: PeerPort[];
+  conns: number;
+  procs: string[];
+}
+
+/** 按进程视角：谁在跟最多对端说话（C2 心跳往往集中少量对端） */
+export interface PeerByProcess {
+  pid: number;
+  name: string;
+  conns: number;
+  peer_count: number;
+}
+
+/** GET /hosts/{id}/live/peers —— 仅 ESTABLISHED，peers ≤200 / by_process ≤50 */
+export interface LivePeers {
+  generated_at?: string;
+  counts?: { established: number; public: number; private: number };
+  peers?: PeerRow[];
+  by_process?: PeerByProcess[];
+  truncated?: boolean;
 }

@@ -287,6 +287,8 @@ export const fixture: LiveFixtureApi = {
 /* ---- v2 演示数据（全部良性名，不含真实恶意样本） ---- */
 
 const iso = (secAgo: number) => new Date(Date.now() - secAgo * 1000).toISOString();
+/* proc_started_at 是 unix 秒（探针 int64），不是 ISO 字符串 */
+const unix = (secAgo: number) => Math.floor(Date.now() / 1000) - secAgo;
 
 const PROCS: import('./types').LiveProcRow[] = [
   { pid: 4, ppid: 0, name: 'System', path: '', cmdline: '', user: 'SYSTEM', score: 0, verdict: '', severity: '', title: '', first_seen: iso(86400 * 3), conn_count: 0, modules: 0 },
@@ -297,10 +299,10 @@ const PROCS: import('./types').LiveProcRow[] = [
 ];
 
 const NET: import('./types').LiveNetConn[] = [
-  { proto: 'TCP', local_ip: '192.168.1.10', local_port: 52100, remote_ip: '203.0.113.10', remote_port: 443, state: 'ESTABLISHED', pid: 4096, proc_name: 'demo_app.exe', proc_path: 'C:\\Users\\Administrator\\Downloads\\demo_app.exe', proc_user: 'fixture\\administrator', proc_started_at: iso(600), proc_cmdline: '"C:\\Users\\Administrator\\Downloads\\demo_app.exe" --mode=normal', proc_elevated: false, exited: false, remote_class: 'public' },
-  { proto: 'TCP', local_ip: '192.168.1.10', local_port: 52122, remote_ip: '10.0.0.5', remote_port: 445, state: 'ESTABLISHED', pid: 512, proc_name: 'svchost.exe', proc_path: 'C:\\Windows\\system32\\svchost.exe', proc_user: 'SYSTEM', proc_started_at: iso(86400 * 3), proc_cmdline: 'C:\\Windows\\system32\\svchost.exe -k netsvcs -p', proc_elevated: true, exited: false, remote_class: 'private' },
-  { proto: 'TCP', local_ip: '127.0.0.1', local_port: 8843, remote_ip: '0.0.0.0', remote_port: 0, state: 'LISTEN', pid: 512, proc_name: 'svchost.exe', proc_path: 'C:\\Windows\\system32\\svchost.exe', proc_user: 'SYSTEM', proc_started_at: iso(86400 * 3), proc_cmdline: 'C:\\Windows\\system32\\svchost.exe -k netsvcs -p', proc_elevated: true, exited: false, remote_class: 'reserved' },
-  { proto: 'TCP', local_ip: '127.0.0.1', local_port: 51044, remote_ip: '127.0.0.1', remote_port: 8843, state: 'ESTABLISHED', pid: 2048, proc_name: 'notepad.exe', proc_path: 'C:\\Windows\\System32\\notepad.exe', proc_user: 'fixture\\administrator', proc_started_at: iso(1800), proc_cmdline: '"C:\\Windows\\system32\\NOTEPAD.EXE"', proc_elevated: false, exited: false, remote_class: 'loopback' },
-  { proto: 'TCP', local_ip: '192.168.1.10', local_port: 52099, remote_ip: '198.51.100.7', remote_port: 80, state: 'CLOSE_WAIT', pid: 9999, proc_name: '(已退出)', proc_path: '', proc_user: '', proc_started_at: '', proc_cmdline: '', proc_elevated: false, exited: true, remote_class: 'public' },
-  { proto: 'UDP', local_ip: '192.168.1.10', local_port: 5353, remote_ip: '', remote_port: 0, state: '', pid: 512, proc_name: 'svchost.exe', proc_path: 'C:\\Windows\\system32\\svchost.exe', proc_user: 'SYSTEM', proc_started_at: iso(86400 * 3), proc_cmdline: '', proc_elevated: true, exited: false, remote_class: '' },
+  { proto: 'TCP', local_ip: '192.168.1.10', local_port: 52100, remote_ip: '203.0.113.10', remote_port: 443, state: 'ESTABLISHED', pid: 4096, proc_name: 'demo_app.exe', proc_path: 'C:\\Users\\Administrator\\Downloads\\demo_app.exe', proc_user: 'fixture\\administrator', proc_started_at: unix(600), proc_cmdline: '"C:\\Users\\Administrator\\Downloads\\demo_app.exe" --mode=normal', proc_elevated: false, exited: false, remote_class: 'public' },
+  { proto: 'TCP', local_ip: '192.168.1.10', local_port: 52122, remote_ip: '10.0.0.5', remote_port: 445, state: 'ESTABLISHED', pid: 512, proc_name: 'svchost.exe', proc_path: 'C:\\Windows\\system32\\svchost.exe', proc_user: 'SYSTEM', proc_started_at: unix(86400 * 3), proc_cmdline: 'C:\\Windows\\system32\\svchost.exe -k netsvcs -p', proc_elevated: true, exited: false, remote_class: 'private' },
+  { proto: 'TCP', local_ip: '127.0.0.1', local_port: 8843, remote_ip: '0.0.0.0', remote_port: 0, state: 'LISTEN', pid: 512, proc_name: 'svchost.exe', proc_path: 'C:\\Windows\\system32\\svchost.exe', proc_user: 'SYSTEM', proc_started_at: unix(86400 * 3), proc_cmdline: 'C:\\Windows\\system32\\svchost.exe -k netsvcs -p', proc_elevated: true, exited: false, remote_class: 'reserved' },
+  { proto: 'TCP', local_ip: '127.0.0.1', local_port: 51044, remote_ip: '127.0.0.1', remote_port: 8843, state: 'ESTABLISHED', pid: 2048, proc_name: 'notepad.exe', proc_path: 'C:\\Windows\\System32\\notepad.exe', proc_user: 'fixture\\administrator', proc_started_at: unix(1800), proc_cmdline: '"C:\\Windows\\system32\\NOTEPAD.EXE"', proc_elevated: false, exited: false, remote_class: 'loopback' },
+  { proto: 'TCP', local_ip: '192.168.1.10', local_port: 52099, remote_ip: '198.51.100.7', remote_port: 80, state: 'CLOSE_WAIT', pid: 9999, proc_name: '(已退出)', proc_path: '', proc_user: '', proc_started_at: 0, proc_cmdline: '', proc_elevated: false, exited: true, remote_class: 'public' },
+  { proto: 'UDP', local_ip: '192.168.1.10', local_port: 5353, remote_ip: '', remote_port: 0, state: '', pid: 512, proc_name: 'svchost.exe', proc_path: 'C:\\Windows\\system32\\svchost.exe', proc_user: 'SYSTEM', proc_started_at: unix(86400 * 3), proc_cmdline: '', proc_elevated: true, exited: false, remote_class: '' },
 ];

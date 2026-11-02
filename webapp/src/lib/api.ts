@@ -282,6 +282,20 @@ export const live = {
     liveJSON<import('./types').LiveMemScan>(
       `/api/v1/hosts/${encodeURIComponent(agentId)}/live/memscan?pid=${pid}`,
     ),
+
+  /* ---- 非进程域（LIVE-TUNNEL.md §16，F9）----
+     均为探针侧只读聚合：persistence 复用服务/任务/启动项枚举，peers 聚合
+     Netstat；老探针 501、老服务端预算表未收录 404，UI 统一提示版本不支持。 */
+  /** 持久化总览：服务（auto/delayed-auto）+ 已启用任务 + 启动项（上限 2000） */
+  persistence: (agentId: string) =>
+    liveJSON<import('./types').LivePersistence>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/persistence`,
+    ),
+  /** 外联对端聚合：仅 ESTABLISHED，按远端 IP / 进程两种视角 */
+  peers: (agentId: string) =>
+    liveJSON<import('./types').LivePeers>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/peers`,
+    ),
 };
 
 /** 隧道错误分类：供 UI 层映射专用状态（状态条/Toast/内联说明） */

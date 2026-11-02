@@ -26,6 +26,16 @@ const PREVIEW_LIMIT = 64 * 1024;
 const SEARCH_DEPTH = 2; // fs/search 默认深度（契约 ≤4）
 const SEARCH_LIMIT = 100; // 结果条数（契约 ≤200）
 
+/* ---- 落地风险面（docs/LIVE-TUNNEL.md §16.3，F9）----
+   纯前端组合：对临时/下载/公共/启动目录并行跑 fs/search，合并去重后按
+   修改时间排序。fs/search 一次只接受单一 pattern，所以每个目录 × 每个
+   扩展名各发一次请求（5 目录 × 8 类 = 40 次），并发压到 3——探针侧每条
+   查询自带 30s 预算，串行会拖到几分钟，全并发又会把隧道打满。 */
+const LANDING_PATTERNS = ['*.exe', '*.dll', '*.ps1', '*.bat', '*.cmd', '*.vbs', '*.js', '*.msi'];
+const LANDING_DEPTH = 2;
+const LANDING_LIMIT = 100;
+const LANDING_CONCURRENCY = 3;
+
 /* ---- 路径工具（Win32：条目只含 name，全路径由前端拼接） ---- */
 
 function joinPath(dir: string, name: string): string {
@@ -54,6 +64,89 @@ function crumbs(p: string): { label: string; path: string }[] {
     acc += '\\';
   }
   return out;
+}
+
+/* fs/search 的 dir 是**相对搜索根**的目录（根层为 "."，见探针 search.go
+   buildHit）。老版本/假数据可能直接给绝对目录，这里两种都认——把相对
+   路径当绝对路径拼会得到 "sub\a.exe" 这种打不开的伪路径。 */
+function searchFullPath(root: string, en: LiveSearchEntry): string {
+  const d = (en.dir || '').trim();
+  if (/^[A-Za-z]:[\\/]/.test(d)) return joinPath(d, en.name);
+  if (!d || d === '.') return joinPath(root, en.name);
+  return joinPath(joinPath(root, d), en.name);
+}
+
+/* ---- 落地风险面：目录解析 ----
+   探针 fs/search 只接受绝对路径（validateFSPath 不做环境变量展开），因此
+   契约里的 %TEMP% / %USERPROFILE% / %APPDATA% 必须由前端解析成真实目录：
+   1. 用主机注册的运行账户去 C:\Users 列表里对 profile 目录；
+   2. 对不上（服务化探针通常报 NT AUTHORITY\SYSTEM）就取 mtime 最新的
+      profile——单机场景一般就是最近在用的交互账户；
+   3. C:\Users 都读不到时 Temp 退到 C:\Windows\Temp，两个用户级目录记入
+      skipped 并在结果底部如实说明（不做静默丢弃）。
+   多用户机器只覆盖一个 profile 是本轮已知取舍：逐个用户扫描会让请求数
+   随账户数线性膨胀，超出本轮 UX 预算。 */
+interface LandingDir { label: string; path: string }
+
+async function resolveLandingDirs(agentId: string): Promise<{ dirs: LandingDir[]; skipped: string[] }> {
+  let profile = '';
+  try {
+    const host = await api.get<{ agent: { username?: string } }>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}`,
+    ).then((d) => d.agent).catch(() => null);
+    const user = (host?.username || '').split('\\').pop()?.trim().toLowerCase() || '';
+    const fx = await devFixture();
+    const users = fx ? await fx.fs('C:\\Users') : await live.fs(agentId, 'C:\\Users');
+    const profiles = (users.entries || []).filter((en) => en.is_dir && !en.reparse
+      && !/^(public|default|default user|all users)$/i.test(en.name));
+    const exact = user ? profiles.find((p) => p.name.toLowerCase() === user) : undefined;
+    const latest = [...profiles].sort((a, b) => (b.mtime_unix || 0) - (a.mtime_unix || 0))[0];
+    profile = (exact || latest)?.name || '';
+  } catch { /* 解析失败走降级目录，不影响扫描本身 */ }
+
+  const skipped: string[] = [];
+  const dirs: LandingDir[] = [];
+  if (profile) {
+    const base = `C:\\Users\\${profile}`;
+    dirs.push({ label: '%TEMP%', path: `${base}\\AppData\\Local\\Temp` });
+    dirs.push({ label: '%USERPROFILE%\\Downloads', path: `${base}\\Downloads` });
+  } else {
+    dirs.push({ label: 'C:\\Windows\\Temp（%TEMP% 无法解析）', path: 'C:\\Windows\\Temp' });
+    skipped.push('%USERPROFILE%\\Downloads', '%APPDATA%\\...\\Startup');
+  }
+  dirs.push({ label: 'C:\\Users\\Public', path: 'C:\\Users\\Public' });
+  if (profile) {
+    dirs.push({
+      label: '%APPDATA%\\...\\Startup',
+      path: `C:\\Users\\${profile}\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup`,
+    });
+  }
+  dirs.push({
+    label: 'C:\\ProgramData\\...\\StartUp',
+    path: 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp',
+  });
+  return { dirs, skipped };
+}
+
+interface LandingHit {
+  key: string; // 小写全路径，去重键
+  path: string; // 完整文件路径（抽屉/标题用）
+  dir: string; // 完整父目录（复用 openFile 的 {entry, dir}）
+  entry: LiveSearchEntry;
+}
+
+interface LandingScan {
+  running: boolean;
+  dirCount: number;
+  done: number;
+  total: number;
+  hits: LandingHit[];
+  failures: { label: string; reason: string }[];
+  skipped: string[];
+  /** 因探针 30s 预算被截断的查询次数（不是条目数） */
+  truncated: number;
+  startedAt: number;
+  elapsedMs?: number;
 }
 
 /* 隧道错误的中文短句（状态条/Toast/内联共用一套口径） */
@@ -122,10 +215,19 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState('');
 
+  /* §16.3 落地风险面扫描状态（与目录浏览/搜索结果三态互斥） */
+  const [scan, setScan] = useState<LandingScan | null>(null);
+  /* 请求序号：换主机 / 重新扫描 / 离开页面都会作废在途任务，防止旧结果落地 */
+  const scanSeq = useRef(0);
+
   const canonical = list?.path || path;
   const atRoot = /^[A-Za-z]:\\?$/.test(canonical);
 
   const load = useCallback(async (dir: string, cursor?: string) => {
+    // 任何目录导航都退出落地扫描视图：扫描结果属于发起时的上下文，
+    // 留在屏幕上会和新的目录内容混在一起
+    scanSeq.current++;
+    setScan(null);
     cursor ? setMore(true) : setLoading(true);
     try {
       const fx = await devFixture();
@@ -156,12 +258,22 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
   useEffect(() => {
     setList(null); setPath(INITIAL_PATH); setInput(INITIAL_PATH); setTunnelDown(false); setLoadErr(''); setOpenFile(null);
     clearSearchState();
+    scanSeq.current++; // 换主机：作废上一台主机在途的落地扫描
+    setScan(null);
     if (canBrowse) void load(INITIAL_PATH);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
+  /* 卸载时作废在途扫描（并发 worker 会在下一个 await 后自行退出） */
+  useEffect(() => () => { scanSeq.current++; }, []);
+
   const clearSearchState = () => {
     setSearchRes(null); setPattern(''); setPatternUsed(''); setSearchErr('');
+  };
+
+  const clearScan = () => {
+    scanSeq.current++;
+    setScan(null);
   };
 
   /* 跨 Tab 联动：拿到目标路径后先 fs/stat 取元数据（条目字段才完整），
@@ -206,6 +318,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
     const p = pattern.trim();
     if (!p) return;
     const at = root || canonical;
+    clearScan(); // 搜索与落地扫描互斥，避免两套结果叠在同一区域
     setSearching(true); setSearchErr('');
     try {
       const fx = await devFixture();
@@ -218,23 +331,93 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
     } finally { setSearching(false); }
   };
 
+  /* §16.3 落地风险面：先解析目录，再把 (目录 × 扩展名) 摊平成请求队列，
+     3 个 worker 共享游标。单条失败只记该目录一次（底部按"目录"汇总），
+     不让同一目录的 8 个 pattern 各刷一条失败。 */
+  const runLandingScan = async () => {
+    const seq = ++scanSeq.current;
+    clearSearchState();
+    setScan({
+      running: true, dirCount: 0, done: 0, total: 0, hits: [], failures: [], skipped: [],
+      truncated: 0, startedAt: Date.now(),
+    });
+
+    const { dirs, skipped } = await resolveLandingDirs(agentId);
+    if (seq !== scanSeq.current) return;
+    const tasks = dirs.flatMap((d) => LANDING_PATTERNS.map((p) => ({ dir: d, pattern: p })));
+    const total = tasks.length;
+    setScan((s) => (s ? { ...s, dirCount: dirs.length, total, skipped } : s));
+
+    const hits = new Map<string, LandingHit>();
+    const failures = new Map<string, string>();
+    let truncated = 0;
+    let done = 0;
+    let cursor = 0;
+
+    const commit = (running: boolean) => {
+      if (seq !== scanSeq.current) return;
+      setScan((s) => (s ? {
+        ...s,
+        running,
+        done,
+        total,
+        truncated,
+        hits: [...hits.values()].sort((a, b) => (b.entry.mtime_unix || 0) - (a.entry.mtime_unix || 0)),
+        failures: [...failures.entries()].map(([label, reason]) => ({ label, reason })),
+        elapsedMs: running ? s.elapsedMs : Date.now() - s.startedAt,
+      } : s));
+    };
+
+    const worker = async () => {
+      while (seq === scanSeq.current) {
+        const idx = cursor++;
+        if (idx >= tasks.length) return;
+        const t = tasks[idx];
+        try {
+          const fx = await devFixture();
+          const r = fx ? await fx.search(t.dir.path, t.pattern, LANDING_DEPTH, LANDING_LIMIT)
+            : await live.search(agentId, t.dir.path, t.pattern, LANDING_DEPTH, LANDING_LIMIT);
+          if (seq !== scanSeq.current) return;
+          if (r.truncated) truncated++;
+          for (const en of r.entries || []) {
+            if (en.is_dir) continue;
+            const full = searchFullPath(r.path || t.dir.path, en);
+            const key = full.toLowerCase();
+            if (!hits.has(key)) hits.set(key, { key, path: full, dir: parentPath(full), entry: en });
+          }
+        } catch (e) {
+          if (seq !== scanSeq.current) return;
+          if (!failures.has(t.dir.label)) failures.set(t.dir.label, featNote(e));
+        } finally {
+          if (seq === scanSeq.current) { done++; commit(true); }
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(LANDING_CONCURRENCY, tasks.length) }, () => worker()));
+    commit(false);
+  };
+
   const enterRow = (en: LiveFsEntry & { dir?: string }) => {
     if (searchRes) {
-      // 搜索结果模式：命中文件直接开抽屉；命中目录（且探针给了所在目录）进入
-      if (en.is_dir) {
-        if (en.dir) { clearSearchState(); void load(joinPath(en.dir, en.name)); }
-        else toast('探针未返回该目录的所在路径，无法进入；可到目录浏览中定位', 'warn');
-        return;
-      }
-      setOpenFile({ entry: en, dir: en.dir || searchRes.path });
+      // 搜索结果：dir 是相对搜索根（根层 "."），先换成完整路径再打开
+      const full = searchFullPath(searchRes.path, en);
+      if (en.is_dir) { clearSearchState(); void load(full); return; }
+      setOpenFile({ entry: en, dir: parentPath(full) });
       return;
     }
     if (en.is_dir) { clearSearchState(); void load(joinPath(canonical, en.name)); }
     else setOpenFile({ entry: en, dir: canonical }); // 冻结点击时的目录，防浏览中途漂移
   };
 
-  /* 刷新语义随模式切换：搜索结果 → 重跑同参搜索；目录浏览 → 重列目录 */
-  const refresh = () => (searchRes ? void runSearch(searchRes.path) : void load(canonical));
+  /* 刷新语义随模式切换：落地扫描 → 重跑扫描；搜索结果 → 重跑同参搜索；
+     目录浏览 → 重列目录 */
+  const refresh = () => {
+    if (scan?.running) return; // 扫描进行中不重启，避免白白作废在途的 40 次查询
+    if (scan) void runLandingScan();
+    else if (searchRes) void runSearch(searchRes.path);
+    else void load(canonical);
+  };
 
   return (
     <>
@@ -263,7 +446,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
               onKeyDown={(ev) => { if (ev.key === 'Enter') submit(); }}
               placeholder="输入完整路径，回车跳转" spellCheck={false} aria-label="路径输入框"
               className="h-8 w-[230px] font-mono text-[12px]" />
-            <Button size="icon" aria-label="刷新" title="刷新" disabled={loading || searching}
+            <Button size="icon" aria-label="刷新" title="刷新" disabled={loading || searching || !!scan?.running}
               onClick={() => void refresh()}>
               <RefreshCw size={13} className={cn((loading || searching) && 'anim-spin')} />
             </Button>
@@ -283,6 +466,14 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
             </div>
             <Button size="sm" disabled={!pattern.trim() || searching} onClick={() => void runSearch()}>
               {searching ? '搜索中…' : '搜索'}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={searching || !!scan?.running}
+              onClick={() => void runLandingScan()}
+              title="并行扫描临时/下载/公共/启动目录中的可执行与脚本文件（约 40 次查询，可能超过 25 秒）">
+              <ScanSearch size={13} />
+              {scan?.running
+                ? (scan.total ? `已完成 ${scan.done}/${scan.total} 次请求` : '解析扫描目录…')
+                : '扫描落地风险面'}
             </Button>
             {searchRes && (
               <Button size="sm" variant="ghost" onClick={clearSearchState}>返回目录浏览</Button>
@@ -304,6 +495,101 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
         {!canBrowse ? (
           <EmptyState tone="info" icon={<FolderSearch size={20} />} title="实时文件浏览需要分析师及以上角色"
             sub="实时查询属于现场调查能力，只读角色不开放。如需使用，请联系管理员调整账号角色。" />
+        ) : scan ? (
+          /* ===== 落地风险面模式（§16.3） ===== */
+          <>
+            <div className="mb-2.5 flex flex-wrap items-center gap-2 rounded-md border border-border-soft bg-secondary/40 px-3 py-2 text-[12.5px]">
+              <ScanSearch size={13} className="shrink-0 text-ghost" />
+              <span>
+                {scan.running ? '正在扫描落地风险面' : '落地风险面扫描完成'}
+                {scan.dirCount > 0 && (
+                  <span className="text-faint">（{scan.dirCount} 个目录 × {LANDING_PATTERNS.length} 类扩展名）</span>
+                )}
+              </span>
+              <span className="font-mono text-[11px] text-ghost">{scan.hits.length} 个文件</span>
+              {scan.running && (
+                <span className="font-mono text-[11px] text-ghost">
+                  {scan.total ? `已完成 ${scan.done}/${scan.total} 次请求` : '正在解析扫描目录…'}
+                </span>
+              )}
+              {!scan.running && scan.elapsedMs != null && (
+                <span className="font-mono text-[11px] text-ghost">耗时 {(scan.elapsedMs / 1000).toFixed(1)}s</span>
+              )}
+              {scan.truncated > 0 && (
+                <Badge tone="medium" title="探针侧 30 秒预算用尽，返回已收集的部分">
+                  {scan.truncated} 次查询被截断
+                </Badge>
+              )}
+              <div className="flex-1" />
+              <Button size="sm" variant="ghost" onClick={clearScan}>返回目录浏览</Button>
+              <Button size="sm" variant="ghost" disabled={scan.running} onClick={() => void runLandingScan()}>
+                <RefreshCw size={13} /> 重新扫描
+              </Button>
+            </div>
+
+            {scan.running && !scan.hits.length ? (
+              <SkeletonRows rows={6} />
+            ) : !scan.hits.length ? (
+              <EmptyState tone="info" icon={<ScanSearch size={20} />} title="没有在落地目录发现可执行/脚本文件"
+                sub={`已扫描临时、下载、公共与启动目录（深度 ≤${LANDING_DEPTH}）。此处只覆盖这些落地区域，不代表主机上没有其它可执行文件。`} />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12.5px]">
+                  <thead>
+                    <tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+                      <th className="px-3 py-2 font-semibold">路径</th>
+                      <th className="w-[100px] px-3 py-2 text-right font-semibold">大小</th>
+                      <th className="w-[170px] px-3 py-2 font-semibold">修改时间</th>
+                      <th className="w-[200px] px-3 py-2 font-semibold">属性</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scan.hits.map((h) => (
+                      <tr key={h.key} tabIndex={0} title={h.path}
+                        onClick={() => setOpenFile({ entry: h.entry, dir: h.dir })}
+                        onKeyDown={(ev) => { if (ev.key === 'Enter') setOpenFile({ entry: h.entry, dir: h.dir }); }}
+                        className="cursor-pointer border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                        <td className="px-3 py-1.5">
+                          <span className="block max-w-[560px] truncate font-mono text-[11.5px] text-muted-foreground" title={h.path}>
+                            {h.path}
+                          </span>
+                        </td>
+                        <td className="px-3 py-1.5 text-right font-mono text-[11.5px] tabular-nums text-muted-foreground">
+                          {fmtBytes(h.entry.size)}
+                        </td>
+                        <td className="px-3 py-1.5 font-mono text-[11.5px] text-faint">
+                          {h.entry.mtime_unix ? fmtTime(new Date(h.entry.mtime_unix * 1000).toISOString()) : '-'}
+                        </td>
+                        <td className="px-3 py-1.5">{attrBadges(h.entry)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {(scan.failures.length > 0 || scan.skipped.length > 0) && (
+              <div className="mt-2.5 flex items-start gap-2 rounded-md border border-border-soft bg-secondary/40 px-3 py-2 text-[11.5px] leading-relaxed text-faint">
+                <CircleAlert size={13} className="mt-0.5 shrink-0" />
+                <span className="min-w-0">
+                  {scan.failures.length > 0 && (
+                    <>
+                      {scan.failures.length} 个目录扫描失败（权限/超时）：
+                      {scan.failures.map((f) => `${f.label}（${f.reason}）`).join('；')}
+                    </>
+                  )}
+                  {scan.failures.length > 0 && scan.skipped.length > 0 && '；'}
+                  {scan.skipped.length > 0 && (
+                    <>{scan.skipped.length} 个用户级目录因无法解析用户配置而跳过：{scan.skipped.join('、')}</>
+                  )}
+                </span>
+              </div>
+            )}
+
+            <p className="mt-2.5 px-3.5 text-xs text-faint">
+              按修改时间倒序；同一文件被多个扩展名或目录命中只保留一条。每条查询最多返回 {LANDING_LIMIT} 个命中，目录内文件很多时结果可能不完整。扫描由探针现场限深遍历（不落库），点击行打开文件抽屉查看哈希与深度分析。
+            </p>
+          </>
         ) : searchRes || searchErr || searching ? (
           /* ===== 搜索结果模式 ===== */
           searchErr ? (
@@ -337,7 +623,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
                     </thead>
                     <tbody>
                       {searchRes.entries.map((en, i) => {
-                        const full = en.dir ? joinPath(en.dir, en.name) : joinPath(searchRes.path, en.name);
+                        const full = searchFullPath(searchRes.path, en);
                         return (
                           <tr key={`${en.dir || ''}-${en.name}-${i}`} tabIndex={0}
                             title={full}
