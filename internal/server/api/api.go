@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"zedr/internal/mcp"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
 	"zedr/internal/server/auth"
@@ -48,6 +49,11 @@ type Deps struct {
 	// 服务端配置；任一为空 = 升级端点按"未启用"返回 503
 	UpgradeFile    string
 	UpgradeVersion string
+
+	// MCP 是对外 MCP Server（nil = 未启用，端点不注册）；
+	// MCPToken 是独立 Bearer Token（与 JWT 分离，只读访问）。
+	MCP      *mcp.Server
+	MCPToken string
 
 	// Tunnel 是实时隧道会话注册表（docs/LIVE-TUNNEL.md）；nil = 隧道端点
 	// 与实时查询代理不注册（老部署平滑升级路径）。
@@ -249,11 +255,16 @@ func Router(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/stream/ticket", viewer(adminH.issueStreamTicket))
 	mux.HandleFunc("GET /api/v1/stream/alerts", adminH.streamAlerts)
 
+	// ---------------- MCP 对外端点（独立 Token，只读） ----------------
+	if d.MCP != nil {
+		mux.HandleFunc("POST /mcp", mcpPost(d))
+		mux.HandleFunc("GET /mcp/skill.md", mcpSkill(d))
+	}
+
 	// ---------------- 管理台静态资源 ----------------
 	if d.WebFS != nil {
 		mux.Handle("GET /", spaHandler(d.WebFS))
 	}
-
 	// 中间件顺序（由外到内）：
 	// request-id → 安全头 → 恢复 → 访问日志 → CORS → 限流 → 路由
 	limiter := httpx.NewTokenBucket(d.RateRPS, d.RateBurst)

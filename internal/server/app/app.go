@@ -13,6 +13,7 @@ import (
 	"zedr/internal/platform/httpx"
 	"zedr/internal/platform/settingseal"
 	"zedr/internal/ai"
+	"zedr/internal/mcp"
 	"zedr/internal/model"
 	"zedr/internal/server/notify"
 	"zedr/internal/platform/rulehash"
@@ -270,6 +271,27 @@ func New() (*App, error) {
 		tunnelReg = livetunnel.NewRegistry(log)
 	}
 
+	// MCP 对外工具服务（只读）：独立 Token 鉴权、每工具调用进审计流。
+	// 默认关闭；SDK 转正前协议子集自研（internal/mcp，TRADEOFFS §3.14）。
+	var mcpSrv *mcp.Server
+	if cfg.MCPEnabled && cfg.MCPToken != "" {
+		mcpSrv = &mcp.Server{
+			Name: "zedr-edr", Version: Version,
+			Tools: service.MCPTools(),
+			Ex:    service.NewMCPExecutor(svc.AI),
+		}
+		mcpSrv.OnCall = func(name string, callErr error) {
+			detail := "tool=" + name
+			if callErr != nil {
+				detail += " err=" + callErr.Error()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			svc.Audit.Record(ctx, "", "mcp", "mcp.tool.call", name, detail, "")
+		}
+		log.Info("mcp_server_enabled", "tools", len(mcpSrv.Tools))
+	}
+
 	router := api.Router(api.Deps{
 		Services:     svc,
 		Tokens:       tokens,
@@ -293,6 +315,8 @@ func New() (*App, error) {
 		LiveQueryEnabled: cfg.LiveQueryEnabled,
 		LiveQueryFileRead: cfg.LiveQueryFileRead,
 		Ingest: ingestguard.New(cfg.IngestAlertRPS, cfg.IngestAlertBurst, cfg.IngestMaxInflight),
+		MCP:      mcpSrv,
+		MCPToken: cfg.MCPToken,
 	})
 
 	srv := httpx.NewServer(httpx.ServerConfig{

@@ -75,6 +75,10 @@ type Config struct {
 	// SettingEncKey 是后台配置敏感字段（模型 API Key）的静态加密密钥，
 	// 64 位 hex（32 字节）。空则从 JWTSecret 派生子密钥（与规则签名同策略）。
 	SettingEncKey string
+	// MCP 是对外 MCP 工具服务（只读，2026-11 方向 A）：默认关闭；
+	// 启用需独立 Bearer Token（>=16 字符），与 JWT/探针凭证完全分离。
+	MCPEnabled bool
+	MCPToken   string
 	JWTSecret       string
 	AccessTTL       time.Duration
 	RefreshTTL      time.Duration
@@ -153,6 +157,8 @@ func LoadConfig() (*Config, error) {
 	c.AITimeout = l.Duration("HG_AI_TIMEOUT", 45*time.Second)
 	c.AITokenBudget = l.Int("HG_AI_HOURLY_TOKEN_BUDGET", 200000)
 	c.SettingEncKey = l.Env("HG_SERVER_SETTING_ENC_KEY", "")
+	c.MCPEnabled = l.Bool("HG_SERVER_MCP_ENABLED", false)
+	c.MCPToken = l.Env("HG_SERVER_MCP_TOKEN", "")
 	c.AccessTTL = l.Duration("HG_SERVER_ACCESS_TTL", 15*time.Minute)
 	c.RefreshTTL = l.Duration("HG_SERVER_REFRESH_TTL", 168*time.Hour)
 	c.CookieSecure = l.Bool("HG_SERVER_COOKIE_SECURE", false)
@@ -192,6 +198,10 @@ func LoadConfig() (*Config, error) {
 		l.Check(err == nil && len(ek) == 64,
 			"HG_SERVER_SETTING_ENC_KEY 必须是 64 个 hex 字符（32 字节）")
 	}
+
+	// MCP 对外工具服务：启用必须配独立 Token（只读端点，防裸奔）
+	l.Check(!c.MCPEnabled || len(strings.TrimSpace(c.MCPToken)) >= 16,
+		"启用 HG_SERVER_MCP_ENABLED 时必须配置 HG_SERVER_MCP_TOKEN（至少 16 字符）")
 
 	// IM 卡片与邮件渠道校验
 	l.Check(c.DingTalkSecret == "" || c.DingTalkWebhookURL != "",
