@@ -1273,6 +1273,14 @@ type invTask struct {
 	Path  string `json:"path"`
 	Name  string `json:"name"`
 	State string `json:"state"`
+	// 任务定义文件（System32\Tasks\**）解析出的富信息（v0.9.8.1）：
+	// 计划任务此前只有名称/状态，排查时无法回答"谁创建的、跑什么命令、
+	// 什么触发"。字段名与 winapi.TaskInfo 对齐，前端按 future-field 兼容。
+	Author   string               `json:"author"`
+	Enabled  bool                 `json:"enabled"`
+	RunLevel string               `json:"run_level"`
+	Triggers []winapi.TaskTrigger `json:"triggers"`
+	Actions  []winapi.TaskAction  `json:"actions"`
 }
 
 type invDisk struct {
@@ -1376,7 +1384,11 @@ func (a *Agent) invTasksSection() (any, error) {
 	}
 	list := make([]invTask, 0, len(src))
 	for _, t := range src {
-		list = append(list, invTask{Path: t.Path, Name: t.Name, State: t.State})
+		list = append(list, invTask{
+			Path: t.Path, Name: t.Name, State: t.State,
+			Author: t.Author, Enabled: t.Enabled, RunLevel: t.RunLevel,
+			Triggers: t.Triggers, Actions: t.Actions,
+		})
 	}
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].Path != list[j].Path {

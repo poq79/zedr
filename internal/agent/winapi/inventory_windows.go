@@ -12,6 +12,8 @@ package winapi
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -377,10 +379,21 @@ func fillServiceConfig(scm uintptr, name string, info *ServiceInfo) {
 // ---------------------------------------------------------------- 计划任务
 
 // TaskInfo 是一个计划任务的资产视图。
+//
+// 前三个字段来自文件级枚举（是否"已注册"）；后五个字段由任务定义 XML
+// 补充（见 taskxml.go）。追加而非替换：既有消费方按 Path/Name/State
+// 取值的契约不变，新字段解析失败时保持零值。
 type TaskInfo struct {
 	Path  string
 	Name  string
 	State string
+
+	// 以下为 v0.9.8.1 追加的富字段（JSON 名与前端契约对齐）。
+	Author   string        `json:"author"`
+	Enabled  bool          `json:"enabled"`
+	RunLevel string        `json:"run_level"`
+	Triggers []TaskTrigger `json:"triggers"`
+	Actions  []TaskAction  `json:"actions"`
 }
 
 // TaskList 枚举全部已注册计划任务。
@@ -395,6 +408,14 @@ func TaskList() ([]TaskInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// 富字段单独走一轮定义文件枚举，按统一命名口径（'\'+相对路径）join。
+	// 不复用 enumerateScheduledTasks 内部的解析结果：那条路径为了基线稳定
+	// 刻意"零值退化"，拿不到触发器的完整列表与启用状态；这里多走一次
+	// 文件树是几十毫秒量级，换来的是字段语义完整。整轮枚举失败时只丢
+	// 富字段，基础列表照常返回——资产节不能因为一个坏目录整体消失。
+	details := taskXMLDetails()
+
 	out := make([]TaskInfo, 0, len(items))
 	for _, it := range items {
 		// persist 侧的 Name 即完整任务路径（\Microsoft\Windows\...），叶子名自己截
@@ -403,13 +424,46 @@ func TaskList() ([]TaskInfo, error) {
 		if i := strings.LastIndexByte(name, '\\'); i >= 0 {
 			leaf = name[i+1:]
 		}
-		out = append(out, TaskInfo{
+		ti := TaskInfo{
 			Path:  name,
 			Name:  leaf,
 			State: "unknown",
-		})
+			// 解析不到定义时按"启用"处理：文件级枚举只能证明任务已注册，
+			// 把未知误报成"已禁用"会让资产页低估风险（与 persist 侧
+			// 对全部计划任务置 Enabled=true 的口径一致）。
+			Enabled: true,
+		}
+		if info := details[name]; info != nil {
+			ti.Author = info.Author
+			ti.Enabled = info.Enabled
+			ti.RunLevel = info.RunLevel
+			ti.Triggers = info.Triggers
+			ti.Actions = info.Actions
+		}
+		out = append(out, ti)
 	}
 	return out, nil
+}
+
+// taskXMLDetails 建立"任务完整路径 → 解析结果"的索引。
+//
+// 坏文件（Err 非空）不进入索引：调用方保持零值富字段，与"解析失败的文件
+// 跳过并计数"的契约一致（不在这里打日志——本包是纯采集层，日志由
+// inventory 上报侧统一记录，避免每 30s 刷一遍同样的坏文件）。
+func taskXMLDetails() map[string]*TaskXMLInfo {
+	root := filepath.Join(os.Getenv("SystemRoot"), "System32", "Tasks")
+	defs, err := EnumerateTaskXML(root)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]*TaskXMLInfo, len(defs))
+	for _, d := range defs {
+		if d.Err != nil || d.Info == nil {
+			continue
+		}
+		m[d.Name] = d.Info
+	}
+	return m
 }
 
 // ---------------------------------------------------------------- 磁盘

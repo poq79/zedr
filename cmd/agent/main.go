@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strconv"
 	"syscall"
 
 	"golang.org/x/sys/windows/svc"
@@ -63,6 +65,10 @@ func main() {
 	if _, err := config.LoadDotEnv(); err != nil {
 		fmt.Fprintf(os.Stderr, "读取 .env 失败: %v\n", err)
 	}
+
+	// 软内存上限必须在 app.New 之前生效：启动阶段（规则/IOC 加载、
+	// 基线读取、离线队列恢复）同样在保护范围内。
+	applyMemoryLimit()
 
 	switch {
 	case *flagInstall:
@@ -111,6 +117,39 @@ func main() {
 		fmt.Fprintf(os.Stderr, "运行异常退出: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// applyMemoryLimit 按 HG_AGENT_MEM_LIMIT_MB 设置 Go 软内存上限（默认 256MB）。
+//
+// 为什么需要：Go 运行时的堆目标默认随分配增长，探针在资产盘点/哈希/
+// 上报峰值叠加时会把进程提交量推高，系统级 OOM 会直接杀进程——fatal
+// "out of memory" 不可捕获，也没有机会 flush 上报队列。软上限让 GC 在
+// 接近该值时更激进回收，把长期驻留量收敛在量级内（单次大分配仍可能
+// 突破，这是软限制的固有边界，不做夸大）。
+//
+// 0 表示不设置（保留 Go 默认）；非法值告警后回退默认值，绝不阻断启动。
+func applyMemoryLimit() {
+	const defaultMB = 256
+
+	mb := defaultMB
+	if raw := strings.TrimSpace(os.Getenv("HG_AGENT_MEM_LIMIT_MB")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "警告: HG_AGENT_MEM_LIMIT_MB=%q 不是整数，使用默认 %dMB\n", raw, defaultMB)
+		case n < 0:
+			fmt.Fprintf(os.Stderr, "警告: HG_AGENT_MEM_LIMIT_MB=%d 为负数，使用默认 %dMB\n", n, defaultMB)
+		default:
+			mb = n
+		}
+	}
+
+	if mb == 0 {
+		fmt.Fprintln(os.Stderr, "mem_limit_mb=0（未启用软内存上限，使用 Go 运行时默认）")
+		return
+	}
+	debug.SetMemoryLimit(int64(mb) << 20)
+	fmt.Fprintf(os.Stderr, "mem_limit_mb=%d\n", mb)
 }
 
 type serviceHandler struct{}
