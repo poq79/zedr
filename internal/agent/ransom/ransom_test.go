@@ -212,7 +212,9 @@ func TestUSNRenamedHitByOldLeaf(t *testing.T) {
 }
 
 // 速率阈值与权重：removed=1，跨扩展名 renamed=2，同扩展名 renamed=1；
-// 60s 窗口加权 ≥20 触发 FILE-RANSOM（high/60/T1486），冷却期内不重复。
+// 60s 窗口加权 ≥20 触发 FILE-RANSOM（独立速率=medium/45——2026-11-03
+// 上线首日实测浏览器缓存/构建工具良性 churn 与勒索行为同形后降级，
+// critical 只能由 canary 关联升级），冷却期内不重复。
 func TestRateThresholdWeightsAndCooldown(t *testing.T) {
 	dir := t.TempDir()
 	d, r, ck := newDefense(t, []string{dir}, nil)
@@ -250,9 +252,9 @@ func TestRateThresholdWeightsAndCooldown(t *testing.T) {
 		t.Fatalf("findings = %+v, want 1 条 FILE-RANSOM", r.fs)
 	}
 	f := r.fs[0]
-	if f.RuleID != RuleRansom || f.Severity != model.SeverityHigh ||
-		f.Score != 60 || f.Verdict != model.VerdictSuspicious {
-		t.Fatalf("finding = %+v, want FILE-RANSOM high 60 suspicious", f)
+	if f.RuleID != RuleRansom || f.Severity != model.SeverityMedium ||
+		f.Score != 45 || f.Verdict != model.VerdictSuspicious {
+		t.Fatalf("finding = %+v, want FILE-RANSOM medium 45 suspicious", f)
 	}
 	if len(f.MITRE) != 1 || f.MITRE[0] != "T1486" {
 		t.Fatalf("MITRE = %v", f.MITRE)
@@ -419,4 +421,36 @@ func TestNilDefenseSafe(t *testing.T) {
 		t.Fatal("nil 接收者行为异常")
 	}
 	d.Close()
+}
+
+// 缓存/临时目录的高频增删不进速率窗口——2026-11-03 上线首日实测：
+// 浏览器缓存清理（8 权重）+ 会话临时文件（9 权重）即触发独立告警，
+// 这类目录的批量增删是正常软件行为，必须在权重层剔除而不是靠定级兜底。
+func TestChurnDirsExcludedFromRate(t *testing.T) {
+	dir := t.TempDir()
+	d, r, ck := newDefense(t, []string{dir}, nil)
+	cache := filepath.Join(dir, "Cache", "Cache_Data")
+	for i := 0; i < 30; i++ {
+		d.Consume(Event{Kind: "removed",
+			Path:   filepath.Join(cache, fmt.Sprintf("f_%02d", i)),
+			Source: "rdcw", When: ck.Now()})
+	}
+	if len(r.fs) != 0 {
+		t.Fatalf("缓存目录 churn 不应触发: %+v", r.fs)
+	}
+	// 非缓存目录的批量删除照常触发（对照组）
+	for i := 0; i < 20; i++ {
+		d.Consume(Event{Kind: "removed",
+			Path:   filepath.Join(dir, fmt.Sprintf("doc_%02d.docx", i)),
+			Source: "rdcw", When: ck.Now()})
+	}
+	found := false
+	for _, f := range r.fs {
+		if f.RuleID == RuleRansom {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("非缓存目录的批量删除应触发 FILE-RANSOM: %+v", r.fs)
+	}
 }

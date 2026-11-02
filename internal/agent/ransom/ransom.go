@@ -492,9 +492,35 @@ func (d *Defense) rateActive(when time.Time) bool {
 
 // ---------------------------------------------------------------- 速率
 
+// churnMarkers 是"天然高频增删"的目录特征：浏览器缓存、系统临时目录、
+// 更新器暂存。这些位置的批量删除/改名是正常软件行为（实测一次浏览器
+// 缓存清理 + 一次 go build 链接即可在 60s 内贡献 20+ 权重），剔除后
+// 速率窗口才保得住信噪比。USN 事件只有 leaf name 无法判目录——这类
+// 事件保留计数，由"独立速率只做观察级"的定级策略兜底（见 rateFinding）。
+var churnMarkers = []string{
+	`\appdata\local\temp\`, `\appdata\local\temp-`, `\windows\temp\`,
+	`\cache\`, `\cache_data`, `\code cache`, `\gpucache`, `\inetcache\`,
+	`\crashpad\`, `\go-build\`, `\npm-\`, `\pip-\`, `\.tmp`,
+}
+
+// churnPath 判断路径是否落在高频增删目录（rdcw 来源有完整路径才判得了）。
+func churnPath(p string) bool {
+	low := strings.ToLower(strings.ReplaceAll(p, "/", `\`))
+	for _, m := range churnMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // rateWeight 返回事件在速率窗口里的权重：removed=1；renamed 新旧扩展名
 // 不同=2（批量改后缀是加密器强特征）、相同或旧名未知=1；其余不计。
+// 高频增删目录（缓存/临时目录）恒为 0。
 func rateWeight(ev Event) int {
+	if ev.Path != "" && strings.ContainsRune(ev.Path, '\\') && churnPath(ev.Path) {
+		return 0
+	}
 	switch ev.Kind {
 	case "removed":
 		return 1
@@ -585,12 +611,19 @@ func (d *Defense) rateFinding(when time.Time) Finding {
 		notes = append(notes, fmt.Sprintf("窗口触顶丢弃事件=%d（速率超出检测容量，计数如实）", d.dropped.Load()))
 	}
 
+	// 独立速率只做观察级（medium）：真实误报实测（2026-11-03 上线首日）
+	// 是浏览器缓存清理 + 构建工具临时目录批量增删——与勒索行为同形，
+	// 无进程归因无法分辨。升级路径是关联：同窗口内有诱饵命中 → critical
+	//（见 canaryFinding 的 rateActive 分级），那才是"人类不太可能手工
+	// 触碰诱饵"的高置信组合。
+	summary += "。注意：浏览器缓存清理/编译/解压类正常批量操作也会呈现此形态，请结合目录判断；" +
+		"若同时有诱饵文件被触碰会升级为 critical"
 	return Finding{
 		RuleID:   RuleRansom,
-		Severity: model.SeverityHigh,
-		Score:    60,
+		Severity: model.SeverityMedium,
+		Score:    45,
 		Verdict:  model.VerdictSuspicious,
-		Title:    "批量删除/改名行为（疑似勒索加密）",
+		Title:    "批量删除/改名行为（观察级，疑似勒索加密）",
 		Summary:  summary,
 		MITRE:    []string{"T1486"}, // Impact: Data Encrypted for Impact
 		Notes:    notes,

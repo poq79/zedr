@@ -35,9 +35,14 @@ import (
 
 const (
 	usnCheckpointFile = "usn.json"
-	usnMaxRecords     = 5000
-	usnMaxAge         = 30 * time.Minute
-	usnMaxFutureSkew  = 5 * time.Minute
+	// usnMaxRecords 是单次读取的事件预算。v1 取 5000，端到端实测暴露：
+	// 开发机 C: 卷 USN 产量 200+ 条/秒（浏览器缓存/构建工具/包管理器），
+	// 5000/30s 永远追不平，事件滞后分钟级——落地类全被 30min 新鲜度
+	// 过滤、删除类告警迟到。提至 20000 并配合 usnPollOnce 的 tick 内
+	// 追赶循环（4 轮），典型机器每轮读不满即追平。
+	usnMaxRecords    = 20000
+	usnMaxAge        = 30 * time.Minute
+	usnMaxFutureSkew = 5 * time.Minute
 	// usnPollMaxBackoff 轮询连续失败的最大退避。全卷失败通常意味着
 	// 权限/卷结构问题，超时就保持 10 分钟节奏不再增长——不放弃
 	// （卷可能恢复），也不让指数失控。
@@ -169,27 +174,43 @@ func (a *Agent) usnPollOnce() bool {
 	now := time.Now()
 	for _, vol := range volumes {
 		st := cp.Volumes[vol]
-		events, next, journalID, reset, err := winapi.ReadUSNJournal(
-			vol, st.NextUSN, st.JournalID, usnMaxRecords)
-		if err != nil {
-			a.log.Warn("usn_poll_read_failed", "volume", vol, "err", err)
-			continue
+		// 追赶循环：开发机上卷的 USN 产量可达数百条/秒（浏览器缓存、
+		// 构建工具、包管理器），单轮 maxRecords 顶格说明还没追平——
+		// 不追平的话事件滞后会无限增长（实测 5000/30s 预算下滞后
+		// 超过分钟级，落地类全被 30min 新鲜度过滤掉）。同一 tick 内
+		// 最多再读 3 轮（4×20000=8 万条/卷/tick 硬上限），读不满即追平。
+		var sumEvents, sumRecorded, sumDefense, rounds int
+		for attempt := 0; attempt < 4; attempt++ {
+			events, next, journalID, reset, err := winapi.ReadUSNJournal(
+				vol, st.NextUSN, st.JournalID, usnMaxRecords)
+			if err != nil {
+				a.log.Warn("usn_poll_read_failed", "volume", vol, "err", err)
+				break
+			}
+			successes++
+			rounds++
+			recorded, defense := a.dispatchUSNEvents(events, reset, now)
+			sumEvents += len(events)
+			sumRecorded += recorded
+			sumDefense += defense
+			st = usnVolumeState{JournalID: journalID, NextUSN: next}
+			if reset {
+				a.log.Warn("usn_journal_reset", "volume", vol, "next_usn", next)
+			}
+			if len(events) < usnMaxRecords {
+				break // 本轮没读满 = 已追平
+			}
 		}
-		successes++
-		recorded, defense := a.dispatchUSNEvents(events, reset, now)
-		st2 := usnVolumeState{JournalID: journalID, NextUSN: next}
-		if st2 != st {
+		if st != cp.Volumes[vol] {
 			// 空轮次 NextUSN 不动：不落检查点，避免每 30s 一次无意义磁盘写
-			cp.Volumes[vol] = st2
+			cp.Volumes[vol] = st
 			changed = true
 		}
-		if reset {
-			a.log.Warn("usn_journal_reset", "volume", vol, "next_usn", next)
-		}
 		// 空轮次不刷 Info：轮询间隔内多数轮次没有事件
-		if len(events) > 0 || defense > 0 {
-			a.log.Info("usn_poll", "volume", vol, "events", len(events),
-				"recorded", recorded, "defense", defense, "reset", reset, "next_usn", next)
+		if sumEvents > 0 || sumDefense > 0 {
+			a.log.Info("usn_poll", "volume", vol, "events", sumEvents,
+				"recorded", sumRecorded, "defense", sumDefense,
+				"rounds", rounds, "next_usn", st.NextUSN)
 		}
 	}
 	if changed {
