@@ -25,19 +25,19 @@ import (
 var procReadDirectoryChangesW = modKernel32.NewProc("ReadDirectoryChangesW")
 
 const (
-	fileListDirectory = 0x0001
-	fileNotifyChangeFileName   = 0x0001
-	fileNotifyChangeDirName    = 0x0002
-	fileNotifyChangeSize       = 0x0008
-	fileNotifyChangeLastWrite  = 0x0010
-	fileFlagBackupSemantics    = 0x02000000
-	openExisting               = 3
+	fileListDirectory         = 0x0001
+	fileNotifyChangeFileName  = 0x0001
+	fileNotifyChangeDirName   = 0x0002
+	fileNotifyChangeSize      = 0x0008
+	fileNotifyChangeLastWrite = 0x0010
+	fileFlagBackupSemantics   = 0x02000000
+	openExisting              = 3
 
-	fileActionAdded       = 1
-	fileActionRemoved     = 2
-	fileActionModified    = 3
-	fileActionRenamedOld  = 4
-	fileActionRenamedNew  = 5
+	fileActionAdded      = 1
+	fileActionRemoved    = 2
+	fileActionModified   = 3
+	fileActionRenamedOld = 4
+	fileActionRenamedNew = 5
 )
 
 // dropKey 是淘汰队列里的一项。
@@ -64,6 +64,25 @@ var interestingExt = map[string]bool{
 	".jar": true, ".py": true, ".sh": true,
 }
 
+// FileEvent 是分发给 OnFileEvent 回调的单条目录变更。
+//
+// 语义约定（消费方必读）：
+//   - 一次改名产生两条事件：renamed_old（只有旧路径）+ renamed（新路径，
+//     OldPath 为同一次 parse 缓冲里配对到的旧路径）。做"批量改后缀"类
+//     速率统计只用 renamed，把 renamed_old 也计进去会双重计数；
+//   - 改名目标不在监控树内时只会收到 renamed_old，不会收到 renamed；
+//   - RDCW 不携带时间戳，When 是 parse 时刻而非变更发生时刻（USN 路径
+//     才有真实时间）；删掉重写同名文件时 RDCW 顺序不保证，事件流不做排序；
+//   - 回调在 watchLoop goroutine 里同步触发（每个监控目录一个 goroutine），
+//     消费方自保证线程安全；回调内可以查询 FileWatcher（互不持锁），
+//     但不要做耗时操作——会拖住所有目录的事件流。
+type FileEvent struct {
+	Kind    string // "added"/"removed"/"modified"/"renamed"/"renamed_old"
+	Path    string // 完整路径（监控目录 + 相对名）
+	OldPath string // 仅 renamed：配对到的旧路径；配对失败为空
+	When    time.Time
+}
+
 // FileWatcher 监控若干目录的文件落地事件。
 type FileWatcher struct {
 	mu     sync.Mutex
@@ -80,10 +99,29 @@ type FileWatcher struct {
 	stop    chan struct{}
 	wg      sync.WaitGroup
 
-	closed   atomic.Bool
-	events   atomic.Int64
-	dropped  atomic.Int64
-	watched  []string
+	// onEvent 用 atomic.Pointer 存：StartFileWatcher 之后 goroutine 已在跑，
+	// 回调可能随时被 SetOnFileEvent 替换（或置 nil 关闭分发），不能用普通字段。
+	onEvent atomic.Pointer[func(FileEvent)]
+
+	closed  atomic.Bool
+	events  atomic.Int64
+	dropped atomic.Int64
+	watched []string
+}
+
+// SetOnFileEvent 设置全量事件回调（含删除/改名旧名，不受落地扩展名过滤）。
+// 可在 StartFileWatcher 之后随时调用；传 nil 关闭分发。回调的线程安全
+// 由消费方保证（见 FileEvent 注释）。
+func (w *FileWatcher) SetOnFileEvent(cb func(FileEvent)) {
+	w.onEvent.Store(&cb)
+}
+
+// emit 触发回调。读指针后解引用两步走，避免"读到一半被替换"的撕裂：
+// atomic.Pointer 保证 Store/Load 各自原子，指针指向的 func 值一旦写入不再变。
+func (w *FileWatcher) emit(ev FileEvent) {
+	if p := w.onEvent.Load(); p != nil && *p != nil {
+		(*p)(ev)
+	}
 }
 
 // WatchDirs 返回默认需要监控的落地目录（已去重、只保留存在的）。
@@ -220,9 +258,15 @@ func (w *FileWatcher) watchLoop(dir string, h syscall.Handle) {
 }
 
 // parse 解析 FILE_NOTIFY_INFORMATION 链表。
+//
+// 每条记录两路分发：record() 维持既有落地索引口径（interestingExt 过滤
+// 不变）；OnFileEvent 回调收全量事件——诱饵文件是文档扩展名，若沿用落地
+// 过滤会收不到删除事件，勒索检测就成了瞎子。rename 配对只在同一次 parse
+// 的缓冲内做（RDCW 把一对改名通知放在同一缓冲里送达，跨缓冲视为旧名未知）。
 func (w *FileWatcher) parse(dir string, buf []byte) {
 	const hdr = 12 // NextEntryOffset(4) + Action(4) + FileNameLength(4)
 	off := 0
+	pendingOld := ""
 	for off+hdr <= len(buf) {
 		next := int(*(*uint32)(unsafe.Pointer(&buf[off])))
 		action := *(*uint32)(unsafe.Pointer(&buf[off+4]))
@@ -231,16 +275,37 @@ func (w *FileWatcher) parse(dir string, buf []byte) {
 		if nameLen > 0 && off+hdr+nameLen <= len(buf) {
 			raw := buf[off+hdr : off+hdr+nameLen]
 			if name, ok := decodeUTF16LEStrict(raw); ok {
-				// 只关心"新增/改名/修改"，删除不计入落地
-				if action == fileActionAdded || action == fileActionRenamedNew || action == fileActionModified {
-					w.record(filepath.Join(dir, decodePathSeparators(name)))
-				}
+				w.dispatch(action, filepath.Join(dir, decodePathSeparators(name)), &pendingOld)
 			}
 		}
 		if next == 0 {
 			return
 		}
 		off += next
+	}
+}
+
+// dispatch 把一条 RDCW 通知分流到落地索引与全量事件回调。
+// pendingOld 携带本次缓冲内上一个未配对的 RENAMED_OLD 路径（跨缓冲不配对）。
+func (w *FileWatcher) dispatch(action uint32, full string, pendingOld *string) {
+	switch action {
+	case fileActionAdded:
+		w.record(full)
+		w.emit(FileEvent{Kind: "added", Path: full, When: time.Now()})
+	case fileActionRemoved:
+		w.emit(FileEvent{Kind: "removed", Path: full, When: time.Now()})
+	case fileActionModified:
+		w.record(full)
+		w.emit(FileEvent{Kind: "modified", Path: full, When: time.Now()})
+	case fileActionRenamedOld:
+		*pendingOld = full
+		// 旧名单独发一条：改名出监控树时后续不会有 renamed，消费方靠它兜底
+		w.emit(FileEvent{Kind: "renamed_old", Path: full, When: time.Now()})
+	case fileActionRenamedNew:
+		old := *pendingOld
+		*pendingOld = ""
+		w.record(full)
+		w.emit(FileEvent{Kind: "renamed", Path: full, OldPath: old, When: time.Now()})
 	}
 }
 

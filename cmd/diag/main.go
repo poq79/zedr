@@ -288,11 +288,12 @@ func checkUSN() {
 	for _, ev := range events {
 		if strings.EqualFold(ev.Name, filepath.Base(probe)) {
 			found = true
-			fmt.Printf("命中: %s @ %s (reason=0x%x)\n",
-				ev.Name, ev.When.Format("15:04:05.000"), ev.Reason)
+			fmt.Printf("命中: %s @ %s (kind=%s reason=0x%x)\n",
+				ev.Name, ev.When.Format("15:04:05.000"), ev.Kind, ev.Reason)
 		}
 	}
-	fmt.Printf("回读 %d 条落地记录，next=0x%x reset=%v，探针文件命中=%v\n",
+	// 事件流现在含删除/改名旧名（勒索检测需要），不再是纯落地口径
+	fmt.Printf("回读 %d 条变更记录，next=0x%x reset=%v，探针文件命中=%v\n",
 		len(events), next, reset, found)
 	if !found {
 		fmt.Println("!! 未回读到探针文件：可能 journal 未刷新、卷非 NTFS，或记录已被上限截断")

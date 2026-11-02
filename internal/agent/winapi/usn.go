@@ -13,6 +13,13 @@
 //   - 只有 NTFS 卷有 USN；FAT/网络盘/非管理员句柄会失败，失败即降级。
 //   - 补采有记录数上限，超出部分推进到已处理位置并在日志中如实报告，
 //     不假装全量。
+//
+// 事件流（v0.9.8 勒索检测扩展）：ReadUSNJournal 现在输出全部五类事件
+// （create/delete/rename_old/rename_new/write），不再只输出落地类——
+// 勒索速率检测需要删除与改名事件，调用方按 Kind 自行分流。
+// RENAME_OLD/RENAME_NEW 在同一次读取批次内按 FRN 尽力配对（配对结果放在
+// rename_new 事件的 OldName 上）；跨批次不配对，OldName 为空，调用方按
+// "旧名未知"处理，不要猜测。
 package winapi
 
 import (
@@ -23,6 +30,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -31,20 +39,43 @@ const (
 	fsctlQueryUSNJournal = 0x000900f4
 	fsctlReadUSNJournal  = 0x000900bb
 
-	usnReasonDataOverwrite = 0x00000001
-	usnReasonDataExtend    = 0x00000002
+	usnReasonDataOverwrite  = 0x00000001
+	usnReasonDataExtend     = 0x00000002
 	usnReasonDataTruncation = 0x00000004
-	usnReasonFileCreate    = 0x00000100
-	usnReasonRenameNewName = 0x00002000
+	usnReasonFileCreate     = 0x00000100
+	usnReasonFileDelete     = 0x00000200
+	usnReasonRenameOldName  = 0x00001000
+	usnReasonRenameNewName  = 0x00002000
 
 	fileAttributeDirectory = 0x00000010
 )
 
-// USNEvent 是一条补采到的文件变更（只保留与"落地"相关的 reason）。
+// USNKind 归类 USN 记录对应的行为语义。
+// 一条 USN 记录可能同时带多个 reason 位（如"改名覆盖旧目标"会同时出现
+// FILE_DELETE|RENAME_OLD_NAME），usnKindOf 按检测价值定优先级：删除最强
+// （数据没了），其次改名、创建，最后纯写入。
+type USNKind string
+
+const (
+	USNKindCreate    USNKind = "create"
+	USNKindDelete    USNKind = "delete"
+	USNKindRenameNew USNKind = "rename_new"
+	USNKindRenameOld USNKind = "rename_old"
+	USNKindWrite     USNKind = "write"
+)
+
+// USNEvent 是一条补采到的文件变更。
 type USNEvent struct {
 	Name   string    // 文件名（leaf name，不含目录）
 	When   time.Time // 变更发生时间（来自 USN 记录，不是采集时刻）
 	Reason uint32
+	Kind   USNKind
+	// FRN 是 FileReferenceNumber：同一文件在同卷的所有记录里恒定，
+	// 单批次内用它配对 RENAME_OLD/RENAME_NEW。
+	FRN uint64
+	// OldName 仅在 Kind=rename_new 且同批次内配对到 rename_old 时非空；
+	// 空表示旧名未知（跨批次或改出本卷），不代表文件没有旧名。
+	OldName string
 }
 
 // USNVolumeOf 返回目录所在卷（形如 "C:"）；UNC/非盘符路径返回 false。
@@ -63,7 +94,8 @@ func USNVolumeOf(dir string) (string, bool) {
 // ReadUSNJournal 从 startUSN 开始读取某卷的 USN 变更。
 //
 // 返回：
-//   - events：过滤后的文件落地事件（目录、删除、纯元数据变更已剔除）；
+//   - events：文件变更事件，含全部五类 Kind（目录与纯元数据变更已剔除），
+//     落地/删除/改名的分流由调用方按 Kind 完成；
 //   - nextUSN：下次应从哪个 USN 继续（已准确推进到最后一条已处理记录之后）；
 //   - journalID：当前卷的 journal ID（用于检测日志被重建）；
 //   - reset：journal ID 不匹配/检查点越界，调用方应把它当作新基线；
@@ -121,6 +153,7 @@ func ReadUSNJournal(volume string, startUSN, journalID uint64, maxRecords int) (
 			if errors.Is(ioErr, windows.ERROR_HANDLE_EOF) {
 				break
 			}
+			pairUSNRenames(events)
 			return events, progress, curID, reset, ioErr
 		}
 		if got <= 8 {
@@ -137,7 +170,72 @@ func ReadUSNJournal(volume string, startUSN, journalID uint64, maxRecords int) (
 			break
 		}
 	}
+	pairUSNRenames(events)
 	return events, progress, curID, reset, nil
+}
+
+// FixedNTFSVolumes 枚举"固定磁盘 + USN Journal 可查询"的卷（形如 "C:"）。
+//
+// 为什么不用 DiskVolumes：资产清单只关心容量，勒索轮询只关心有没有 USN——
+// FAT32/exFAT 固定盘（U 盘除外）在 Windows 上也存在，逐卷实际查询一次
+// journal 是唯一可靠的判定，比查卷文件系统名省一次 IOCTL 之外还顺带
+// 验证了句柄权限。可移动介质（DRIVE_REMOVABLE）不收：拔插导致卷号漂移，
+// 检查点会错乱。
+func FixedNTFSVolumes() []string {
+	mask, err := windows.GetLogicalDrives()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for i := 0; i < 26; i++ {
+		if mask&(1<<uint(i)) == 0 {
+			continue
+		}
+		vol := string(rune('A'+i)) + ":"
+		root, err := windows.UTF16PtrFromString(vol + `\`)
+		if err != nil {
+			continue // 纯 ASCII 路径不可能失败，防御性跳过
+		}
+		typ, _, _ := procGetDriveTypeW.Call(uintptr(unsafe.Pointer(root)))
+		if typ != driveFixed {
+			continue
+		}
+		h, err := openVolume(vol)
+		if err != nil {
+			continue
+		}
+		_, _, _, qErr := queryUSNJournal(h)
+		windows.CloseHandle(h)
+		if qErr != nil {
+			continue
+		}
+		out = append(out, vol)
+	}
+	return out
+}
+
+// pairUSNRenames 在单次读取批次内按 FRN 配对 RENAME_OLD/RENAME_NEW，
+// 配对结果写到 rename_new 事件的 OldName。RENAME_OLD 事件本身保留不删，
+// 消费方择一使用（本仓库 app 层只用配对成功的 rename_new，避免速率
+// 统计双重计数）。
+//
+// USN 记录按文件关闭时机刷出，同一次改名的两条记录几乎总是落在同一批次；
+// 跨批次（两次 ReadUSNJournal 调用之间）无法配对，如实的表现就是
+// rename_new.OldName 为空。同 FRN 出现多个未配对 rename_old 时取最近一条
+// （连改两次名的极端场景，最早的旧名已无检测价值）。
+func pairUSNRenames(events []USNEvent) {
+	pending := make(map[uint64]int)
+	for i := range events {
+		switch events[i].Kind {
+		case USNKindRenameOld:
+			pending[events[i].FRN] = i
+		case USNKindRenameNew:
+			if j, ok := pending[events[i].FRN]; ok {
+				events[i].OldName = events[j].Name
+				delete(pending, events[i].FRN)
+			}
+		}
+	}
 }
 
 func openVolume(volume string) (windows.Handle, error) {
@@ -227,12 +325,15 @@ func parseUSNBuffer(buf []byte, max int) (events []USNEvent, chunkNext uint64, t
 			return events, usn, true
 		}
 
-		if major == 2 && isDropReason(reason) && attrs&fileAttributeDirectory == 0 &&
+		kind, keep := usnKindOf(reason)
+		if major == 2 && keep && attrs&fileAttributeDirectory == 0 &&
 			nameOff >= 60 && nameLen > 0 && nameOff+nameLen <= recLen {
 			name := decodeUSNName(payload[nameOff : nameOff+nameLen])
 			if name != "" && name != "." && name != ".." {
 				events = append(events, USNEvent{
 					Name: name, When: usnTime(ts), Reason: reason,
+					Kind: kind,
+					FRN:  binary.LittleEndian.Uint64(payload[8:16]),
 				})
 			}
 		}
@@ -241,9 +342,24 @@ func parseUSNBuffer(buf []byte, max int) (events []USNEvent, chunkNext uint64, t
 	return events, chunkNext, false
 }
 
-func isDropReason(reason uint32) bool {
-	return reason&(usnReasonFileCreate|usnReasonRenameNewName|
-		usnReasonDataOverwrite|usnReasonDataExtend|usnReasonDataTruncation) != 0
+// usnKindOf 把 USN reason 位归类成事件 Kind。优先级即检测价值：
+// 删除（数据没了）> 改名旧名 > 改名新名 > 创建 > 纯数据写入。
+// 纯元数据变更（属性/EA/安全描述符）与 CLOSE 不产出事件——它们不代表
+// 内容变化，收进来只会放大噪声。
+func usnKindOf(reason uint32) (USNKind, bool) {
+	switch {
+	case reason&usnReasonFileDelete != 0:
+		return USNKindDelete, true
+	case reason&usnReasonRenameOldName != 0:
+		return USNKindRenameOld, true
+	case reason&usnReasonRenameNewName != 0:
+		return USNKindRenameNew, true
+	case reason&usnReasonFileCreate != 0:
+		return USNKindCreate, true
+	case reason&(usnReasonDataOverwrite|usnReasonDataExtend|usnReasonDataTruncation) != 0:
+		return USNKindWrite, true
+	}
+	return "", false
 }
 
 func decodeUSNName(raw []byte) string {

@@ -80,6 +80,16 @@ type Config struct {
 	// 无响应扫描/连接速率）。检测只是对每轮已拉取的连接表做内存聚合，
 	// 零新增系统调用；关闭即整体禁用该告警族。
 	NetWatch bool
+	// USNPoll 控制 USN Journal 运行期轮询：全盘文件创建/删除/改名事件流
+	// （勒索防御与落地信号兜底的数据源）。启动补采（USNCatchup）只覆盖
+	// 停机窗口；运行期增量靠这里的低频轮询，空闲卷单次读取成本极低。
+	USNPoll bool
+	// USNPollInterval 是 USN 轮询周期。
+	USNPollInterval time.Duration
+	// FileDefense 控制 canary 诱饵守护与批量删除/改名勒索行为检测
+	// （FILE-CANARY/FILE-RANSOM）。诱饵内容透明（写明用途），落点选
+	// 用户文档目录；关闭后 USN 轮询也随之停摆（事件流的主要消费者就是它）。
+	FileDefense bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -117,6 +127,9 @@ func LoadConfig(version string) (*Config, error) {
 	c.TunnelEnabled = l.Bool("HG_AGENT_TUNNEL_ENABLED", true)
 	c.ReconProbe = l.Bool("HG_AGENT_RECON_PROBE", true)
 	c.NetWatch = l.Bool("HG_AGENT_NETWATCH", true)
+	c.USNPoll = l.Bool("HG_AGENT_USN_POLL", true)
+	c.USNPollInterval = l.Duration("HG_AGENT_USN_POLL_INTERVAL", 30*time.Second)
+	c.FileDefense = l.Bool("HG_AGENT_FILE_DEFENSE", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
@@ -130,6 +143,7 @@ func LoadConfig(version string) (*Config, error) {
 	l.Check(c.OfflineQueue >= 100, "HG_AGENT_OFFLINE_QUEUE 至少 100")
 	l.Check(c.HeartbeatSec >= 5, "HG_AGENT_HEARTBEAT_SEC 至少 5 秒")
 	l.Check(c.PersistCheck >= 30*time.Second, "HG_AGENT_PERSIST_INTERVAL 至少 30s（枚举注册表本身有成本）")
+	l.Check(c.USNPollInterval >= 5*time.Second, "HG_AGENT_USN_POLL_INTERVAL 不能小于 5s（增量读取虽轻，也不必贴着内核刷）")
 
 	if strings.EqualFold(c.Env, "production") && c.KillEnabled {
 		l.SecurityWarning(false, "已启用主动终止进程能力（HG_AGENT_KILL_ENABLED），请确认这是预期行为")

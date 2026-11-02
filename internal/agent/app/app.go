@@ -26,6 +26,7 @@ import (
 	"zedr/internal/agent/netwatch"
 	"zedr/internal/agent/persist"
 	"zedr/internal/agent/quarantine"
+	"zedr/internal/agent/ransom"
 	"zedr/internal/agent/state"
 	"zedr/internal/agent/tunnel"
 	"zedr/internal/agent/uplink"
@@ -54,6 +55,10 @@ type Agent struct {
 	// 行为采集层：文件落地监控 + 持久化项监控
 	fw *winapi.FileWatcher
 	pm *persist.Monitor
+
+	// 文件防御（canary 诱饵 + 勒索速率）：消费 RDCW 回调与 USN 轮询两路
+	// 事件流；nil = 开关关闭
+	fileDefense *ransom.Defense
 
 	// 网络行为检测（NW 规则族）：消费每轮连接表快照做滑动窗口聚合，
 	// 无独立线程与系统调用；nil = 开关关闭
@@ -239,10 +244,38 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}()
 
+	// 文件防御（canary 诱饵 + 勒索速率）：必须先于 USN 补采构造——
+	// 补采要把诱饵目录所在卷纳入、并把停机窗口内的诱饵篡改补投给防御层
+	if a.cfg.FileDefense {
+		a.fileDefense = ransom.New(ransom.Options{
+			CanaryDirs: canaryDirs(),
+			Log:        a.log,
+			OnFinding:  a.emitFileDefenseFinding,
+		})
+		if a.fw != nil {
+			a.fw.SetOnFileEvent(func(fe winapi.FileEvent) {
+				a.fileDefense.Consume(ransom.Event{
+					Kind: fe.Kind, Path: fe.Path, OldPath: fe.OldPath,
+					When: fe.When, Source: "rdcw",
+				})
+			})
+		}
+		a.fileDefense.Start(ctx)
+		defer a.fileDefense.Close()
+	}
+
 	// USN 断点补采：必须在 scanLoop 之前完成，首轮扫描才能用上
 	// 停机窗口内的落地信号。非管理员/非 NTFS 时只记 warn。
-	if a.fw != nil && a.cfg.USNCatchup {
+	// 门条件从"有 fw"放宽为"fw 与文件防御任一存在"：RDCW 挂掉时
+	// 诱饵的停机窗口篡改仍要补投
+	if a.cfg.USNCatchup && (a.fw != nil || a.fileDefense != nil) {
 		a.usnCatchup()
+	}
+
+	// USN 运行期轮询：全盘文件事件流，勒索防御的准实时数据源
+	//（usnPollLoop 内部还有一次开关判空，这里是启动归属）
+	if a.cfg.USNPoll && a.fileDefense != nil {
+		go a.usnPollLoop(ctx)
 	}
 
 	// 注册与规则同步在后台进行，不阻塞采集

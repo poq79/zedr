@@ -1,0 +1,651 @@
+// Package ransom 实现探针侧的勒索软件诱饵（canary）与删除/改名速率检测。
+//
+// 检测思路（对标业界 canary file 实践，但坚持透明原则）：
+//  1. 在指定目录放置内容透明的诱饵文件——勒索软件加密/删除时必然碰到它们，
+//     误报面小、无需内容特征；诱饵内容写明用途，不做隐形诱饵（隐私透明
+//     是本产品的产品原则，用户有权知道自己机器上多出来的文件是什么）；
+//  2. 统计 60s 滑动窗口内的删除/改名加权速率——批量改后缀（a.docx →
+//     a.encrypted）是加密器的强特征，权重高于普通删除。
+//
+// 诚实边界（做不到什么就说什么）：
+//   - 无法归因到进程：USN 记录与 ReadDirectoryChangesW 都不带发起者 PID，
+//     告警只能说明"发生了什么"，不能说明"谁干的"——判定为 suspicious
+//     而非 malicious 就是这个原因，进程归因留给上层关联引擎；
+//   - 只覆盖诱饵文件与删除/改名速率两类信号，不做全盘内容加密检测
+//     （读盘比对内容哈希的成本与用户态低侵入原则冲突）；
+//   - 周期自检只补缺失诱饵，不做内容比对：内容篡改依赖文件系统事件
+//     （RDCW 的 modified / USN 的删除改名）。诱饵目录若未被文件监控覆盖，
+//     原地改写内容（不删不改名）检测不到——这是采集层的口径边界，不是
+//     本包能单独解决的；
+//   - 人工删除诱饵会触发 medium 观察级告警（"可能是人工删除，请人工确认"），
+//     透明内容已尽量降低这种概率，但无法杜绝；
+//   - USN 来源只有 leaf name，不知道完整路径（解析完整路径需要 OpenFileById
+//     提权遍历，见 winapi/usn.go 的取舍），摘要中如实标注；
+//   - 窗口统计是内存态，探针重启后从零开始。重启瞬间正是攻击窗口，但
+//     诱饵缺失会被静默重建（计数不告警），启动补采会把停机窗口内的删除
+//     事件补投进来，不会双重告警也不会漏掉窗口内的诱饵篡改。
+//
+// 并发纪律：Consume 可被多个 goroutine 同时调用（RDCW 回调 goroutine +
+// USN 轮询 goroutine）；Defense 内部一把互斥锁保护窗口与冷却表，回调
+// OnFinding 在锁外调用，消费方再自己的线程安全由自己保证。
+package ransom
+
+import (
+	"context"
+	"crypto/sha256"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"zedr/internal/model"
+)
+
+// 诱饵文件名集合。覆盖常见文档类型（office/文本/PDF），数量刻意少：
+// 每个目录 4 个，噪声面与检测面平衡。改这份名单会让已部署机器上的旧诱饵
+// 变成"孤儿文件"，增删前先想清楚。
+var canaryNames = []string{
+	"backup_report.docx",
+	"预算汇总.xlsx",
+	"server_notes.txt",
+	"project_brief.pdf",
+}
+
+// canaryContent 是诱饵文件的统一内容。必须透明：写明是谁放的、干什么用、
+// 删了会怎样。内容恒定才能用 sha256 判"被篡改"。
+const canaryContent = "本文件由 Z-EDR 探针放置，用于篡改检测，请勿删除。\r\n" +
+	"This is a decoy file placed by Z-EDR for tamper detection. Do not delete.\r\n" +
+	"删除、改名或加密本文件会触发安全告警。\r\n" +
+	"Deleting, renaming or encrypting this file will raise a security alert.\r\n"
+
+const (
+	// RuleID 前缀固定的两条规则，服务端按此关联展示与统计。
+	RuleCanary = "FILE-CANARY"
+	RuleRansom = "FILE-RANSOM"
+
+	// windowDur 是速率统计窗口。60s 足够覆盖加密器的爆发期（真实加密
+	// 通常是秒级万级文件），又不至于让慢速"软删除"工具积累到阈值。
+	windowDur = 60 * time.Second
+	// windowCap 是窗口事件环形队列容量上限：4096 条 × ~100B ≈ 0.4MB，
+	// 触顶说明事件速率远超检测设计（正常 60s 内远到不了），丢最旧并
+	// 用 Dropped() 诚实计数，绝不静默膨胀内存。
+	windowCap = 4096
+
+	// selfCheckInterval 周期自检：诱饵缺失重建 + 窗口过期修剪。
+	selfCheckInterval = 30 * time.Second
+
+	// 冷却键：速率检测器全局共用一个键。
+	rateCooldownKey = "ransom-rate"
+)
+
+// Event 是喂给 Defense 的一条文件事件，来源有两个：
+//   - rdcw：winapi.FileWatcher 的 OnFileEvent（完整路径，Kind 原样透传）；
+//   - usn：winapi.ReadUSNJournal 轮询/补采（Path 只有 leaf name）。
+type Event struct {
+	Kind    string // "added"/"removed"/"modified"/"renamed"/"renamed_old"
+	Path    string // 完整路径；USN 来源只有 leaf name
+	OldPath string // renamed 时旧路径（可为空=旧名未知）
+	When    time.Time
+	Source  string // "rdcw" | "usn"
+}
+
+// Finding 是产出给统一告警出口的检测结论。
+type Finding struct {
+	RuleID   string
+	Severity model.Severity
+	Score    int
+	Verdict  model.Verdict
+	Title    string
+	Summary  string
+	MITRE    []string
+	Notes    []string // 证据明细（路径/计数/来源），直接进告警证据链
+}
+
+// Options 是 Defense 的构造参数。
+type Options struct {
+	// CanaryDirs 放置诱饵的目录。不存在的目录跳过且不代建——探针不应在
+	// 用户机器上凭空造目录，目录选择是部署策略的事。
+	CanaryDirs []string
+	// RateThreshold 60s 窗口加权删除/改名计数的触发阈值，<=0 用默认 20。
+	RateThreshold int
+	// Cooldown 同一冷却键的告警冷却时长，<=0 用默认 15 分钟。
+	Cooldown time.Duration
+	Log      *slog.Logger
+	// OnFinding 检测结论出口（主线接线到统一告警出口）。在锁外同步调用。
+	OnFinding func(Finding)
+	// Now 供测试注入合成时钟；nil 用 time.Now。
+	Now func() time.Time
+}
+
+type canarySpec struct {
+	key     string // 规范化小写路径（匹配键）
+	display string // 原始大小写路径（摘要显示）
+	name    string // 小写 leaf name
+}
+
+type windowEvent struct {
+	at     time.Time
+	weight int
+	kind   string
+	path   string // 完整路径（rdcw）或 leaf name（usn）
+	source string
+}
+
+// Defense 是勒索检测器：诱饵管理 + 速率窗口 + 冷却。
+// 一律指针使用，禁止按值拷贝（内含锁与 atomic 字段）。
+type Defense struct {
+	log       *slog.Logger
+	onFinding func(Finding)
+	now       func() time.Time
+	cooldown  time.Duration
+	threshold int
+
+	// canaries/names 在 New 里一次成型后只读（重建只补文件不登记新键），
+	// 因此 Consume 读它们不需要额外同步。
+	canaries map[string]canarySpec // 规范化路径 -> 诱饵
+	names    map[string][]string   // 小写 leaf name -> 候选规范化路径（USN 只有文件名，同名诱饵可分布在多个目录）
+	dirs     []string              // 原始 CanaryDirs（usnPollVolumes 圈卷用）
+
+	contentHash [sha256.Size]byte
+
+	mu        sync.Mutex
+	lastHit   map[string]time.Time // 冷却键 -> 上次产出 Finding 的时刻
+	window    []windowEvent
+	weightSum int // 窗口内权重和的增量维护：爆发期每秒数千次 Consume，
+	// 每次都 O(n) 扫窗口会烧掉探针的 CPU 预算
+	lastRate time.Time // 速率检测器最近一次触发的时刻（canary 分级用）
+	dropped  atomic.Int64
+	rebuilt  atomic.Int64
+
+	stop     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
+}
+
+// New 构造 Defense 并完成首次诱饵落盘：
+//   - 缺失 → 静默创建（重启/清理是正常路径，计数不告警）；
+//   - 存在且内容一致 → 不动（不重写，避免自身触发 modified 事件）；
+//   - 存在但内容不一致 → 视为已被篡改，产出 medium 级 canary Finding
+//     （此时窗口为空、速率未触发，按分级规则只能是 medium）。
+func New(opt Options) *Defense {
+	d := &Defense{
+		log:       opt.Log,
+		onFinding: opt.OnFinding,
+		now:       opt.Now,
+		cooldown:  opt.Cooldown,
+		threshold: opt.RateThreshold,
+		canaries:  make(map[string]canarySpec, len(opt.CanaryDirs)*len(canaryNames)),
+		names:     make(map[string][]string, len(canaryNames)),
+		lastHit:   make(map[string]time.Time),
+		stop:      make(chan struct{}),
+	}
+	if d.now == nil {
+		d.now = time.Now
+	}
+	if d.cooldown <= 0 {
+		d.cooldown = 15 * time.Minute
+	}
+	if d.threshold <= 0 {
+		d.threshold = 20
+	}
+	if d.log == nil {
+		d.log = slog.Default()
+	}
+	d.contentHash = sha256.Sum256([]byte(canaryContent))
+
+	for _, dir := range opt.CanaryDirs {
+		if dir == "" {
+			continue
+		}
+		d.dirs = append(d.dirs, dir)
+		for _, name := range canaryNames {
+			d.plant(filepath.Join(dir, name))
+		}
+	}
+	return d
+}
+
+// plant 校验/创建单个诱饵并登记到只读集合。New 期单 goroutine 调用。
+func (d *Defense) plant(path string) {
+	key := normPath(path)
+	if _, dup := d.canaries[key]; dup {
+		return
+	}
+	display := filepath.Clean(path)
+	name := strings.ToLower(filepath.Base(path))
+
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if sha256.Sum256(raw) != d.contentHash {
+			// 存在但内容不匹配：可能是用户改过，也可能是攻击者已经来过。
+			// 按透明原则不悄悄覆盖（那会销毁证据），登记后照常检测。
+			d.canaries[key] = canarySpec{key: key, display: display, name: name}
+			d.names[name] = append(d.names[name], key)
+			d.emitFinding(d.canaryFinding(tamperHit{
+				key: key, display: display,
+				kind: "modified", source: "self-check",
+				when: d.now(),
+				note: "启动自检发现诱饵内容与预期不符（可能被篡改，请人工确认）",
+			}))
+			return
+		}
+	case os.IsNotExist(err):
+		// 静默重建：重启/清理场景是正常路径，绝不能变成告警源
+		if werr := os.WriteFile(path, []byte(canaryContent), 0o644); werr != nil {
+			d.log.Warn("canary_plant_failed", "path", display, "err", werr)
+			return
+		}
+		d.rebuilt.Add(1)
+	default:
+		// 权限等其他错误：跳过该诱饵，不假装它存在
+		d.log.Warn("canary_plant_skipped", "path", display, "err", err)
+		return
+	}
+	d.canaries[key] = canarySpec{key: key, display: display, name: name}
+	d.names[name] = append(d.names[name], key)
+}
+
+// Start 启动周期自检 goroutine（诱饵缺失重建 + 窗口过期修剪）。
+// ctx 取消或 Close 都会退出。
+func (d *Defense) Start(ctx context.Context) {
+	if d == nil {
+		return
+	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		t := time.NewTicker(selfCheckInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-d.stop:
+				return
+			case <-t.C:
+				d.maintain()
+			}
+		}
+	}()
+}
+
+// Close 停止自检 goroutine 并等待退出。可重复调用。
+func (d *Defense) Close() {
+	if d == nil {
+		return
+	}
+	d.stopOnce.Do(func() { close(d.stop) })
+	d.wg.Wait()
+}
+
+// CanaryDirs 返回原始诱饵目录列表（app 层圈 USN 轮询卷用）。
+func (d *Defense) CanaryDirs() []string {
+	if d == nil {
+		return nil
+	}
+	return d.dirs
+}
+
+// Dropped 返回速率窗口触顶后被丢弃的事件数（诚实计数器）。
+func (d *Defense) Dropped() int64 {
+	if d == nil {
+		return 0
+	}
+	return d.dropped.Load()
+}
+
+// Rebuilt 返回启动与自检累计重建的诱饵数（运维观察用，不进告警）。
+func (d *Defense) Rebuilt() int64 {
+	if d == nil {
+		return 0
+	}
+	return d.rebuilt.Load()
+}
+
+// Consume 接收一条文件事件，线程安全。canary 命中与速率触发可能在同一次
+// 调用里各产出一条 Finding（规则不同，都该报）。
+func (d *Defense) Consume(ev Event) {
+	if d == nil {
+		return
+	}
+	when := ev.When
+	if when.IsZero() {
+		when = d.now()
+	}
+
+	d.mu.Lock()
+	d.pruneLocked(d.now())
+
+	var findings []Finding
+	if hit := d.matchCanary(ev); hit != nil {
+		if f := d.canaryFinding(*hit); f.RuleID != "" {
+			findings = append(findings, f)
+		}
+	}
+	// 速率窗口只收新鲜事件：补采来的陈旧删除对"此刻正在爆发"没有意义，
+	// 但对 canary 命中仍然有效（上面已处理），两个用途分开看。
+	if w := rateWeight(ev); w > 0 && !when.Before(d.now().Add(-windowDur)) {
+		d.pushLocked(when, w, ev)
+		if f := d.rateFinding(when); f.RuleID != "" {
+			findings = append(findings, f)
+		}
+	}
+	d.mu.Unlock()
+
+	for _, f := range findings {
+		if d.onFinding != nil {
+			d.onFinding(f)
+		}
+	}
+}
+
+// maintain 是周期自检：缺失诱饵静默重建 + 窗口修剪。也不做内容比对——
+// 见包注释的诚实边界。
+func (d *Defense) maintain() {
+	for _, spec := range d.canaries {
+		if _, err := os.Stat(spec.display); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			// 权限类错误：不动，下轮再试
+			continue
+		}
+		if err := os.WriteFile(spec.display, []byte(canaryContent), 0o644); err != nil {
+			d.log.Warn("canary_rebuild_failed", "path", spec.display, "err", err)
+			continue
+		}
+		d.rebuilt.Add(1)
+		d.log.Info("canary_rebuilt", "path", spec.display)
+	}
+	d.mu.Lock()
+	d.pruneLocked(d.now())
+	d.mu.Unlock()
+}
+
+// ---------------------------------------------------------------- canary
+
+// tamperHit 是一次诱饵命中的归一化描述。
+type tamperHit struct {
+	key     string // 冷却键（诱饵路径或 usn:leaf）
+	display string // 摘要用路径
+	kind    string // 事件 Kind 或 "modified"（自检内容不符）
+	source  string // "rdcw"/"usn"/"self-check"
+	when    time.Time
+	path    string // 事件 Path（证据）
+	oldPath string // 事件 OldPath（证据）
+	note    string // 额外说明（USN 无路径/自检语境）
+	cands   []string
+}
+
+// matchCanary 判定事件是否命中诱饵。锁内调用。
+//
+// 匹配口径：rdcw 来源（有完整路径）只做精确路径匹配——leaf name 全局同名
+// 文件太多，按名匹配会把别处同名文档的删除算到诱饵头上；usn 来源只有
+// leaf name，只能按名匹配（新旧名都试：诱饵被改成 a.encrypted 时新名已
+// 不是诱饵名，只有旧名能对上），摘要里如实标注路径未知。
+func (d *Defense) matchCanary(ev Event) *tamperHit {
+	switch ev.Kind {
+	case "removed", "modified", "renamed", "renamed_old":
+	default:
+		return nil
+	}
+	hit := &tamperHit{kind: ev.Kind, source: ev.Source, when: ev.When,
+		path: ev.Path, oldPath: ev.OldPath}
+	if ev.Source == "usn" {
+		leaf := strings.ToLower(filepath.Base(strings.TrimSpace(ev.Path)))
+		if _, ok := d.names[leaf]; !ok && ev.OldPath != "" {
+			leaf = strings.ToLower(filepath.Base(strings.TrimSpace(ev.OldPath)))
+		}
+		cands, ok := d.names[leaf]
+		if !ok {
+			return nil
+		}
+		// 不知道改的是哪一个同名诱饵：全部列为候选，冷却键用 leaf
+		hit.key = "usn:" + leaf
+		hit.display = strings.Join(cands, ", ")
+		hit.cands = cands
+		hit.note = "路径未知（USN 记录仅文件名）"
+		return hit
+	}
+	if spec, ok := d.canaries[normPath(ev.Path)]; ok {
+		hit.key = spec.key
+		hit.display = spec.display
+		return hit
+	}
+	// renamed 的旧路径命中也算：诱饵被改名走，Path 已是新名
+	if spec, ok := d.canaries[normPath(ev.OldPath)]; ok {
+		hit.key = spec.key
+		hit.display = spec.display
+		hit.note = "诱饵被改名（旧路径命中）"
+		return hit
+	}
+	return nil
+}
+
+// canaryFinding 产出诱饵命中 Finding，冷却内返回零值（RuleID 为空）。
+// Consume 在持锁状态下调用；New 的启动自检在单线程无锁状态下调用——
+// 两条路径没有并发交叠（Start 之前自检已完成），共用同一把锁的调用方
+// 无需重入。分级：速率 ≥ 阈值一半或速率检测器刚触发过 → critical；否则 medium。
+func (d *Defense) canaryFinding(hit tamperHit) Finding {
+	if last, ok := d.lastHit[hit.key]; ok && hit.when.Sub(last) < d.cooldown {
+		return Finding{}
+	}
+	d.lastHit[hit.key] = hit.when
+
+	sev, score := model.SeverityMedium, 45
+	title := "诱饵文件被篡改"
+	summary := fmt.Sprintf("诱饵文件 %s 被 %s", hit.display, kindText(hit.kind))
+	if hit.note != "" {
+		summary += "；" + hit.note
+	}
+	// 分级依据见任务口径：单独触碰大概率是人工误删，速率叠加才升级
+	if d.rateActive(hit.when) {
+		sev, score = model.SeverityCritical, 75
+		title = "诱饵文件被篡改且删除/改名速率异常（疑似勒索软件）"
+		summary += fmt.Sprintf("；当前 60s 窗口加权计数 %d（阈值 %d），符合勒索软件行为特征",
+			d.weightedLocked(), d.threshold)
+	} else {
+		summary += "；可能是人工删除，请人工确认"
+	}
+
+	notes := []string{
+		fmt.Sprintf("source=%s kind=%s", hit.source, hit.kind),
+		fmt.Sprintf("path=%s", hit.path),
+	}
+	if hit.oldPath != "" {
+		notes = append(notes, fmt.Sprintf("old_path=%s", hit.oldPath))
+	}
+	if hit.cands != nil {
+		notes = append(notes, fmt.Sprintf("候选诱饵=%d 个", len(hit.cands)))
+	}
+	notes = append(notes, fmt.Sprintf("when=%s", hit.when.Format(time.RFC3339)))
+
+	return Finding{
+		RuleID:   RuleCanary,
+		Severity: sev,
+		Score:    score,
+		Verdict:  model.VerdictSuspicious,
+		Title:    title,
+		Summary:  summary,
+		MITRE:    []string{"T1565.001"}, // Data Manipulation: Stored Data Manipulation
+		Notes:    notes,
+	}
+}
+
+// rateActive 判定速率侧是否处于"活跃"状态：窗口计数过半阈值，或速率
+// 检测器在冷却期内触发过。锁内调用。
+func (d *Defense) rateActive(when time.Time) bool {
+	if !d.lastRate.IsZero() && when.Sub(d.lastRate) < d.cooldown {
+		return true
+	}
+	half := d.threshold / 2
+	if half < 1 {
+		half = 1
+	}
+	return d.weightedLocked() >= half
+}
+
+// ---------------------------------------------------------------- 速率
+
+// rateWeight 返回事件在速率窗口里的权重：removed=1；renamed 新旧扩展名
+// 不同=2（批量改后缀是加密器强特征）、相同或旧名未知=1；其余不计。
+func rateWeight(ev Event) int {
+	switch ev.Kind {
+	case "removed":
+		return 1
+	case "renamed":
+		if ev.OldPath != "" &&
+			!strings.EqualFold(filepath.Ext(ev.OldPath), filepath.Ext(ev.Path)) {
+			return 2
+		}
+		return 1
+	}
+	return 0
+}
+
+func (d *Defense) pushLocked(at time.Time, weight int, ev Event) {
+	d.window = append(d.window, windowEvent{
+		at: at, weight: weight, kind: ev.Kind, path: ev.Path, source: ev.Source,
+	})
+	d.weightSum += weight
+	if len(d.window) > windowCap {
+		drop := len(d.window) - windowCap
+		for _, e := range d.window[:drop] {
+			d.weightSum -= e.weight
+		}
+		d.dropped.Add(int64(drop))
+		d.window = append(d.window[:0], d.window[drop:]...)
+	}
+}
+
+func (d *Defense) pruneLocked(now time.Time) {
+	cut := now.Add(-windowDur)
+	i := 0
+	for i < len(d.window) && d.window[i].at.Before(cut) {
+		d.weightSum -= d.window[i].weight
+		i++
+	}
+	if i > 0 {
+		d.window = append(d.window[:0], d.window[i:]...)
+	}
+}
+
+func (d *Defense) weightedLocked() int {
+	return d.weightSum
+}
+
+// rateFinding 产出速率 Finding（冷却内返回零值）。摘要带窗口计数与
+// 涉及目录 Top3（rdcw 有完整路径）或 leaf name 样例（usn）。
+func (d *Defense) rateFinding(when time.Time) Finding {
+	w := d.weightedLocked()
+	if w < d.threshold {
+		return Finding{}
+	}
+	if last, ok := d.lastHit[rateCooldownKey]; ok && when.Sub(last) < d.cooldown {
+		return Finding{}
+	}
+	d.lastHit[rateCooldownKey] = when
+	d.lastRate = when
+
+	dirCount := map[string]int{}
+	var usnSamples []string
+	for _, e := range d.window {
+		if e.source == "usn" {
+			if len(usnSamples) < 8 {
+				usnSamples = append(usnSamples, e.path)
+			}
+			continue
+		}
+		dirCount[filepath.Dir(e.path)]++
+	}
+	top := topDirs(dirCount, 3)
+
+	summary := fmt.Sprintf("60 秒窗口内加权删除/改名计数 %d（阈值 %d）", w, d.threshold)
+	if len(top) > 0 {
+		parts := make([]string, len(top))
+		for i, td := range top {
+			parts[i] = fmt.Sprintf("%s(%d)", td.dir, td.count)
+		}
+		summary += "；涉及目录 Top：" + strings.Join(parts, " ")
+	}
+	if len(usnSamples) > 0 {
+		summary += "；USN 样例：" + strings.Join(usnSamples, ", ") + "（仅文件名）"
+	}
+
+	notes := make([]string, 0, len(top)+2)
+	for _, td := range top {
+		notes = append(notes, fmt.Sprintf("dir=%s removed_or_renamed=%d", td.dir, td.count))
+	}
+	if d.dropped.Load() > 0 {
+		notes = append(notes, fmt.Sprintf("窗口触顶丢弃事件=%d（速率超出检测容量，计数如实）", d.dropped.Load()))
+	}
+
+	return Finding{
+		RuleID:   RuleRansom,
+		Severity: model.SeverityHigh,
+		Score:    60,
+		Verdict:  model.VerdictSuspicious,
+		Title:    "批量删除/改名行为（疑似勒索加密）",
+		Summary:  summary,
+		MITRE:    []string{"T1486"}, // Impact: Data Encrypted for Impact
+		Notes:    notes,
+	}
+}
+
+type dirCount struct {
+	dir   string
+	count int
+}
+
+func topDirs(m map[string]int, n int) []dirCount {
+	list := make([]dirCount, 0, len(m))
+	for dir, c := range m {
+		list = append(list, dirCount{dir: dir, count: c})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].count != list[j].count {
+			return list[i].count > list[j].count
+		}
+		return list[i].dir < list[j].dir // 同计数按名序，保证摘要稳定
+	})
+	if len(list) > n {
+		list = list[:n]
+	}
+	return list
+}
+
+// ---------------------------------------------------------------- 工具
+
+// emitFinding 锁外调用出口（New 期自检路径使用；Consume 在自己的锁外
+// 统一调用 onFinding）。
+func (d *Defense) emitFinding(f Finding) {
+	if f.RuleID == "" || d.onFinding == nil {
+		return
+	}
+	d.onFinding(f)
+}
+
+func kindText(kind string) string {
+	switch kind {
+	case "removed":
+		return "删除"
+	case "renamed":
+		return "改名"
+	case "renamed_old":
+		return "改名（旧路径）"
+	case "modified":
+		return "改写"
+	}
+	return kind
+}
+
+// normPath 是本包内的路径规范化：统一分隔符 + 小写。与 winapi.NormalizePath
+// 同口径但不引入 winapi 依赖（本包承诺纯逻辑，不碰 Win32）。
+func normPath(p string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(p), "/", `\`))
+}
