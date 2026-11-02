@@ -100,12 +100,12 @@ type SlotView struct {
 
 // AIConfigView 是 GET /ai/config 的响应体。
 type AIConfigView struct {
-	Provider      ProviderView        `json:"provider"`
-	Slots         map[string]SlotView `json:"slots"`
-	HourlyTokens  int                 `json:"hourly_tokens"`
-	CacheTTLSec   int                 `json:"cache_ttl_sec"`
-	Engine        string              `json:"engine"` // 当前生效引擎（llm/heuristic）
-	EngineModel   string              `json:"engine_model"`
+	Provider     ProviderView        `json:"provider"`
+	Slots        map[string]SlotView `json:"slots"`
+	HourlyTokens int                 `json:"hourly_tokens"`
+	CacheTTLSec  int                 `json:"cache_ttl_sec"`
+	Engine       string              `json:"engine"` // 当前生效引擎（llm/heuristic）
+	EngineModel  string              `json:"engine_model"`
 	// PromptOverridden 标注哪些任务存在提示词覆盖。
 	PromptOverridden map[string]bool `json:"prompt_overridden"`
 	SkillCount       int             `json:"skill_count"`
@@ -296,7 +296,7 @@ func (s *AIService) GetConfig(ctx context.Context) (*AIConfigView, error) {
 	view.Provider = ProviderView{
 		BaseURL: p.BaseURL, Model: p.Model, Effort: p.Effort,
 		Temperature: p.Temperature, MaxTokens: p.MaxTokens, TimeoutSec: p.TimeoutSec,
-		HasKey: p.APIKey != "", KeyHint: keyHint(p.APIKey),
+		HasKey: p.APIKey != "", KeyHint: s.keyHint(p.APIKey, "provider"),
 		Source: providerSource(s.bootstrap, stored),
 	}
 
@@ -318,7 +318,7 @@ func (s *AIService) GetConfig(ctx context.Context) (*AIConfigView, error) {
 		}
 		if sl.APIKey != "" {
 			sv.OverrideHasKey = true
-			sv.OverrideKeyHint = keyHint(sl.APIKey)
+			sv.OverrideKeyHint = s.keyHint(sl.APIKey, task)
 		}
 		if sl.Temperature > 0 {
 			sv.OverrideTemperature = sl.Temperature
@@ -356,13 +356,18 @@ func normalizeEffort(e string) string {
 	}
 }
 
-// keyHint 提取密文尾 4 位。密文不可逆（AES-GCM），但"换 key 必换密文"，
-// 尾部对比足以让管理员识别钥匙有没有换过。
-func keyHint(sealed string) string {
-	if len(sealed) <= 4 {
+// keyHint 生成"已配置 …abcd"的尾号提示。
+// 必须基于明文：密文是随机 nonce 的 base64，尾部既没有辨识意义，
+// 又会随每次保存变化（界面会显示 "…BA==" 这类噪声）。解密失败时
+// 返回 ****，绝不把密文片段当密钥尾号展示。
+func (s *AIService) keyHint(sealed, task string) string {
+	pt := s.decryptKey(sealed, task)
+	// decryptKey 解密失败时原样返回密文；只有密文形态才视为失败。
+	// （env 引导的明文 Key 会原样返回，应当正常显示尾号。）
+	if pt == "" || (strings.HasPrefix(sealed, "enc:v1:") && pt == sealed) || len(pt) <= 4 {
 		return "****"
 	}
-	return "…" + sealed[len(sealed)-4:]
+	return "…" + pt[len(pt)-4:]
 }
 
 // loadStored 读并反序列化 settings 里的 AI 配置；不存在时返回 nil。

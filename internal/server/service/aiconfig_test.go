@@ -5,12 +5,39 @@ import (
 	"time"
 
 	"zedr/internal/ai"
+	"zedr/internal/platform/settingseal"
 )
 
 func testBootstrap() ai.Config {
 	return ai.Config{
 		Provider: "openai", BaseURL: "https://env.example.com", APIKey: "env-key",
 		Model: "env-model", Timeout: 30 * time.Second, HourlyTokenBudget: 100000,
+	}
+}
+
+// 密钥尾号提示必须来自明文：密文尾部的 base64 噪声会随每次保存变化。
+func TestKeyHintUsesPlaintextTail(t *testing.T) {
+	key, err := settingseal.Key("", "master-secret-at-least-32-bytes-long!!")
+	if err != nil {
+		t.Fatalf("派生密钥失败: %v", err)
+	}
+	sealed, err := settingseal.Seal(key, "sk-abc1234")
+	if err != nil {
+		t.Fatalf("加密失败: %v", err)
+	}
+	s := &AIService{encKey: key}
+	if got := s.keyHint(sealed, "provider"); got != "…1234" {
+		t.Fatalf("应显示明文尾号 …1234，得到 %q", got)
+	}
+	// env 引导的明文 Key 同样显示尾号（不是 enc:v1 密文）。
+	if got := s.keyHint("sk-xyz9876", "provider"); got != "…9876" {
+		t.Fatalf("明文 Key 应显示 …9876，得到 %q", got)
+	}
+	// 换主密钥后解不开：只能显示 ****，绝不能暴露密文片段。
+	other, _ := settingseal.Key("", "another-master-secret-at-least-32-bytes!!")
+	s2 := &AIService{encKey: other}
+	if got := s2.keyHint(sealed, "provider"); got != "****" {
+		t.Fatalf("解密失败应显示 ****，得到 %q", got)
 	}
 }
 

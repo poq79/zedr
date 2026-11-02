@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -238,7 +239,7 @@ func suggestActions(verdict string, in *TriageInput) []Action {
 		if in.ProcessName != "" {
 			a = append(a, Action{
 				Type: "terminate", Target: fmt.Sprintf("%s (pid 需现场确认)", in.ProcessName),
-				Detail: "终止进程；PID 可能已被复用，执行前需重新核对进程名与路径",
+				Detail:           "终止进程；PID 可能已被复用，执行前需重新核对进程名与路径",
 				RequiresApproval: true,
 			})
 		}
@@ -246,14 +247,14 @@ func suggestActions(verdict string, in *TriageInput) []Action {
 	case "suspicious":
 		return []Action{{
 			Type: "hunt", Target: in.Hash,
-			Detail: "在同网段其它主机上检索相同哈希/命令行，确认是否已扩散",
+			Detail:           "在同网段其它主机上检索相同哈希/命令行，确认是否已扩散",
 			RequiresApproval: false,
 		}}
 	case "benign":
 		if in.Hash != "" {
 			return []Action{{
 				Type: "allowlist", Target: in.Hash,
-				Detail: "如确认无误，可按哈希加白以减少重复告警",
+				Detail:           "如确认无误，可按哈希加白以减少重复告警",
 				RequiresApproval: true,
 			}}
 		}
@@ -334,8 +335,61 @@ func round2(f float64) float64 {
 
 // ---------------------------------------------------------------- OpenAI 兼容后端
 
-// OpenAICompatible 是一个通用后端，适配任何提供 /v1/chat/completions 的服务：
-// OpenAI、DeepSeek、通义、Kimi、vLLM、Ollama（内置 OpenAI 兼容层）等。
+// apiEndpoint 把管理员填写的 base_url 与 OpenAI 兼容端点拼接。
+//
+// 不能无条件补 /v1：服务商文档给出的 base_url 经常自带版本段——
+// OpenAI 的 https://api.openai.com/v1、火山方舟的 /api/v3、
+// Agent Plan 的 /api/plan/v3、Coding Plan 的 /api/coding/v3、
+// Gemini 兼容层的 /v1beta/openai。旧实现一律拼 /v1，会得到
+// /v1/v1/... 或 /api/plan/v3/v1/...，拨测与真实研判一起失败
+// （2026-11 用户实测：火山方舟 Agent Plan 401/404）。
+//
+// 规则与 OpenAI SDK 的 base_url 语义一致：带版本段就直接拼端点，
+// 否则视为裸域名补 /v1。这样 https://api.deepseek.com 与
+// https://api.deepseek.com/v1 两种写法都成立。
+func apiEndpoint(baseURL, endpoint string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if hasVersionSuffix(base) {
+		return base + endpoint
+	}
+	return base + "/v1" + endpoint
+}
+
+// hasVersionSuffix 判断 URL 路径最后一段是否已是版本段。
+// 覆盖 v1 / v2 / v3 / v1beta / v1beta1 / v1alpha 与 Gemini 的 openai。
+func hasVersionSuffix(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if path == "" {
+		return false
+	}
+	seg := strings.ToLower(path[strings.LastIndex(path, "/")+1:])
+	if seg == "openai" { // Gemini OpenAI 兼容层：/v1beta/openai
+		return true
+	}
+	if len(seg) < 2 || seg[0] != 'v' {
+		return false
+	}
+	i := 1
+	for i < len(seg) && seg[i] >= '0' && seg[i] <= '9' {
+		i++
+	}
+	if i == 1 { // 只有 "v"，不是版本段
+		return false
+	}
+	switch seg[i:] {
+	case "", "alpha", "alpha1", "alpha2", "beta", "beta1", "beta2":
+		return true
+	}
+	return false
+}
+
+// OpenAICompatible 是一个通用后端，适配任何提供 OpenAI 兼容
+// /chat/completions 的服务：OpenAI、DeepSeek、通义、Kimi、vLLM、
+// Ollama（内置 OpenAI 兼容层）、火山方舟 Agent/Coding Plan 等。
 type OpenAICompatible struct {
 	baseURL string
 	apiKey  string
@@ -455,7 +509,7 @@ func (o *OpenAICompatible) chat(ctx context.Context, sys, user string, maxTokens
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		o.baseURL+"/v1/chat/completions", bytes.NewReader(raw))
+		apiEndpoint(o.baseURL, "/chat/completions"), bytes.NewReader(raw))
 	if err != nil {
 		return "", 0, err
 	}
@@ -628,7 +682,7 @@ func (o *OpenAICompatible) AgentChat(ctx context.Context, msgs []AgentMessage, t
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/v1/chat/completions", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiEndpoint(o.baseURL, "/chat/completions"), bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -761,14 +815,15 @@ func sortByScoreDesc(ev []EvidenceItem) {
 type ProbeResult struct {
 	OK        bool     `json:"ok"`
 	LatencyMs int64    `json:"latency_ms"`
-	Models    []string `json:"models,omitempty"` // /v1/models 可用时的模型清单
+	Models    []string `json:"models,omitempty"` // 模型列表端点可用时的模型清单
 	Detail    string   `json:"detail"`           // 成功说明或失败原因（可直接展示）
 }
 
 // ProbeOpenAI 对"待保存"的接入配置做一次真实拨测。
 //
-// 两级探测：先 GET /v1/models（便宜、能顺带拉模型清单）；部分兼容实现
-// （某些网关/旧版 Ollama）没有该端点，退回一次 1-token chat 探测。
+// 两级探测：先 GET 模型列表端点（便宜、能顺带拉模型清单）；部分兼容实现
+// （火山方舟套餐、某些网关/旧版 Ollama）没有该端点，退回一次 1-token chat 探测。
+// 两级都走 apiEndpoint，base_url 自带版本段时不会重复拼接。
 // 刻意用请求级超时而不是复用 http.Client 的全局 Timeout——测试按钮
 // 的体验要求"最多等 timeout 秒"，与推理调用共用一个上限是合理的。
 func ProbeOpenAI(baseURL, apiKey, model string, timeout time.Duration) *ProbeResult {
@@ -779,8 +834,8 @@ func ProbeOpenAI(baseURL, apiKey, model string, timeout time.Duration) *ProbeRes
 	base := strings.TrimRight(baseURL, "/")
 	client := &http.Client{Timeout: timeout}
 
-	get := func(path string) (*http.Response, error) {
-		req, err := http.NewRequest(http.MethodGet, base+path, nil)
+	get := func(endpoint string) (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodGet, apiEndpoint(base, endpoint), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -791,7 +846,7 @@ func ProbeOpenAI(baseURL, apiKey, model string, timeout time.Duration) *ProbeRes
 	}
 
 	// 第一级：模型列表
-	if res, err := get("/v1/models"); err == nil {
+	if res, err := get("/models"); err == nil {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 2<<20))
 		_ = res.Body.Close()
 		if res.StatusCode == http.StatusOK {
@@ -818,7 +873,7 @@ func ProbeOpenAI(baseURL, apiKey, model string, timeout time.Duration) *ProbeRes
 		// 非 200 → 落入第二级，把 models 端点的错误带在兜底结果里
 		fallback := probeByChat(client, base, apiKey, model, start)
 		if !fallback.OK {
-			fallback.Detail = fmt.Sprintf("/v1/models 返回 HTTP %d；%s", res.StatusCode, fallback.Detail)
+			fallback.Detail = fmt.Sprintf("模型列表端点返回 HTTP %d；%s", res.StatusCode, fallback.Detail)
 		}
 		return fallback
 	} else {
@@ -844,7 +899,7 @@ func probeByChat(client *http.Client, base, apiKey, model string, start time.Tim
 	if err != nil {
 		return fail("构造探测请求失败: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, apiEndpoint(base, "/chat/completions"), bytes.NewReader(payload))
 	if err != nil {
 		return fail("构造探测请求失败: %v", err)
 	}
@@ -858,6 +913,17 @@ func probeByChat(client *http.Client, base, apiKey, model string, start time.Tim
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 8192))
+	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+		// 401/403 是最常见的配置失败：把"钥匙没送到"和"钥匙不对"分开说，
+		// 否则界面只能展示服务商原文（"API key missing or invalid"），
+		// 用户无法判断是自己没填、没保存，还是 Key 与套餐不匹配。
+		if apiKey == "" {
+			return fail("认证失败（HTTP %d）：请求未携带 API Key——输入框为空，且后台没有已保存的密钥。请填写后重试；%s",
+				res.StatusCode, truncate(string(body), 200))
+		}
+		return fail("认证失败（HTTP %d）：API Key 无效/过期，或与该服务地址、套餐不匹配（如火山方舟 Agent/Coding Plan 需专属 Key）；%s",
+			res.StatusCode, truncate(string(body), 200))
+	}
 	if res.StatusCode != http.StatusOK {
 		return fail("HTTP %d: %s", res.StatusCode, truncate(string(body), 200))
 	}

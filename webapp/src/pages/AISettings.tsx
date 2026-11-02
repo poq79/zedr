@@ -103,7 +103,8 @@ function ProviderCard({ p, onTest, testing, probe }: {
             </Badge>
           </div>
           <p className="mt-0.5 text-[11.5px] text-faint">
-            兼容任何 OpenAI 协议服务（OpenAI / DeepSeek / 通义 / Kimi / vLLM / Ollama）。
+            兼容任何 OpenAI 协议服务（OpenAI / DeepSeek / 通义 / Kimi / 火山方舟 / vLLM / Ollama）。
+            填服务商文档给出的 Base URL；已带 /v1 或 /api/.../v3 时不会重复拼接。
             配置一次，全部任务槽位共用；调用失败自动降级到确定性分析。
           </p>
         </div>
@@ -114,7 +115,7 @@ function ProviderCard({ p, onTest, testing, probe }: {
 
       <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
         <label className="col-span-2">
-          <span className="mb-1 block text-[11px] text-faint">服务地址（OpenAI 兼容 /v1）</span>
+          <span className="mb-1 block text-[11px] text-faint">服务地址（OpenAI 兼容 Base URL）</span>
           <Input data-provider="base_url" defaultValue={p.base_url}
             placeholder="https://api.deepseek.com" spellCheck={false} />
         </label>
@@ -282,7 +283,6 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
   const isAdmin = user.role === 'admin';
 
   const [cfg, setCfg] = useState<AIConfigView | null>(null);
-  const [providerKeyDraft, setProviderKeyDraft] = useState('');
   const [providerClearKey, setProviderClearKey] = useState(false);
   const [slotDrafts, setSlotDrafts] = useState<Record<string, SlotDraft>>({});
   const [probe, setProbe] = useState<ProbeResult | null>(null);
@@ -314,7 +314,6 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
       setLastEval(e);
       setEngineStats(st.stats || null);
       setCfg(c);
-      setProviderKeyDraft('');
       setProviderClearKey(false);
       setSlotDrafts(Object.fromEntries(SLOT_KEYS.map((t) => [t, slotToDraft(c.slots[t])])));
       setBudget({ hourly_tokens: c.hourly_tokens, cache_ttl_sec: c.cache_ttl_sec });
@@ -335,6 +334,11 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
   const providerEl = (name: string) =>
     document.querySelector<HTMLInputElement>(`[data-provider="${name}"]`);
 
+  /* API Key 输入框是非受控的（与同卡片其它字段一致），必须直接读 DOM。
+     这里曾用一份从未被 onChange 更新的 state，导致用户输入的 Key 永远
+     以空串提交：测试连接报 401、保存也静默丢掉密钥。 */
+  const providerKeyValue = () => providerEl('api_key')?.value.trim() ?? '';
+
   /* 保存：Provider（含未受控输入框的现值）+ 槽位差异 + 预算。
      api_key 留空 = 保留旧值；clear_key = 显式清除。 */
   const saveConfig = async () => {
@@ -349,7 +353,7 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
           temperature: Number(providerEl('temperature')?.value) || 0,
           max_tokens: Number(providerEl('max_tokens')?.value) || 0,
           timeout_sec: Number(providerEl('timeout_sec')?.value) || 0,
-          api_key: providerKeyDraft, clear_key: providerClearKey,
+          api_key: providerKeyValue(), clear_key: providerClearKey,
         },
         slots: Object.fromEntries(SLOT_KEYS.map((t) => {
           const d = slotDrafts[t];
@@ -365,8 +369,11 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
       };
       const next = await api.put<AIConfigView>('/api/v1/ai/config', body);
       setCfg(next);
-      setProviderKeyDraft('');
       setProviderClearKey(false);
+      // 非受控输入框不会因 React 重渲染而清空——手动清掉，避免明文密钥
+      // 长期留在页面上，也避免下次保存把旧 Key 再提交一遍。
+      const keyEl = providerEl('api_key');
+      if (keyEl) keyEl.value = '';
       setSlotDrafts(Object.fromEntries(SLOT_KEYS.map((t) => [t, slotToDraft(next.slots[t])])));
       setProbe(null); // 配置可能已变，旧拨测结论不再可信
       toast('AI 配置已保存并热生效');
@@ -380,7 +387,7 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
     setTesting(true);
     try {
       const res = await api.post<ProbeResult>('/api/v1/ai/config/test', {
-        base_url: base, api_key: providerKeyDraft,
+        base_url: base, api_key: providerKeyValue(),
         model: providerEl('model')?.value.trim(), timeout_sec: Number(providerEl('timeout_sec')?.value) || 45,
       });
       setProbe(res);
