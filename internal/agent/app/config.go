@@ -76,6 +76,10 @@ type Config struct {
 	// 2s 超时、≤64KB 读取）。false = 纯被动模式（仅进程/端口/配置推断），
 	// 用于对"零主动探测"有硬要求的现场。
 	ReconProbe bool
+	// NetWatch 控制网络行为检测（NW 规则族：端口扫描/主机扫探/横向扇出/
+	// 无响应扫描/连接速率）。检测只是对每轮已拉取的连接表做内存聚合，
+	// 零新增系统调用；关闭即整体禁用该告警族。
+	NetWatch bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -112,6 +116,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.UpgradeEnabled = l.Bool("HG_AGENT_UPGRADE_ENABLED", false)
 	c.TunnelEnabled = l.Bool("HG_AGENT_TUNNEL_ENABLED", true)
 	c.ReconProbe = l.Bool("HG_AGENT_RECON_PROBE", true)
+	c.NetWatch = l.Bool("HG_AGENT_NETWATCH", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")

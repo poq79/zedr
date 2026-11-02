@@ -347,6 +347,19 @@ func (c *Collector) NameOf(snap *Snapshot, pid uint32) string {
 	return ""
 }
 
+// IdentOf 返回某 PID 的进程名与启动时间（"已知最完整"口径与血缘一致：
+// 富化缓存 > 快照 CreateTime > 退出历史）。网络行为检测需要启动时间做
+// PID 复用判定——复用不清零行为窗口，旧进程的扫描扇出会算到新进程头上。
+func (c *Collector) IdentOf(snap *Snapshot, pid uint32) (string, time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var name string
+	if p, ok := snap.Procs[pid]; ok {
+		name = p.Name
+	}
+	return name, c.startTimeOfLocked(snap, pid)
+}
+
 // Modules 采集指定进程的模块列表（仅对可疑进程调用，成本较高）。
 func (c *Collector) Modules(pid uint32) []model.ModuleInfo {
 	mods, err := winapi.ProcessModules(pid)

@@ -23,6 +23,7 @@ import (
 	"zedr/internal/agent/inventory"
 	"zedr/internal/agent/liveapi"
 	"zedr/internal/agent/localapi"
+	"zedr/internal/agent/netwatch"
 	"zedr/internal/agent/persist"
 	"zedr/internal/agent/quarantine"
 	"zedr/internal/agent/state"
@@ -53,6 +54,10 @@ type Agent struct {
 	// 行为采集层：文件落地监控 + 持久化项监控
 	fw *winapi.FileWatcher
 	pm *persist.Monitor
+
+	// 网络行为检测（NW 规则族）：消费每轮连接表快照做滑动窗口聚合，
+	// 无独立线程与系统调用；nil = 开关关闭
+	nw *netwatch.Watch
 
 	// 泛安全体检：驻留项画像缓存随 Agent 存活（文件签名验读一次后复用）
 	auditor *hygiene.Auditor
@@ -177,6 +182,10 @@ func New(version string) (*Agent, error) {
 		cpu:       &winapi.CPUSampler{},
 		startedAt: time.Now(),
 		scanReq:   make(chan bool, 1),
+	}
+	// 网络行为检测：构造成本为零（纯内存结构），关闭开关时不创建
+	if cfg.NetWatch {
+		a.nw = netwatch.New(netwatch.Default(), uint32(os.Getpid()))
 	}
 	// IOC 表先从落盘缓存恢复（重启空窗补位），服务端可达后再被整包覆盖
 	a.loadIOCsCache()
@@ -572,6 +581,12 @@ func (a *Agent) scan(deep bool) int {
 	alive := make(map[uint32]struct{}, len(snap.Procs))
 	for pid := range snap.Procs {
 		alive[pid] = struct{}{}
+	}
+
+	// 网络行为检测：只消费本轮快照（连接表本来就每轮拉取），零新增系统调用。
+	// 放在新进程检测之前——扫描行为与进程创建检测相互独立。
+	if a.nw != nil {
+		a.netObserve(snap)
 	}
 
 	// 模块枚举是整轮扫描里最贵的操作（每个进程一次快照）。

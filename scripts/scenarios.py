@@ -134,6 +134,14 @@ def _eicar():
         pass  # Windows 不支持 .com 执行，属预期
 
 
+def _port_scan():
+    """受控端口扫描模拟：zedr-diag 自身改名后向 RFC5737 测试网段
+    （203.0.113.0/24，不可路由，SYN 在网关侧消亡，不触碰任何真实服务）
+    发 16 个端口的连接尝试。SYN 无响应 → 停留 SYN_SENT 供快照采样。"""
+    dst = copy_as("portscan.exe")
+    return spawn(dst, "-netburst", "203.0.113.9:16", "-hold", "25s")
+
+
 # ----------------------------------------------------------------- 场景定义
 SCENARIOS = [
     dict(id="S01", name="伪装系统进程（temp 下的 svchost.exe）",
@@ -204,6 +212,15 @@ SCENARIOS = [
     dict(id="S16", name="服务新增指向自造样本（T1543.003 资产侧证据）",
          run=lambda: _service_create(),
          probe=None, expect=["INV-SERVICES"]),
+
+    # ---- S17：网络行为检测（NW 规则族，走旁路告警链路）----
+    # 扫描行为告警不经过进程检测引擎打分（进程行 score 恒为 0），
+    # 判定与 INV- 场景同口径：读 /api/local/alerts 里 evidence.signals 的 ID。
+    # 注意：该场景必须在探针启动 ≥5 分钟后运行（引擎冷启动静默期同样
+    # 作用于网络行为告警），矩阵里排在最后正是为此。
+    dict(id="S17", name="端口扫描行为（16 端口 SYN 扇出，NW-001）",
+         run=lambda: _port_scan(),
+         probe=("portscan.exe", "", WORK_MARK), expect=["NW-001"]),
 ]
 
 def _admin_group_change():
@@ -290,17 +307,20 @@ def run_scenarios():
 
         new_alerts = [a for a in alerts() if a["id"] not in before]
 
-        # 资产变更类场景（expect 带 INV- 前缀）：不依赖进程被采集，
-        # 验证"清单 diff → 变更告警"管线；判定信号是 evidence.signals 的 ID
-        inv_want = [e for e in sc.get("expect", []) if e.startswith("INV-")]
-        if inv_want:
+        # 旁路告警类场景（expect 带 INV-/NW-/FILE- 前缀）：不依赖进程被
+        # 引擎打分，验证"行为/变更 → 旁路告警"管线；判定信号是
+        # evidence.signals 的 ID（netwatch/勒索检测与资产变更同口径）
+        sig_want = [e for e in sc.get("expect", [])
+                    if e.startswith(("INV-", "NW-", "FILE-", "EVT-", "REG-"))]
+        if sig_want:
             matches = []
+            hit = None
             for _ in range(12):
                 time.sleep(5)
                 fresh = [a for a in alerts() if a["id"] not in before]
                 for a in fresh:
                     sigs = [s.get("id") for s in (a.get("evidence") or {}).get("signals") or []]
-                    if inv_want[0] in sigs and a not in matches:
+                    if sig_want[0] in sigs and a not in matches:
                         matches.append(a)
                 # 取最高分匹配：add/remove 两向都会入集合（场景的清理
                 # 动作也会触发反向事件），锚定最能代表攻击语义的那条
@@ -312,7 +332,7 @@ def run_scenarios():
                 score = hit.get("score") or 0
                 suppressed = hit.get("suppressed") or ""
                 title = hit.get("title") or ""
-                state = "检出·资产变更" if score >= SUSPICIOUS_AT else "检出·低危"
+                state = "检出·旁路告警" if score >= SUSPICIOUS_AT else "检出·低危"
             else:
                 state, score, suppressed, title = "漏检", 0, "", ""
         elif sc["probe"] is None:

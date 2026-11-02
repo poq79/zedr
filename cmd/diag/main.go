@@ -10,11 +10,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +33,8 @@ func main() {
 	etwWatch := flag.Duration("etw", 0, "实测 ETW 实时进程事件采集（需 -tags etw 编译）")
 	persistCheck := flag.Bool("persist", false, "枚举持久化项（自启动）并输出分类统计")
 	usnProbe := flag.Bool("usn", false, "实测 USN Journal 断点补采（TEMP 落探针文件后回读）")
+	netburst := flag.String("netburst", "", "受控端口扫描模拟：host:端口数（如 203.0.113.9:16）。"+
+		"仅发 SYN 尝试不传数据，目标应为不可路由测试网段；配合 -hold 指定持续时间")
 	flag.Parse()
 
 	fmt.Println("=== Z-EDR 采集层自检 ===")
@@ -159,12 +163,68 @@ func main() {
 		testETW(*etwWatch)
 	}
 
-	fmt.Println("\n自检完成。")
-
-	if *hold > 0 {
+	// -netburst 与 -hold 二选一占用进程生命周期：前者自己按 hold 时长
+	// 跑连接尝试，后者才是纯保活
+	if *netburst != "" {
+		netBurst(*netburst, *hold)
+	} else if *hold > 0 {
 		fmt.Printf("按 -hold 参数保持存活 %s（供检测链路验证使用）\n", *hold)
 		time.Sleep(*hold)
 	}
+
+	fmt.Println("\n自检完成。")
+}
+
+// netBurst 受控模拟端口扫描行为：对目标 host 发起 count 个 SYN 连接尝试
+// （每轮错开端口段），不传输任何应用数据。目标应为不可路由测试网段
+// （如 RFC 5737 TEST-NET-3 的 203.0.113.0/24——包在网关侧消亡，永远
+// 不会抵达真实服务），SYN 得不到响应 → 连接停留在 SYN_SENT 数秒，
+// 供网络行为检测（NW-001/NW-004）做端到端验证。
+//
+// 诚实边界：SYN 泛洪速率不做（那是 DoS 模拟，不是检测验证需要的）；
+// 每轮端口段错开是为了配合检测器的"首次 sighting = 基线"语义——
+// 第一轮是基线，第二轮起才是"新增连接"。
+func netBurst(spec string, hold time.Duration) {
+	host, countStr, ok := strings.Cut(spec, ":")
+	if !ok {
+		fmt.Printf("!! -netburst 参数格式应为 host:端口数，收到 %q\n", spec)
+		return
+	}
+	count, err := strconv.Atoi(countStr)
+	if err != nil || count < 1 || count > 64 {
+		fmt.Printf("!! 端口数应在 1..64，收到 %q\n", countStr)
+		return
+	}
+	if hold <= 0 {
+		hold = 25 * time.Second
+	}
+	if ip := net.ParseIP(host); ip == nil {
+		fmt.Printf("!! 目标不是合法 IP: %s\n", host)
+		return
+	}
+
+	const basePort = 44000
+	deadline := time.Now().Add(hold)
+	fmt.Printf("\n--- 受控端口扫描模拟 -> %s x%d（持续 %s，仅 SYN，无数据）---\n",
+		host, count, hold)
+	for round := 1; time.Now().Before(deadline); round++ {
+		for i := 0; i < count; i++ {
+			addr := fmt.Sprintf("%s:%d", host, basePort+round*100+i)
+			go func(a string) {
+				// 30s 拨号超时 > Windows SYN 重试周期（约 21s）：
+				// 拨号挂着不关，socket 就停在 SYN_SENT 供快照采样；
+				// 若意外连上（不该发生，目标是不可路由网段）立刻关闭
+				c, derr := net.DialTimeout("tcp", a, 30*time.Second)
+				if derr == nil {
+					_ = c.Close()
+				}
+			}(addr)
+		}
+		fmt.Printf("第 %d 轮：%d 个连接尝试 -> %s:%d..\n", round, count, host, basePort+round*100)
+		time.Sleep(15 * time.Second)
+	}
+	// 留出最后一轮的采样窗口，让检测器看到"SYN_SENT 消失"（NW-004 语义）
+	time.Sleep(3 * time.Second)
 }
 
 func hashFile(path string) (string, int64, error) {
