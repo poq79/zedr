@@ -47,6 +47,10 @@ type Client struct {
 	maxQueue int
 	dropped  int64
 
+	// spool 是磁盘持久队列（离线/重启不丢告警）。为 nil 时退回内存队列：
+	// 数据目录不可写等异常不能阻断检测主链路。
+	spool *spool
+
 	lastRuleETag string
 	// ruleSignKey 非空时强制校验规则包签名（HG_AGENT_RULE_SIGN_KEY）
 	ruleSignKey []byte
@@ -73,7 +77,7 @@ func New(baseURL, enrollToken, dataDir string, maxQueue int) *Client {
 	if maxQueue <= 0 {
 		maxQueue = 5000
 	}
-	return &Client{
+	c := &Client{
 		baseURL:     strings.TrimRight(baseURL, "/"),
 		enrollToken: enrollToken,
 		dataDir:     dataDir,
@@ -88,6 +92,22 @@ func New(baseURL, enrollToken, dataDir string, maxQueue int) *Client {
 		queue:    make([]model.AlertEnvelope, 0, 256),
 		maxQueue: maxQueue,
 	}
+	// 磁盘 spool 是主队列；创建失败（目录不可写/无权限）时保持 nil，
+	// Enqueue 自动落到上面的内存队列——降级要无声但可观测（QueueMode）。
+	if dataDir != "" {
+		if sp, err := openSpool(filepath.Join(dataDir, "spool"), maxQueue); err == nil {
+			c.spool = sp
+		}
+	}
+	return c
+}
+
+// QueueMode 返回当前告警队列形态：disk（持久）或 memory（降级）。
+func (c *Client) QueueMode() string {
+	if c.spool != nil {
+		return "disk"
+	}
+	return "memory"
 }
 
 // LoadCredentials 从数据目录读取已保存的凭证。
@@ -176,12 +196,20 @@ func (c *Client) Heartbeat(ctx context.Context, req model.HeartbeatRequest) (*mo
 
 // Enqueue 把告警放入本地队列（非阻塞）。
 func (c *Client) Enqueue(env model.AlertEnvelope) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	// 统一出口脱敏：命令行可能带安装参数里的密码/令牌，
 	// 一旦入队就等于会被写进服务端数据库、管理台页面与导出文件。
 	sanitize(&env)
+
+	// 优先落盘：进程重启后仍能补发。写失败（盘满/权限）才降级内存，
+	// 降级本身不阻塞检测——但队列上限仍然生效，绝不无限占内存。
+	if c.spool != nil {
+		if err := c.spool.enqueue(env); err == nil {
+			return
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if len(c.queue) >= c.maxQueue {
 		// 丢弃最旧的一条，保留最近的告警
 		c.queue = c.queue[1:]
@@ -214,18 +242,28 @@ func sanitize(env *model.AlertEnvelope) {
 	}
 }
 
-// Pending 返回队列长度。
+// Pending 返回队列长度（磁盘 + 内存降级两部分）。
 func (c *Client) Pending() int {
+	n := 0
+	if c.spool != nil {
+		n += c.spool.len()
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.queue)
+	n += len(c.queue)
+	c.mu.Unlock()
+	return n
 }
 
-// Dropped 返回因队列溢出丢弃的告警数。
+// Dropped 返回因队列溢出/记录异常丢弃的告警数（跨重启累计）。
 func (c *Client) Dropped() int64 {
+	n := int64(0)
+	if c.spool != nil {
+		n += c.spool.droppedCount()
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.dropped
+	n += c.dropped
+	c.mu.Unlock()
+	return n
 }
 
 // RuleVersion 返回最近一次成功应用的规则包版本。
@@ -248,7 +286,31 @@ func (c *Client) IOCVersion() int {
 }
 
 // Flush 批量上报队列中的告警。
+//
+// 先发磁盘段（更旧），再发内存降级队列；磁盘段发送成功才删除。
 func (c *Client) Flush(ctx context.Context) (int, error) {
+	sent := 0
+	if c.spool != nil {
+		n, err := c.spool.flush(ctx, c.sendChunk)
+		sent += n
+		if err != nil {
+			return sent, err
+		}
+	}
+	n, err := c.flushMemory(ctx)
+	return sent + n, err
+}
+
+// sendChunk 发送一个批次。抽出来给磁盘/内存两条路径共用，
+// 保证批次语义（200 条、服务端去重）只有一处。
+func (c *Client) sendChunk(ctx context.Context, chunk []model.AlertEnvelope) error {
+	var resp model.AlertBatchResponse
+	return c.do(ctx, http.MethodPost, "/api/v1/agent/alerts",
+		model.AlertBatchRequest{Alerts: chunk}, &resp, true)
+}
+
+// flushMemory 发送内存降级队列。
+func (c *Client) flushMemory(ctx context.Context) (int, error) {
 	c.mu.Lock()
 	if len(c.queue) == 0 {
 		c.mu.Unlock()
@@ -266,9 +328,7 @@ func (c *Client) Flush(ctx context.Context) (int, error) {
 			n = 200
 		}
 		chunk := batch[:n]
-		req := model.AlertBatchRequest{Alerts: chunk}
-		var resp model.AlertBatchResponse
-		if err := c.do(ctx, http.MethodPost, "/api/v1/agent/alerts", req, &resp, true); err != nil {
+		if err := c.sendChunk(ctx, chunk); err != nil {
 			// 上报失败：把本批放回队列头部，等待下一轮重试
 			c.mu.Lock()
 			c.queue = append(chunk, c.queue...)
@@ -278,7 +338,7 @@ func (c *Client) Flush(ctx context.Context) (int, error) {
 				c.dropped += int64(over)
 			}
 			c.mu.Unlock()
-			return 0, err
+			return sent, err
 		}
 		batch = batch[n:]
 		sent += len(chunk)

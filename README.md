@@ -144,6 +144,9 @@ EICAR string — no external executables are ever downloaded.
   than one interval can be missed (TOCTOU); file-drop monitoring partially
   compensates. An ETW consumer implementation exists behind a build tag but is
   **not** enabled — it failed validation on Windows Server 2022.
+- Alert delivery is at-least-once: a crash after the server accepted a batch but
+  before the spool segment was deleted can replay that batch; server-side
+  fingerprint dedup absorbs the common case.
 - No kernel-level blocking or tamper protection by design.
 - Authenticode verification uses local caches; no online revocation checks.
 - IOC library (SHA256) is manually maintained and signed for delivery; no
