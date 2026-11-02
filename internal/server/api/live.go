@@ -51,6 +51,17 @@ var liveEndpoints = map[string]liveEndpoint{
 	"recon":    {timeout: 40 * time.Second},
 	"baseline": {timeout: 10 * time.Second},
 	"accounts": {timeout: 10 * time.Second},
+	// 进程取证：句柄/线程枚举是内存级操作给 5s；占用者扫描与内存区域
+	// 遍历更重（全系统句柄 + VirtualQueryEx 循环）给 10s，探针侧仍自带
+	// 5s/2s 内部预算，超时返回 truncated
+	"handles":      {timeout: 5 * time.Second},
+	"handleowners": {timeout: 10 * time.Second},
+	"threads":      {timeout: 5 * time.Second},
+	"memscan":      {timeout: 10 * time.Second},
+	// 持久化总览聚合三套枚举（服务+任务XML+启动项），15s 留足余量；
+	// 外联对端是 Netstat 纯聚合，5s 足够
+	"persistence": {timeout: 15 * time.Second},
+	"peers":       {timeout: 5 * time.Second},
 }
 
 // errTunnelNotConnected 是前端据以渲染"隧道未连接"状态条的错误码。
