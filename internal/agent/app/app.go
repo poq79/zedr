@@ -223,6 +223,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}()
 
+	// USN 断点补采：必须在 scanLoop 之前完成，首轮扫描才能用上
+	// 停机窗口内的落地信号。非管理员/非 NTFS 时只记 warn。
+	if a.fw != nil && a.cfg.USNCatchup {
+		a.usnCatchup()
+	}
+
 	// 注册与规则同步在后台进行，不阻塞采集
 	go a.enrollLoop(ctx)
 	go a.scanLoop(ctx)

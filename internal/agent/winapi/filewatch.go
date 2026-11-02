@@ -70,7 +70,11 @@ type FileWatcher struct {
 	recent map[string]Drop // 规范化完整路径 -> 记录
 	byBase map[string]Drop // 小写文件名 -> 最近一条
 	order  []dropKey
-	max    int
+	// baseOrder 与 order 同构，专门给 byBase 做 FIFO 淘汰。
+	// 此前 byBase 只增不减：每出现一个新文件名就永久占一个 map 槽，
+	// 长时间运行 + USN 补采会把这个"兜底索引"变成慢性内存泄漏。
+	baseOrder []dropKey
+	max       int
 
 	handles []syscall.Handle
 	stop    chan struct{}
@@ -261,8 +265,10 @@ func (w *FileWatcher) record(full string) {
 
 	norm := NormalizePath(full)
 	w.recent[norm] = d
-	w.byBase[strings.ToLower(filepath.Base(full))] = d
+	baseKey := strings.ToLower(filepath.Base(full))
+	w.byBase[baseKey] = d
 	w.order = append(w.order, dropKey{key: norm, when: d.When})
+	w.baseOrder = append(w.baseOrder, dropKey{key: baseKey, when: d.When})
 	w.events.Add(1)
 
 	// FIFO 淘汰，防止长时间运行内存无界增长。
@@ -281,6 +287,57 @@ func (w *FileWatcher) record(full string) {
 		}
 		w.order = append([]dropKey(nil), w.order[drop:]...)
 	}
+	if len(w.baseOrder) > w.max {
+		drop := len(w.baseOrder) - w.max
+		for i := 0; i < drop; i++ {
+			e := w.baseOrder[i]
+			if cur, ok := w.byBase[e.key]; ok && cur.When.Equal(e.when) {
+				delete(w.byBase, e.key)
+			}
+		}
+		w.baseOrder = append([]dropKey(nil), w.baseOrder[drop:]...)
+	}
+}
+
+// RecordDropByBase 登记一条"只知道文件名"的落地记录。
+//
+// 用途：USN Journal 断点补采。USN 记录只有 leaf name（完整路径需要
+// OpenFileById 提权遍历，成本不划算），因此这里只写 byBase 兜底索引，
+// 与 existing "路径解析不完整"时的查询口径一致。时间来自 USN 记录，
+// 不是补采时刻——否则停机数小时前的落地会被误判成"刚刚落地"。
+func (w *FileWatcher) RecordDropByBase(name string, when time.Time) bool {
+	if w == nil {
+		return false
+	}
+	base := filepath.Base(strings.TrimSpace(name))
+	if base == "" || base == "." || base == `\` {
+		return false
+	}
+	if !interestingExt[strings.ToLower(filepath.Ext(base))] {
+		return false
+	}
+	if when.IsZero() {
+		when = time.Now()
+	}
+	d := Drop{Path: base, When: when}
+	key := strings.ToLower(base)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.byBase[key] = d
+	w.baseOrder = append(w.baseOrder, dropKey{key: key, when: d.When})
+	w.events.Add(1)
+	if len(w.baseOrder) > w.max {
+		drop := len(w.baseOrder) - w.max
+		for i := 0; i < drop; i++ {
+			e := w.baseOrder[i]
+			if cur, ok := w.byBase[e.key]; ok && cur.When.Equal(e.when) {
+				delete(w.byBase, e.key)
+			}
+		}
+		w.baseOrder = append([]dropKey(nil), w.baseOrder[drop:]...)
+	}
+	return true
 }
 
 // RecentByPath 查询某路径是否在 within 时间内落地过。

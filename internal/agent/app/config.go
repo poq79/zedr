@@ -43,6 +43,10 @@ type Config struct {
 	PersistCheck time.Duration
 	// FileWatch 控制是否启用文件落地监控（落地即执行关联检测的依据）。
 	FileWatch bool
+	// USNCatchup 开启后，启动时用 NTFS USN Journal 补采探针停机期间的
+	// 文件落地事件（升级/重启/崩溃窗口）。需要管理员权限与 NTFS；
+	// 任一条件不满足时只记 warn，不影响 ReadDirectoryChangesW 主路径。
+	USNCatchup bool
 	// AdaptiveScan 开启后，空闲时段自动降低扫描频率以节省 CPU。
 	// 代价是空闲时段漏检短命进程的概率上升；活跃时会立刻回到基础间隔。
 	AdaptiveScan bool
@@ -67,6 +71,11 @@ type Config struct {
 	// 服务端经隧道发起请求、探针只读应答；关闭后实时查询退化为
 	// "隧道未连接"，心跳/上报等既有链路不受影响。
 	TunnelEnabled bool
+	// ReconProbe 控制资产侦查（/recon）是否做主动探测：对回环监听端口
+	// 发只读 GET/PING 以判定产品与认证状态（仅 127.0.0.1/::1，无凭据、
+	// 2s 超时、≤64KB 读取）。false = 纯被动模式（仅进程/端口/配置推断），
+	// 用于对"零主动探测"有硬要求的现场。
+	ReconProbe bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -96,11 +105,13 @@ func LoadConfig(version string) (*Config, error) {
 	c.HeartbeatSec = l.Int("HG_AGENT_HEARTBEAT_SEC", 30)
 	c.PersistCheck = l.Duration("HG_AGENT_PERSIST_INTERVAL", 5*time.Minute)
 	c.FileWatch = l.Bool("HG_AGENT_FILEWATCH", true)
+	c.USNCatchup = l.Bool("HG_AGENT_USN_CATCHUP", true)
 	c.AdaptiveScan = l.Bool("HG_AGENT_ADAPTIVE_SCAN", true)
 	c.RuleSignKey = l.Env("HG_AGENT_RULE_SIGN_KEY", "")
 	c.InventoryEnabled = l.Bool("HG_AGENT_INVENTORY", true)
 	c.UpgradeEnabled = l.Bool("HG_AGENT_UPGRADE_ENABLED", false)
 	c.TunnelEnabled = l.Bool("HG_AGENT_TUNNEL_ENABLED", true)
+	c.ReconProbe = l.Bool("HG_AGENT_RECON_PROBE", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")

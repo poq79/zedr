@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -29,6 +30,7 @@ func main() {
 	compare := flag.Bool("compare", false, "对比两种进程枚举引擎的耗时与结果差异")
 	etwWatch := flag.Duration("etw", 0, "实测 ETW 实时进程事件采集（需 -tags etw 编译）")
 	persistCheck := flag.Bool("persist", false, "枚举持久化项（自启动）并输出分类统计")
+	usnProbe := flag.Bool("usn", false, "实测 USN Journal 断点补采（TEMP 落探针文件后回读）")
 	flag.Parse()
 
 	fmt.Println("=== Z-EDR 采集层自检 ===")
@@ -147,6 +149,9 @@ func main() {
 	if *persistCheck {
 		checkPersistence()
 	}
+	if *usnProbe {
+		checkUSN()
+	}
 	if *compare {
 		compareCollectors()
 	}
@@ -181,6 +186,57 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// checkUSN 端到端验证 USN 补采：先取基线，再在 TEMP 落一个探针文件，
+// 然后从基线回读，确认能拿到该文件的创建/写入记录。
+//
+// 需要管理员权限 + NTFS；失败时输出明确原因，而不是静默显示"0 条"。
+func checkUSN() {
+	fmt.Println("\n--- USN Journal 断点补采 ---")
+	dir := os.TempDir()
+	vol, ok := winapi.USNVolumeOf(dir)
+	if !ok {
+		fmt.Printf("!! 无法从目录解析卷: %s（UNC/非盘符路径不支持）\n", dir)
+		return
+	}
+
+	_, baseline, journalID, _, err := winapi.ReadUSNJournal(vol, 0, 0, 5000)
+	if err != nil {
+		fmt.Printf("!! USN 查询失败（需要管理员权限 + NTFS）: %v\n", err)
+		return
+	}
+	fmt.Printf("卷=%s journal_id=%d baseline=0x%x\n", vol, journalID, baseline)
+
+	f, err := os.CreateTemp(dir, "zedr-usn-probe-*.exe")
+	if err != nil {
+		fmt.Printf("!! 创建探针文件失败: %v\n", err)
+		return
+	}
+	probe := f.Name()
+	_, _ = f.WriteString("zedr usn probe")
+	_ = f.Close()
+	defer os.Remove(probe)
+
+	time.Sleep(200 * time.Millisecond) // 给 USN 一个刷写窗口
+	events, next, _, reset, err := winapi.ReadUSNJournal(vol, baseline, journalID, 5000)
+	if err != nil {
+		fmt.Printf("!! USN 回读失败: %v\n", err)
+		return
+	}
+	found := false
+	for _, ev := range events {
+		if strings.EqualFold(ev.Name, filepath.Base(probe)) {
+			found = true
+			fmt.Printf("命中: %s @ %s (reason=0x%x)\n",
+				ev.Name, ev.When.Format("15:04:05.000"), ev.Reason)
+		}
+	}
+	fmt.Printf("回读 %d 条落地记录，next=0x%x reset=%v，探针文件命中=%v\n",
+		len(events), next, reset, found)
+	if !found {
+		fmt.Println("!! 未回读到探针文件：可能 journal 未刷新、卷非 NTFS，或记录已被上限截断")
+	}
 }
 
 // compareCollectors 对比 Toolhelp32 与 NtQuerySystemInformation 两种枚举方式。

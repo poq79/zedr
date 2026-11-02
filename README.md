@@ -24,8 +24,9 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
   behavioral rules (Sigma-style JSON DSL, hot-reloadable), parent-child lineage
   baselining, and score fusion. Every alert carries an explainable evidence chain.
 - **Behavioral telemetry** — file-drop monitoring (`ReadDirectoryChangesW` on
-  high-value directories) and persistence monitoring (Run keys, startup folder,
-  services, scheduled tasks, Winlogon, IFEO) with baseline-on-first-run.
+  high-value directories), **USN Journal catch-up for file drops that happened
+  while the agent was stopped**, and persistence monitoring (Run keys, startup
+  folder, services, scheduled tasks, Winlogon, IFEO) with baseline-on-first-run.
 - **Investigation workspace** — alert clustering into incidents, per-host
   timeline, integrity-chained audit trail, AI triage (grounded citations,
   prompt-injection resistant, pluggable backend, deterministic fallback), and
@@ -70,7 +71,7 @@ flowchart LR
 | Server | `zedr-server.exe` | REST API, SQLite, embedded web console, JWT/RBAC, rule & IOC delivery |
 | Agent | `zedr-agent.exe` | Collection + detection + uplink; installable as a Windows service |
 | Desktop panel | `zedr-ui.exe` | WebView2 window for local status (falls back to browser) |
-| Diagnostics | `zedr-diag.exe` | Collector self-check (`-compare` engines, `-persist`, `-hold`, `-spawn`) |
+| Diagnostics | `zedr-diag.exe` | Collector self-check (`-compare` engines, `-persist`, `-usn` catch-up probe, `-hold`, `-spawn`) |
 
 ## Quick start
 
@@ -142,8 +143,12 @@ EICAR string — no external executables are ever downloaded.
 
 - Collection is user-mode polling (default 2 s, adaptive). Processes shorter
   than one interval can be missed (TOCTOU); file-drop monitoring partially
-  compensates. An ETW consumer implementation exists behind a build tag but is
-  **not** enabled — it failed validation on Windows Server 2022.
+  compensates, and USN catch-up recovers drops during agent downtime. An ETW
+  consumer implementation exists behind a build tag but is **not** enabled — it
+  failed validation on Windows Server 2022.
+- USN records carry only the leaf file name, so catch-up feeds the same
+  base-name fallback used when path resolution is incomplete. Deletion records
+  are ignored by design.
 - Alert delivery is at-least-once: a crash after the server accepted a batch but
   before the spool segment was deleted can replay that batch; server-side
   fingerprint dedup absorbs the common case.

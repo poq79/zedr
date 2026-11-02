@@ -21,6 +21,7 @@ Z-EDR 在 Windows 终端上记录进程、文件落地与持久化遥测，用�
 - **五层检测**——静态指纹、关键词匹配、36 条内置行为规则（Sigma 风格 JSON DSL，
   支持服务端下发与热更新）、父子链血缘基线、分值融合。每条告警都带可解释证据链。
 - **行为遥测**——文件落地监控（`ReadDirectoryChangesW` 订阅高价值目录）+
+  **USN Journal 断点补采（探针停机期间落地的文件，启动后回放）** +
   持久化项监控（Run/RunOnce、启动目录、服务、计划任务、Winlogon、IFEO），
   首次运行只建基线不告警。
 - **调查工作台**——告警聚类为事件、同主机时间线、防篡改完整性链审计、
@@ -62,7 +63,7 @@ flowchart LR
 | 总控服务端 | `zedr-server.exe` | REST API、SQLite、内嵌管理台、JWT/RBAC、规则与 IOC 下发 |
 | 终端探针 | `zedr-agent.exe` | 采集 + 检测 + 上报；可装为 Windows 服务 |
 | 桌面面板 | `zedr-ui.exe` | WebView2 本机态势窗口（缺失运行时回退浏览器） |
-| 采集自检 | `zedr-diag.exe` | 采集层自检（`-compare` 引擎对比、`-persist`、`-hold`、`-spawn`） |
+| 采集自检 | `zedr-diag.exe` | 采集层自检（`-compare` 引擎对比、`-persist`、`-usn` 补采探针、`-hold`、`-spawn`） |
 
 ## 快速开始
 
@@ -133,8 +134,11 @@ python scripts/scenarios.py all       # 场景矩阵 / 误报面 / 性能 / 压�
 ## 已知边界
 
 - 采集是用户态轮询（默认 2s，自适应退避）。存活短于一个周期的进程可能漏检
-  （TOCTOU），由文件落地监控部分补偿。ETW 消费端实现存在于构建标签之后，
-  但在 Windows Server 2022 上验证未通过，**默认不编译**。
+  （TOCTOU），由文件落地监控部分补偿；USN 补采可恢复探针停机窗口内的落地。
+  ETW 消费端实现存在于构建标签之后，但在 Windows Server 2022 上验证未通过，
+  **默认不编译**。
+- USN 记录只有文件名（leaf name），补采走现有的 byBase 兜底匹配；删除记录
+  按设计忽略。
 - 告警投递是 at-least-once：服务端已接收但 spool 段尚未删除时崩溃，会重发
   该批；常规情况下由服务端 fingerprint 去重吸收。
 - 按设计不做内核级阻断，也无自保护（探针可被终止）。
