@@ -491,3 +491,83 @@ export interface LiveAccounts {
   administrators: string[];
   policy: AccountPolicy;
 }
+
+/* ---- 进程取证 v1（docs/LIVE-TUNNEL.md §15，第六轮 F8）----
+   四端点全部只读、限预算；字段名与 §15.1-15.4 契约逐字对齐。
+   老探针未挂 handler → 501，老服务端代理预算表未收录 → 404，前端同口径
+   提示"该探针版本不支持此能力"。 */
+
+/** 单条句柄：value 为原生句柄值；name 仅对安全类型解析（其余为空） */
+export interface LiveHandle {
+  value: number;
+  type: string;
+  name?: string;
+}
+
+/** GET /hosts/{id}/live/handles —— types 是类型直方图（键=类型名，值=条数） */
+export interface LiveHandleList {
+  pid: number;
+  total: number;
+  /** 预算内未枚举完（条目本身可能被 limit 截断） */
+  truncated: boolean;
+  types: Record<string, number>;
+  items: LiveHandle[];
+  note?: string;
+}
+
+/** 占用文件的进程；path 为该进程的镜像路径（来自快照，可能为空） */
+export interface LiveHandleOwner { pid: number; name: string; path: string }
+
+/** GET /hosts/{id}/live/handleowners —— 语义是"部分覆盖"：
+    scanned=已解析的文件句柄数，resolved=成功拿到对象名的数量 */
+export interface LiveHandleOwners {
+  path: string;
+  scanned: number;
+  resolved: number;
+  owners: LiveHandleOwner[];
+  truncated: boolean;
+  note?: string;
+}
+
+/** 线程；module 为空表示起始地址不在本进程任何模块区间内 */
+export interface LiveThread {
+  tid: number;
+  start_address: number;
+  module?: string;
+  /** true = 起始页为 MEM_PRIVATE + 可执行（注入线索） */
+  in_anonymous_exec: boolean;
+}
+
+/** GET /hosts/{id}/live/threads —— 受保护进程打不开时 note 说明覆盖度 */
+export interface LiveThreads {
+  pid: number;
+  items: LiveThread[];
+  note?: string;
+}
+
+/** 一条内存区域；mapped_file 为空 = 无文件映射（匿名内存） */
+export interface LiveMemRegion {
+  base: number;
+  size: number;
+  protect: string;
+  type?: string;
+  mapped_file?: string;
+}
+
+/** 可疑区域：私有 + 可执行 + 无映射文件；pe_header=null 表示读取失败（无法判断） */
+export interface LiveMemSuspicious {
+  base: number;
+  size: number;
+  protect: string;
+  pe_header?: boolean | null;
+}
+
+/** GET /hosts/{id}/live/memscan —— 只出摘要，探针绝不回传内存内容 */
+export interface LiveMemScan {
+  pid: number;
+  counts: { regions: number; private_exec: number; suspicious: number };
+  regions: LiveMemRegion[];
+  suspicious: LiveMemSuspicious[];
+  truncated: boolean;
+  note?: string;
+}

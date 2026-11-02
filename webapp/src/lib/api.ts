@@ -254,6 +254,34 @@ export const live = {
     liveJSON<import('./types').LiveAccounts>(
       `/api/v1/hosts/${encodeURIComponent(agentId)}/live/accounts`,
     ),
+
+  /* ---- 进程取证 v1（LIVE-TUNNEL.md §15，F8）----
+     句柄/线程/内存枚举在探针侧有真实成本（全系统句柄表 + VirtualQueryEx
+     循环），全部按需调用，不做打开抽屉即拉取。 */
+  /** 句柄表：type 大小写不敏感（服务端过滤），limit 默认 1000 ≤5000 */
+  handles: (agentId: string, pid: number, opts: { type?: string; limit?: number } = {}) => {
+    const q = [`pid=${pid}`];
+    if (opts.type) q.push(`type=${encodeURIComponent(opts.type)}`);
+    if (opts.limit) q.push(`limit=${opts.limit}`);
+    return liveJSON<import('./types').LiveHandleList>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/handles?${q.join('&')}`,
+    );
+  },
+  /** 谁打开了这个文件：全系统 File 句柄扫描（部分覆盖，note 诚实标注） */
+  handleowners: (agentId: string, path: string) =>
+    liveJSON<import('./types').LiveHandleOwners>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/handleowners?path=${encodeURIComponent(path)}`,
+    ),
+  /** 线程枚举：in_anonymous_exec=true 为注入线索 */
+  threads: (agentId: string, pid: number) =>
+    liveJSON<import('./types').LiveThreads>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/threads?pid=${pid}`,
+    ),
+  /** 内存区域扫描：只出摘要（探针绝不回传内容；pid 0/4 由探针拒绝） */
+  memscan: (agentId: string, pid: number) =>
+    liveJSON<import('./types').LiveMemScan>(
+      `/api/v1/hosts/${encodeURIComponent(agentId)}/live/memscan?pid=${pid}`,
+    ),
 };
 
 /** 隧道错误分类：供 UI 层映射专用状态（状态条/Toast/内联说明） */

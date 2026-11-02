@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  CircleAlert, Fingerprint, Globe, RefreshCw, ScanSearch, ShieldBan, Unplug, Users,
+  ChevronRight, CircleAlert, Copy, Cpu, Fingerprint, Globe, Layers, List, ListTree, MemoryStick,
+  RefreshCw, ScanSearch, ShieldBan, Unplug, Users,
 } from 'lucide-react';
-import { api, live, liveErrorKind } from '../lib/api';
-import type { LiveInfo, LiveNetConn, LiveProcInfo, LiveProcRow, User } from '../lib/types';
+import { api, ApiError, live, liveErrorKind } from '../lib/api';
+import type {
+  LiveHandle, LiveHandleList, LiveInfo, LiveMemScan, LiveNetConn, LiveProcInfo, LiveProcRow,
+  LiveThreads, User,
+} from '../lib/types';
 import { fmtBytes, fmtTime } from '../lib/format';
-import { Badge, Button, Card, CardTitle, EmptyState, Input, SkeletonRows } from '../components/ui/basics';
+import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useConfirm, useToast } from '../components/ui/overlays';
 import { cn } from '../lib/utils';
 import type { LiveFixtureApi } from '../lib/liveFixture';
 
-/* 主机详情「实时进程」Tab（docs/LIVE-TUNNEL.md §11.4，F2）。
+/* 主机详情「实时进程」Tab（docs/LIVE-TUNNEL.md §11.4，F2；§15.5 进程树与
+   句柄/线程/内存三面板，F8）。
    上半：实时连接表（netstat 富化行：内外网分类彩点 + exited 高亮）；
-   下半：实时进程表（state.ProcRow——该结构无 CPU/内存字段，故无此两列）。
-   进程抽屉 = 交叉动线中枢：连接/模块/可执行速览（procinfo 按需加载），
+   下半：实时进程表 / 进程树（同一份 processes 快照两种视图）。
+   进程抽屉 = 交叉动线中枢：连接/模块/可执行速览（procinfo 按需加载）
+   + 句柄/线程/内存取证（handles/threads/memscan 各自按需加载、互不阻塞），
    「分析此文件」联动实时文件 Tab 的文件抽屉；「终止进程」走既有指令
    铁律（agent_commands + 双层开关），不在隧道内做任何写操作。
    数据获取：processes + netstat 两请求并行；手动刷新，不做自动轮询。 */
@@ -28,6 +34,29 @@ function liveErrNote(e: unknown): string | null {
     case 'unsupported': return '该探针版本不支持此能力';
     default: return null;
   }
+}
+
+/* §15 四个端点的降级口径：老探针 mux 没挂 handler 时 501，老服务端代理
+   预算表没收录路径时 404——两者对操作员含义相同（升级即可）。不改
+   liveErrorKind 的全局分类：404 在 fs/stat 语义里是"文件不存在"，
+   全局归为"不支持"会误导。 */
+function panelErrNote(e: unknown): string {
+  if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return '该探针版本不支持此能力';
+  return liveErrNote(e) || (e as Error).message;
+}
+
+/* 复制到剪贴板（与 HostLiveFiles 同款降级；两页各有所有权，故意各留一份） */
+async function copyText(text: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* 降级 execCommand */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
 }
 
 /* 开发期假数据开关：仅 DEV 构建且 localStorage 显式打开时可用（与

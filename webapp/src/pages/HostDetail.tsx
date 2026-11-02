@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronRight, RefreshCw, ScanSearch, Search, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, ChevronRight, RefreshCw, ScanSearch, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { api, ApiError, live, liveErrorKind } from '../lib/api';
 import type { AgentCommand, Alert, Host, HostInventorySection, LiveHash, LiveNetConn, LiveProcRow, User } from '../lib/types';
 import { relTime, fmtTime, SEV_LABEL } from '../lib/format';
@@ -397,6 +397,23 @@ export function HostDetailPage({ user }: { user: User }) {
         </Button>
         <Button size="sm" onClick={() => send('sync_rules')} disabled={!!cmdBusy}>同步规则</Button>
         <Button size="sm" onClick={() => send('collect')} disabled={!!cmdBusy}>采集清单</Button>
+        {user.role === 'admin' && host && (
+          <Button size="sm" variant="ghost" title="删除这台主机的注册记录（历史告警保留）"
+            onClick={async () => {
+              const ok = await confirm({
+                title: `删除主机记录「${host.hostname}」？`, danger: true, okText: '删除记录',
+                message: `将删除该主机的服务端注册记录与资产清单（不影响是否在线）。\n\n历史告警${host.open_alerts ? `（${host.open_alerts} 条待处置）` : ''}会保留，仍可按主机名检索；探针若仍在运行需重启后用注册令牌重新登记。`,
+              });
+              if (!ok) return;
+              try {
+                await api.del(`/api/v1/hosts/${encodeURIComponent(id)}`);
+                toast('主机记录已删除');
+                navigate('/hosts');
+              } catch (e) { toast((e as Error).message, 'err'); }
+            }}>
+            <Trash2 size={13} /> 删除记录
+          </Button>
+        )}
       </div>
 
       {!host || !sections ? (
