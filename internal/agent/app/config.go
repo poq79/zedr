@@ -90,6 +90,10 @@ type Config struct {
 	// （FILE-CANARY/FILE-RANSOM）。诱饵内容透明（写明用途），落点选
 	// 用户文档目录；关闭后 USN 轮询也随之停摆（事件流的主要消费者就是它）。
 	FileDefense bool
+	// RegWatch 控制注册表自启动键实时守护（RegNotifyChangeKeyValue，
+	// ~8 个键每个一 OS 线程）：变更事件触发即时重扫持久化项，把
+	// persist 的 5min 周期窗口缩到秒级；周期轮询保留作兜底。
+	RegWatch bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -130,6 +134,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.USNPoll = l.Bool("HG_AGENT_USN_POLL", true)
 	c.USNPollInterval = l.Duration("HG_AGENT_USN_POLL_INTERVAL", 30*time.Second)
 	c.FileDefense = l.Bool("HG_AGENT_FILE_DEFENSE", true)
+	c.RegWatch = l.Bool("HG_AGENT_REGWATCH", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")

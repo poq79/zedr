@@ -278,6 +278,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		go a.usnPollLoop(ctx)
 	}
 
+	// 注册表自启动键实时守护：变更 → 防抖 3s → 即时重扫持久化项
+	//（5min 周期轮询保留兜底，见 persistenceWatchLoop）
+	if a.cfg.RegWatch {
+		a.startRegWatch(ctx)
+	}
+
 	// 注册与规则同步在后台进行，不阻塞采集
 	go a.enrollLoop(ctx)
 	go a.scanLoop(ctx)
