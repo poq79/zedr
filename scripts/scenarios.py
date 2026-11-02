@@ -45,7 +45,9 @@ SUSPICIOUS_AT = 38
 
 # 探针本地 API 的访问令牌（v0.9 起强制校验，见 internal/agent/localapi/auth.go）
 def _local_token():
-    p = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Z-EDR", "local.token")
+    # 数据目录随 Z-EDR 更名落地为 %LOCALAPPDATA%\zedr（004b50d）；
+    # 此前残留 Z-EDR 旧名导致令牌读空、矩阵永远"本地接口不可用"
+    p = os.path.join(os.environ.get("LOCALAPPDATA", ""), "zedr", "local.token")
     try:
         with open(p, encoding="utf-8") as f:
             return f.read().strip()
