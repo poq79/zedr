@@ -454,3 +454,29 @@ func TestChurnDirsExcludedFromRate(t *testing.T) {
 		t.Fatalf("非缓存目录的批量删除应触发 FILE-RANSOM: %+v", r.fs)
 	}
 }
+
+// 周期自检的内容校验：Documents 这类 RDCW 覆盖不到的目录，诱饵被
+// "原地改写不删不改名"时文件系统事件一路都收不到，只有这里能抓到
+// （v0.9.10 深化收口的漏报盲区）。发现篡改只告警不恢复——覆盖=销毁证据。
+func TestMaintainDetectsContentTamper(t *testing.T) {
+	dir := t.TempDir()
+	d, r, _ := newDefense(t, []string{dir}, nil)
+	target := filepath.Join(dir, "backup_report.docx")
+	if err := os.WriteFile(target, []byte("ENCRYPTED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.maintain()
+	found := false
+	for _, f := range r.fs {
+		if f.RuleID == RuleCanary && strings.Contains(f.Summary, "内容与预期不符") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("内容篡改未被周期自检发现: %+v", r.fs)
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil || string(raw) != "ENCRYPTED" {
+		t.Fatal("自检不应覆盖被篡改的诱饵（销毁证据）")
+	}
+}
