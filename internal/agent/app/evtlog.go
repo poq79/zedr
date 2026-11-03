@@ -179,13 +179,26 @@ func (a *Agent) dispatchEvtEvents(channel string, events []winapi.EvtEvent) {
 
 // ---------------------------------------------------------------- 7045
 
+// evtData 是宽松取值：同一事件的 EventData 在不同 Windows 版本/通道上
+// 可能是 Name 属性型或无名 Data——真实 7045（Server 2022 实测）就是
+// Name 属性（ServiceName/ImagePath/...），合成样例的无名假设不成立。
+// 两种口径都试，先命名后位序。
+func evtData(d map[string]string, names []string, idx int) string {
+	for _, n := range names {
+		if v := d[n]; v != "" {
+			return v
+		}
+	}
+	return d[fmt.Sprintf("data[%d]", idx)]
+}
+
 // emitEvtServiceInstall：新服务安装。persist 轮询（5min/定向）已有同类
 // 覆盖，事件日志的价值是"OS 权威 + 全量"（含服务名/二进制/账户四元组），
 // 且与 persist 告警的指纹不同源（EVT-SVCINST vs P-001），互为佐证。
 func (a *Agent) emitEvtServiceInstall(ev winapi.EvtEvent) {
-	svcName := ev.Data["data[0]"]
-	binPath := ev.Data["data[1]"]
-	acct := ev.Data["data[4]"]
+	svcName := evtData(ev.Data, []string{"servicename"}, 0)
+	binPath := evtData(ev.Data, []string{"imagepath", "binarypathname"}, 1)
+	acct := evtData(ev.Data, []string{"accountname"}, 4)
 	if svcName == "" && binPath == "" {
 		return // 渲染异常的事件不硬编故事
 	}
@@ -266,10 +279,16 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 	a.brute.mu.Lock()
 	defer a.brute.mu.Unlock()
 
-	now := time.Now()
-	rec := evtBruteRec{at: now, ip: ev.Data["ipaddress"], user: ev.Data["targetusername"]}
+	// 用事件时间盖章而不是消费时刻：游标追赶（探针重启/轮询滞后）会
+	// 一次读到几十分钟前的失败——按消费时刻盖章会把陈旧失败误算成
+	// "当前正在暴破"。事件时间才是行为发生的时刻。
+	at := ev.TimeCreated
+	if at.IsZero() {
+		at = time.Now()
+	}
+	rec := evtBruteRec{at: at, ip: ev.Data["ipaddress"], user: ev.Data["targetusername"]}
 	a.brute.window = append(a.brute.window, rec)
-	cut := now.Add(-evtBruteWindow)
+	cut := at.Add(-evtBruteWindow)
 	k := 0
 	for i, r := range a.brute.window {
 		if r.at.After(cut) {
@@ -284,10 +303,16 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 	if len(a.brute.window) < evtBruteThreshold {
 		return
 	}
-	if now.Sub(a.brute.lastHit) < 15*time.Minute {
+	// 陈旧批（游标追赶读到的历史失败）：不告警也不占冷却——
+	// 窗口按事件时间自然过期，等真有新鲜暴破时再触发
+	newest := a.brute.window[len(a.brute.window)-1].at
+	if time.Since(newest) > evtBruteWindow {
 		return
 	}
-	a.brute.lastHit = now
+	if time.Since(a.brute.lastHit) < 15*time.Minute {
+		return
+	}
+	a.brute.lastHit = time.Now()
 
 	// 样本聚合：按来源 IP 计数取 Top3 + 失败账户样例
 	ipCount := map[string]int{}
@@ -317,7 +342,7 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 		evtBruteWindow, len(a.brute.window), evtBruteThreshold,
 		strings.Join(userList, ", "), strings.Join(ips, ", "))
 	a.emitAlert(model.AlertEnvelope{
-		Fingerprint: fmt.Sprintf("evt:4625:%d", now.Truncate(15*time.Minute).Unix()),
+		Fingerprint: fmt.Sprintf("evt:4625:%d", time.Now().Truncate(15*time.Minute).Unix()),
 		Title:       fmt.Sprintf("事件日志：登录失败暴发（%d 次/分钟）", len(a.brute.window)),
 		Summary:     summary,
 		Verdict:     model.VerdictSuspicious,
@@ -333,7 +358,7 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 			}},
 			Notes: []string{fmt.Sprintf("failed=%d window=60s", len(a.brute.window))},
 		},
-		OccurredAt: now,
+		OccurredAt: time.Now(),
 	})
 }
 
@@ -343,8 +368,8 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 // 1149 记录的是"谁从哪台机器连进来"——内网里出现非运维来源的 RDP
 // 就是横向移动的到达证据。Data 为 Name 属性型（User/Domain/SourceIp）。
 func (a *Agent) emitEvtRDPIn(ev winapi.EvtEvent) {
-	user := ev.Data["user"]
-	src := ev.Data["sourceip"]
+	user := evtData(ev.Data, []string{"user"}, 0)
+	src := evtData(ev.Data, []string{"sourceip"}, 2)
 	if user == "" && src == "" {
 		return
 	}
