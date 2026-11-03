@@ -164,7 +164,32 @@ func (m *Monitor) saveLocked() error {
 }
 
 // Scan 枚举当前持久化项并与基线对比。
+// Scan 全量扫描（六类位置）并 diff 基线——周期轮询路径。
 func (m *Monitor) Scan() (*Result, error) {
+	return m.scanWith(winapi.EnumeratePersistence, nil)
+}
+
+// registryTypes 是定向重扫（ScanRegistry）覆盖的基线类型集合。
+var registryTypes = map[string]bool{
+	winapi.PersistRegistryRun:     true,
+	winapi.PersistRegistryRunOnce: true,
+	winapi.PersistWinlogon:        true,
+	winapi.PersistIFEO:            true,
+}
+
+// ScanRegistry 只枚举注册表类位置并在该子集内 diff——regwatch 实时事件
+// 路径用：全量枚举里服务/计划任务占大头，事件驱动的即时重扫只扫三节。
+//
+// 子集语义（两处都必须限定，否则定向扫描是错的）：
+//   - diff 只对注册表类键做：其他节的键本轮根本没枚举；
+//   - Removed 判定同样只删"注册表类基线键"——不限定的话会把全部
+//     服务/计划任务误判成 Removed（且真的删掉它们的基线记录，
+//     下一轮全量扫描会集体误报 Added）。
+func (m *Monitor) ScanRegistry() (*Result, error) {
+	return m.scanWith(winapi.EnumeratePersistenceRegistry, registryTypes)
+}
+
+func (m *Monitor) scanWith(enum func() ([]winapi.PersistItem, []string), subset map[string]bool) (*Result, error) {
 	m.mu.Lock()
 	if !m.loaded {
 		_ = m.loadLocked()
@@ -172,7 +197,7 @@ func (m *Monitor) Scan() (*Result, error) {
 	wasEmpty := len(m.items) == 0
 	m.mu.Unlock()
 
-	items, errs := winapi.EnumeratePersistence()
+	items, errs := enum()
 	res := &Result{Total: len(items), Errs: errs}
 
 	now := time.Now()
@@ -215,6 +240,10 @@ func (m *Monitor) Scan() (*Result, error) {
 	}
 	for key := range m.items {
 		if _, ok := seen[key]; !ok {
+			if subset != nil && !subset[m.items[key].Type] {
+				// 定向扫描：非本子集的基线键本轮未枚举，保留原记录
+				continue
+			}
 			res.Removed = append(res.Removed, key)
 			delete(m.items, key)
 		}

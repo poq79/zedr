@@ -54,7 +54,9 @@ func (a *Agent) regWatchLoop(ctx context.Context, rw *winapi.RegWatch, events ch
 				key = k // 只留最后一条做日志；重扫是全量的，合并几次无差别
 			case <-deadline:
 				a.log.Info("regwatch_trigger", "key", key)
-				a.scanPersistence()
+				// 定向重扫：事件只会来自注册表键，只扫注册表三节
+				//（全量 ~160ms 里服务/任务占大头；5min 周期轮询保持全量）
+				a.scanPersistenceRegistryOnly()
 				goto next
 			case <-ctx.Done():
 				return

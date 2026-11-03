@@ -91,7 +91,36 @@ func EnumeratePersistence() (items []PersistItem, errs []string) {
 	collect(enumerateScheduledTasks, "计划任务")
 	collect(enumerateIFEO, "IFEO 映像劫持")
 
-	// 去重（同一 Key 只保留一次）并稳定排序，便于基线 diff
+	return dedupePersistItems(items), errs
+}
+
+// EnumeratePersistenceRegistry 只枚举注册表类自启动位置
+//（Run/RunOnce + Winlogon + IFEO），供 persist 的定向重扫使用。
+//
+// 为什么单独存在：实时事件路径（regwatch）只需要"注册表三节"，全量
+// 枚举里服务/计划任务占大头（本机实测全量 ~160ms、三节 ~40ms）——
+// 事件驱动的即时重扫不必为没变的节付全价。服务/计划任务仍由周期
+// 轮询的全量扫描覆盖。
+func EnumeratePersistenceRegistry() (items []PersistItem, errs []string) {
+	collect := func(fn func() ([]PersistItem, error), what string) {
+		got, err := fn()
+		if err != nil {
+			errs = append(errs, what+": "+err.Error())
+			return
+		}
+		items = append(items, got...)
+	}
+
+	collect(enumerateRegistryRun, "注册表 Run 键")
+	collect(enumerateWinlogon, "Winlogon")
+	collect(enumerateIFEO, "IFEO 映像劫持")
+
+	return dedupePersistItems(items), errs
+}
+
+// dedupePersistItems 是两类枚举共用的收尾：同一 Key 只保留一次并稳定
+// 排序，保证基线 diff 的确定性。
+func dedupePersistItems(items []PersistItem) []PersistItem {
 	seen := make(map[string]struct{}, len(items))
 	out := items[:0]
 	for _, it := range items {
@@ -105,7 +134,7 @@ func EnumeratePersistence() (items []PersistItem, errs []string) {
 		out = append(out, it)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-	return out, errs
+	return out
 }
 
 // regRunRoot 描述一个 Run 键位置。

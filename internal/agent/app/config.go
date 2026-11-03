@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +95,17 @@ type Config struct {
 	// ~8 个键每个一 OS 线程）：变更事件触发即时重扫持久化项，把
 	// persist 的 5min 周期窗口缩到秒级；周期轮询保留作兜底。
 	RegWatch bool
+
+	// netwatch 阈值覆盖（0/空 = 内置默认，见 netwatch.Default）。
+	// 现场误报调优的抓手：DC/文件服务器与普通办公机的扇出基线差异
+	// 很大，"整族开关"粒度不够。范围校验 1..1000（IP/端口计数）。
+	NetScanPorts  int
+	NetSweepIPs   int
+	NetLateralIPs int
+	// NetLateralPorts 是逗号分隔的横向端口表（NW-003 用），空 = 默认集。
+	// 加载期解析进 NetLateralPortList，非法值启动即报错。
+	NetLateralPorts    string
+	NetLateralPortList []uint16
 }
 
 // LoadConfig 读取并校验配置。
@@ -135,6 +147,10 @@ func LoadConfig(version string) (*Config, error) {
 	c.USNPollInterval = l.Duration("HG_AGENT_USN_POLL_INTERVAL", 30*time.Second)
 	c.FileDefense = l.Bool("HG_AGENT_FILE_DEFENSE", true)
 	c.RegWatch = l.Bool("HG_AGENT_REGWATCH", true)
+	c.NetScanPorts = l.Int("HG_AGENT_NET_SCAN_PORTS", 0)
+	c.NetSweepIPs = l.Int("HG_AGENT_NET_SWEEP_IPS", 0)
+	c.NetLateralIPs = l.Int("HG_AGENT_NET_LATERAL_IPS", 0)
+	c.NetLateralPorts = l.Env("HG_AGENT_NET_LATERAL_PORTS", "")
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
@@ -149,6 +165,21 @@ func LoadConfig(version string) (*Config, error) {
 	l.Check(c.HeartbeatSec >= 5, "HG_AGENT_HEARTBEAT_SEC 至少 5 秒")
 	l.Check(c.PersistCheck >= 30*time.Second, "HG_AGENT_PERSIST_INTERVAL 至少 30s（枚举注册表本身有成本）")
 	l.Check(c.USNPollInterval >= 5*time.Second, "HG_AGENT_USN_POLL_INTERVAL 不能小于 5s（增量读取虽轻，也不必贴着内核刷）")
+	l.Check(c.NetScanPorts >= 0 && c.NetScanPorts <= 1000, "HG_AGENT_NET_SCAN_PORTS 应在 0..1000（0=默认）")
+	l.Check(c.NetSweepIPs >= 0 && c.NetSweepIPs <= 1000, "HG_AGENT_NET_SWEEP_IPS 应在 0..1000（0=默认）")
+	l.Check(c.NetLateralIPs >= 0 && c.NetLateralIPs <= 1000, "HG_AGENT_NET_LATERAL_IPS 应在 0..1000（0=默认）")
+	for _, s := range strings.Split(c.NetLateralPorts, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > 65535 {
+			l.Check(false, "HG_AGENT_NET_LATERAL_PORTS 含非法端口: "+s)
+			continue
+		}
+		c.NetLateralPortList = append(c.NetLateralPortList, uint16(n))
+	}
 
 	if strings.EqualFold(c.Env, "production") && c.KillEnabled {
 		l.SecurityWarning(false, "已启用主动终止进程能力（HG_AGENT_KILL_ENABLED），请确认这是预期行为")

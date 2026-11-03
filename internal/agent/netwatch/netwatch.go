@@ -65,6 +65,9 @@ type Config struct {
 	// svchost/BITS/Windows Update 这类系统组件天然有大量合法扇出，
 	// 用同一阈值会误报；放大而不是豁免，是因为它们也是被滥用的首选载体。
 	TrustedScale int
+	// LateralPorts 覆盖横向服务端口集（NW-003 用）；空 = 默认集
+	//（22/135/139/445/3389/5985/5986）。企业自有管理端口在此补充。
+	LateralPorts []uint16
 }
 
 // Default 返回默认配置。
@@ -91,6 +94,9 @@ func Default() Config {
 // ProcIdent 是检测对象进程的标识信息（由调用方从采集快照填入）。
 type ProcIdent struct {
 	PID uint32
+	// PPID 随告警证据输出：网络行为的主体判断经常要看父进程
+	//（浏览器拉起的下载器 vs 计划任务拉起的扫描器，语义完全不同）。
+	PPID uint32
 	// Name/Path 是告警富化用的展示信息；Path 可为空（进程已退出时）。
 	Name string
 	Path string
@@ -148,12 +154,10 @@ var commonPorts = map[uint16]bool{
 	1900: true, 5353: true, 5355: true, 8080: true,
 }
 
-// lateralPorts 是横向移动服务端口：对多台内网主机的这些端口扇出
-// 是蠕虫传播/横向枚举的教科书信号。
-var lateralPorts = map[uint16]bool{
-	22: true, 135: true, 139: true, 445: true,
-	3389: true, 5985: true, 5986: true,
-}
+// defaultLateralPorts 是横向移动服务端口默认集：对多台内网主机的这些
+// 端口扇出是蠕虫传播/横向枚举的教科书信号。可用 Config.LateralPorts
+// 覆盖——企业环境常有自有管理端口（如 47001/5985 之外的自研 agent 端口）。
+var defaultLateralPorts = []uint16{22, 135, 139, 445, 3389, 5985, 5986}
 
 // privateNets 是 RFC1918/环回/链路本地判定（与 winapi.IsPublicRemote 同口径，
 // 但这里需要"是内网"而非"是公网"，独立实现避免语义倒置的耦合）。
@@ -210,6 +214,8 @@ type Watch struct {
 	mu      sync.Mutex
 	cfg     Config
 	selfPID uint32
+	// lateral 是生效的横向端口集（默认集或 Config 覆盖）
+	lateral map[uint16]bool
 	states  map[uint32]*procState
 	cools   map[alertKey]time.Time
 
@@ -274,9 +280,18 @@ func New(cfg Config, selfPID uint32) *Watch {
 	if cfg.TrustedScale <= 1 {
 		cfg.TrustedScale = d.TrustedScale
 	}
+	lateral := map[uint16]bool{}
+	ports := cfg.LateralPorts
+	if len(ports) == 0 {
+		ports = defaultLateralPorts
+	}
+	for _, p := range ports {
+		lateral[p] = true
+	}
 	return &Watch{
 		cfg:     cfg,
 		selfPID: selfPID,
+		lateral: lateral,
 		states:  make(map[uint32]*procState, 64),
 		cools:   make(map[alertKey]time.Time, 64),
 		ownIPs:  map[string]bool{},
@@ -354,7 +369,7 @@ func (w *Watch) Observe(t Tick) []Finding {
 				t:        now,
 				ip:       ip,
 				port:     port,
-				lateral:  private && lateralPorts[port],
+				lateral:  private && w.lateral[port],
 				uncommon: !commonPorts[port],
 			})
 			w.st.EventsSeen++

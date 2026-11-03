@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"zedr/internal/agent/allow"
@@ -55,6 +56,9 @@ type Agent struct {
 	// 行为采集层：文件落地监控 + 持久化项监控
 	fw *winapi.FileWatcher
 	pm *persist.Monitor
+	// persistMu 串行化持久化重扫（周期轮询与 regwatch 事件两个入口共用，
+	// 理由见 persistScan 注释）
+	persistMu sync.Mutex
 
 	// 文件防御（canary 诱饵 + 勒索速率）：消费 RDCW 回调与 USN 轮询两路
 	// 事件流；nil = 开关关闭
@@ -188,9 +192,24 @@ func New(version string) (*Agent, error) {
 		startedAt: time.Now(),
 		scanReq:   make(chan bool, 1),
 	}
-	// 网络行为检测：构造成本为零（纯内存结构），关闭开关时不创建
+	// 网络行为检测：构造成本为零（纯内存结构），关闭开关时不创建。
+	// 阈值可用 HG_AGENT_NET_* 覆盖（0/空 = 内置默认）——现场按机器
+	// 角色调误报基线的抓手，见 OPS §7.1。
 	if cfg.NetWatch {
-		a.nw = netwatch.New(netwatch.Default(), uint32(os.Getpid()))
+		nc := netwatch.Default()
+		if cfg.NetScanPorts > 0 {
+			nc.PortScanPorts = cfg.NetScanPorts
+		}
+		if cfg.NetSweepIPs > 0 {
+			nc.HostSweepIPs = cfg.NetSweepIPs
+		}
+		if cfg.NetLateralIPs > 0 {
+			nc.LateralIPs = cfg.NetLateralIPs
+		}
+		if len(cfg.NetLateralPortList) > 0 {
+			nc.LateralPorts = cfg.NetLateralPortList
+		}
+		a.nw = netwatch.New(nc, uint32(os.Getpid()))
 	}
 	// IOC 表先从落盘缓存恢复（重启空窗补位），服务端可达后再被整包覆盖
 	a.loadIOCsCache()
@@ -822,10 +841,33 @@ func (a *Agent) persistenceWatchLoop(ctx context.Context) {
 	}
 }
 
-// scanPersistence 执行一轮持久化项扫描并产出告警。
+// scanPersistence / scanPersistenceRegistryOnly 是持久化重扫的两个入口：
+// 全量（5min 周期轮询）与定向（regwatch 实时事件，只扫注册表三节）。
+//
+// 两者共用一把互斥——Monitor 内部锁只护 map 访问，枚举+diff 在锁外，
+// 两个并发 Scan 会各自枚举各自 diff，同一新增项被双告警、基线写交叉。
+// 事件驱动与周期轮询撞车的概率不高但真实存在（reg add 批量写 + 周期
+// tick 恰好同时），应用层串行化成本≈0（互斥覆盖从枚举到 emit 全程）。
 func (a *Agent) scanPersistence() {
+	a.persistScan(false)
+}
+
+func (a *Agent) scanPersistenceRegistryOnly() {
+	a.persistScan(true)
+}
+
+func (a *Agent) persistScan(registryOnly bool) {
+	a.persistMu.Lock()
+	defer a.persistMu.Unlock()
+
 	start := time.Now()
-	res, err := a.pm.Scan()
+	var res *persist.Result
+	var err error
+	if registryOnly {
+		res, err = a.pm.ScanRegistry()
+	} else {
+		res, err = a.pm.Scan()
+	}
 	if err != nil {
 		a.log.Warn("persist_scan_failed", "err", err)
 		return
@@ -850,6 +892,7 @@ func (a *Agent) scanPersistence() {
 		a.log.Info("persist_scan_done",
 			"added", len(res.Added), "changed", len(res.Changed),
 			"removed", len(res.Removed), "alerts", seen,
+			"mode", persistScanMode(registryOnly),
 			"elapsed_ms", time.Since(start).Milliseconds())
 	}
 }
@@ -876,6 +919,14 @@ func (a *Agent) emitPersistFinding(f persist.Finding) int {
 
 // maxModuleInspectPerScan 是单轮扫描允许枚举模块的进程数上限。
 const maxModuleInspectPerScan = 30
+
+// persistScanMode 日志用扫描模式名。
+func persistScanMode(registryOnly bool) string {
+	if registryOnly {
+		return "registry"
+	}
+	return "full"
+}
 
 // shouldInspectModules 判断是否值得花成本枚举模块。
 func shouldInspectModules(pi collect.ProcessInfo) bool {
