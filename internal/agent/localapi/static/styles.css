@@ -1016,28 +1016,36 @@ html.light .palette-scrim { background: rgba(0, 0, 0, .24); }
 .gate-note { margin-top: 14px !important; font-size: 10px !important; color: var(--ghost) !important; }
 
 /* ------------------------------------------------------------
-   响应式：窄窗口收成图标栏
+   侧栏紧凑形态（图标栏）：手动折叠（body.side-compact，JS 驱动）
+   与窄窗口自动收起共用同一组规则——形态由 class 决定而非断点，
+   用户偏好优先于视口。
    ------------------------------------------------------------ */
+body.side-compact .app { grid-template-columns: 64px minmax(0, 1fr); }
+body.side-compact .sidebar { padding: 0 8px; }
+body.side-compact .brand { justify-content: center; padding: 16px 0 14px; }
+body.side-compact .brand-text,
+body.side-compact .nav-group,
+body.side-compact .nav-item span:not(.nav-count),
+body.side-compact .side-version,
+body.side-compact .side-status span:not(.dot) { display: none; }
+body.side-compact .nav-item { justify-content: center; padding: 0; }
+body.side-compact .nav-count {
+  /* 绝对定位钉在图标右上角：留在 flex 流里会把居中的图标挤偏
+     （margin-left:auto 的占位效应），图标与红点错位——实测踩坑 */
+  position: absolute;
+  top: 4px; left: calc(50% + 2px); margin-left: 0;
+  width: 7px; min-width: 7px; height: 7px; padding: 0;
+  font-size: 0; border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--sidebar);
+}
+body.side-compact .nav-count.crit { background: var(--crit); }
+body.side-compact .nav-count.warn { background: var(--warn); }
+body.side-compact .nav-count:not(.crit):not(.warn) { background: var(--line-strong); }
+body.side-compact .side-status { justify-content: center; }
+body.side-compact .side-actions { flex-direction: column; align-items: center; }
+
+/* 窄窗口下顶栏/内容密度收口（与侧栏形态解耦） */
 @media (max-width: 780px) {
-  .app { grid-template-columns: 64px minmax(0, 1fr); }
-  .sidebar { padding: 0 8px; }
-  .brand { justify-content: center; padding: 16px 0 14px; }
-  .brand-text, .nav-group, .nav-item span:not(.nav-count), .side-version, .side-status span:not(.dot) { display: none; }
-  .nav-item { justify-content: center; padding: 0; }
-  .nav-count {
-    /* 绝对定位钉在图标右上角：留在 flex 流里会把居中的图标挤偏
-       （margin-left:auto 的占位效应），图标与红点错位——实测踩坑 */
-    position: absolute;
-    top: 4px; left: calc(50% + 2px); margin-left: 0;
-    width: 7px; min-width: 7px; height: 7px; padding: 0;
-    font-size: 0; border-radius: 50%;
-    box-shadow: 0 0 0 2px var(--sidebar);
-  }
-  .nav-count.crit { background: var(--crit); }
-  .nav-count.warn { background: var(--warn); }
-  .nav-count:not(.crit):not(.warn) { background: var(--line-strong); }
-  .side-status { justify-content: center; }
-  .side-actions { flex-direction: column; align-items: center; }
   .topbar { padding: 0 18px; }
   .view-inner { padding: 22px 20px 50px; }
   .host-chip { max-width: 160px; }

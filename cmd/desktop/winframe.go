@@ -131,6 +131,17 @@ func resizeEdge(edge string) {
 	procPostMessageW.Call(frame.hwnd, wmNcLButtonDown, ht, 0)
 }
 
+// dragWindow 顶栏拖动：与 resizeEdge 同款机制，HTCAPTION 进系统模态
+// 移动循环（最大化时 Windows 自动"拖动即还原"）。
+func dragWindow() {
+	if frame == nil {
+		return
+	}
+	// 必须先释放鼠标捕获，否则模态循环收不到后续消息
+	procReleaseCapture.Call()
+	procPostMessageW.Call(frame.hwnd, wmNcLButtonDown, htCaption, 0)
+}
+
 func (f *frameState) isZoomed() bool {
 	r, _, _ := procIsZoomed.Call(f.hwnd)
 	return r != 0

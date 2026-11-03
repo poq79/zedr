@@ -37,6 +37,7 @@ var (
 	procGetMessageW             = moduser32.NewProc("GetMessageW")
 	procTranslateMessage        = moduser32.NewProc("TranslateMessage")
 	procDispatchMessageW        = moduser32.NewProc("DispatchMessageW")
+	procReleaseCapture          = moduser32.NewProc("ReleaseCapture")
 	procSendMessageW            = moduser32.NewProc("SendMessageW")
 	procPostMessageW            = moduser32.NewProc("PostMessageW")
 	procShellNotifyIconW        = modshell32.NewProc("Shell_NotifyIconW")

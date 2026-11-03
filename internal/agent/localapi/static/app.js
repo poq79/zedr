@@ -2276,8 +2276,10 @@ function updateChrome() {
 
   const host = $('#hostChip');
   if (s && s.hostname) {
+    // 只显 hostname：OS 名很长（"Windows Server 2022 Datacenter 21H2..."），
+    // 顶栏右侧空间本来就紧，完整信息收进悬停提示
     host.hidden = false;
-    host.textContent = `${s.hostname} · ${s.os_version || ''}`;
+    host.textContent = s.hostname;
     host.title = `${s.hostname} · ${s.os_version || ''}`;
   } else {
     host.hidden = true;
@@ -2437,6 +2439,9 @@ async function onClick(e) {
     case 'retry-privacy':
       refreshPrivacy();
       break;
+    case 'side-toggle':
+      toggleSidebar();
+      break;
     case 'win-min':
       window.zedrHostMinimize?.();
       break;
@@ -2459,6 +2464,13 @@ function onKey(e) {
     e.preventDefault();
     if (state.palette) closePalette();
     else openPalette();
+    return;
+  }
+
+  // 侧栏折叠：Ctrl/Cmd + B（VS Code 惯例）
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+    e.preventDefault();
+    toggleSidebar();
     return;
   }
 
@@ -2758,6 +2770,31 @@ function errorHTML() {
 
 let pollTick = 0;
 
+// ---- 侧栏折叠（手动优先，窄视口自动收起） --------------------------------
+const SIDEBAR_KEY = 'zedr_sidebar_collapsed';
+
+function sideCompact() {
+  let manual = false;
+  try { manual = localStorage.getItem(SIDEBAR_KEY) === '1'; } catch (e) {}
+  return manual || window.innerWidth <= 780;
+}
+
+function applySideMode() {
+  const compact = sideCompact();
+  document.body.classList.toggle('side-compact', compact);
+  const b = $('#sideToggleBtn');
+  if (b) {
+    b.title = compact ? '展开侧栏（Ctrl+B）' : '折叠侧栏（Ctrl+B）';
+    b.setAttribute('aria-label', b.title);
+  }
+}
+
+function toggleSidebar() {
+  const next = localStorage.getItem(SIDEBAR_KEY) !== '1';
+  try { localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0'); } catch (e) {}
+  applySideMode();
+}
+
 // ---- 无边框窗口宿主集成 ------------------------------------------------
 // 桌面宿主（zedr-ui）通过 Bind 注入 zedrHost* 全局函数；浏览器直开时
 // 这些函数不存在，窗口控制按钮与贴边热区自动隐藏，页面行为不变。
@@ -2791,10 +2828,19 @@ function setupWindowHost() {
     if (e.target.closest('button, input, select, a, .host-chip')) return;
     window.zedrHostMaximizeToggle?.().then?.((z) => renderWinControls(Boolean(z)));
   });
+  // 顶栏拖动：app-region 依赖 WebView2 运行时特性（部分环境不生效），
+  // mousedown 交宿主发 NCLBUTTONDOWN/HTCAPTION 进系统模态拖动——双保险。
+  $('.topbar')?.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('button, input, select, a, .host-chip, .win-controls')) return;
+    window.zedrHostDrag?.();
+  });
+  window.addEventListener('resize', applySideMode);
 }
 
 function boot() {
   setupWindowHost();
+  applySideMode();
   initTheme();
   state.route = routeFromHash();
 

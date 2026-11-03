@@ -232,6 +232,9 @@ func bindWindowActions(w webview2.WebView) {
 		}
 	})
 	_ = w.Bind("zedrHostResizeEdge", resizeEdge)
+	// 顶栏拖动：CSS app-region 依赖 WebView2 运行时特性（部分环境不生效），
+	// mousedown 直发 NCLBUTTONDOWN/HTCAPTION 进系统模态拖动做双保险。
+	_ = w.Bind("zedrHostDrag", dragWindow)
 }
 
 // apiHTTPClient 返回禁用代理的 HTTP 客户端。
