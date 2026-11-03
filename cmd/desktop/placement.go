@@ -54,6 +54,8 @@ func restorePlacement(hwnd uintptr) {
 	h, ok4 := read("Height")
 	maxv, _ := read("Maximized")
 	if !ok1 || !ok2 || !ok3 || !ok4 {
+		// 没有历史形态：默认尺寸按 DPI 放大，避免高缩放下窗口偏小
+		applyDpiScaledDefault(hwnd)
 		return
 	}
 	// 最小尺寸防线 + 双 uint32 转换越界防护（残值可能极大）

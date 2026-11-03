@@ -48,6 +48,9 @@ func makeFrameless(hwnd uintptr) {
 	frame = &frameState{hwnd: hwnd}
 	frame.oldProc, _, _ = procGetWindowLongPtrW.Call(hwnd, minus(gwlpWndProc))
 	procSetWindowLongPtrW.Call(hwnd, minus(gwlpWndProc), windows.NewCallback(frameWndProc))
+	// 圆角：Win11/Server 2025 走 DWM 原生；Server 2022/Win10 的 DWM 无此
+	// 能力。SetWindowRgn 裁切兜底实测有锯齿 + WebView2 合成残影（角落
+	// 脏块），比直角更伤——按"做不了就承认"纪律砍掉，直角即最终形态。
 	tryRoundWin11Corners(hwnd)
 	// 用户上次调整的窗口大小/位置/最大化状态要记得——每次都回 1180x820
 	// 居中是典型的"工具不尊重用户"体验。

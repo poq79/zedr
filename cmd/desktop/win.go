@@ -55,6 +55,10 @@ var (
 	procOpenServiceW            = modadvapi32.NewProc("OpenServiceW")
 	procQueryServiceStatus      = modadvapi32.NewProc("QueryServiceStatus")
 	procCloseServiceHandle      = modadvapi32.NewProc("CloseServiceHandle")
+	procGetDpiForSystem         = moduser32.NewProc("GetDpiForSystem")
+	procSetWindowRgn            = moduser32.NewProc("SetWindowRgn")
+	procCreateRoundRectRgn      = modgdi32.NewProc("CreateRoundRectRgn")
+	procDeleteObject            = modgdi32.NewProc("DeleteObject")
 	procGetModuleHandleExW      = modkernel32.NewProc("GetModuleHandleExW")
 )
 
@@ -220,14 +224,16 @@ func frameBorders() (x, y int32) {
 }
 
 // tryRoundWin11Corners 调 DWM 圆角（Win11/Server 2025+ 生效；
-// Server 2022/Win10 的 DWM 不认识该属性，失败静默忽略——圆角由系统决定）。
-func tryRoundWin11Corners(hwnd uintptr) {
+// Server 2022/Win10 的 DWM 不认识该属性，返回 false——
+// 调用方落到 SetWindowRgn 圆角裁切兜底）。
+func tryRoundWin11Corners(hwnd uintptr) bool {
 	pref := uint32(dwmwcpRound)
-	_, _, _ = procDwmSetWindowAttribute.Call(hwnd, dwmwaWindowCornerPreference, uintptr(unsafe.Pointer(&pref)), 4)
+	r, _, _ := procDwmSetWindowAttribute.Call(hwnd, dwmwaWindowCornerPreference, uintptr(unsafe.Pointer(&pref)), 4)
 
 	// 深色标题栏（有边框模式下标题栏跟随 Carbon 深色，不刺眼）
 	dark := uint32(1)
 	_, _, _ = procDwmSetWindowAttribute.Call(hwnd, dwmwaUseImmersiveDarkMode, uintptr(unsafe.Pointer(&dark)), 4)
+	return r == 0
 }
 
 // registerTaskbarMessage 注册 explorer 广播的重建消息。
@@ -236,6 +242,33 @@ func tryRoundWin11Corners(hwnd uintptr) {
 func registerTaskbarMessage() uint32 {
 	r, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(utf16("TaskbarCreated"))))
 	return uint32(r)
+}
+
+// dpiScale 返回系统 DPI 相对 96 的倍率（100%=1.0）。
+// wrapper 以物理像素创建窗口，高 DPI 下 1180x820 会显得偏小，
+// 默认尺寸需要按倍率放大（placement 恢复时用用户自己的值，不走这里）。
+func dpiScale() float64 {
+	r, _, _ := procGetDpiForSystem.Call()
+	if r == 0 {
+		return 1.0
+	}
+	s := float64(r) / 96.0
+	if s < 1.0 {
+		s = 1.0
+	}
+	return s
+}
+
+// applyDpiScaledDefault 把默认窗口尺寸按 DPI 倍率调整。
+func applyDpiScaledDefault(hwnd uintptr) {
+	scale := dpiScale()
+	if scale <= 1.0 {
+		return
+	}
+	w := int32(float64(1180) * scale)
+	h := int32(float64(820) * scale)
+	const swpNoZOrderActivate = 0x0004 | 0x0010
+	procSetWindowPos.Call(hwnd, 0, 0, 0, uintptr(w), uintptr(h), swpNoZOrderActivate)
 }
 
 // serviceState 查询 Windows 服务的运行状态；服务不存在返回 -1。
