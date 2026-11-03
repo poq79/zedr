@@ -12,11 +12,9 @@
 //     告警只能说明"发生了什么"，不能说明"谁干的"——判定为 suspicious
 //     而非 malicious 就是这个原因，进程归因留给上层关联引擎；
 //   - 只覆盖诱饵文件与删除/改名速率两类信号，不做全盘内容加密检测
-//     （读盘比对内容哈希的成本与用户态低侵入原则冲突）；
-//   - 周期自检只补缺失诱饵，不做内容比对：内容篡改依赖文件系统事件
-//     （RDCW 的 modified / USN 的删除改名）。诱饵目录若未被文件监控覆盖，
-//     原地改写内容（不删不改名）检测不到——这是采集层的口径边界，不是
-//     本包能单独解决的；
+//     （读盘比对内容哈希的成本与用户态低侵入原则冲突）；诱饵本体由
+//     周期自检做内容比对（v0.9.10 深化：RDCW 覆盖不到的 Documents
+//     诱饵被原地改写也能抓到），发现不符只告警不恢复（覆盖=销毁证据）；
 //   - 人工删除诱饵会触发 medium 观察级告警（"可能是人工删除，请人工确认"），
 //     透明内容已尽量降低这种概率，但无法杜绝；
 //   - USN 来源只有 leaf name，不知道完整路径（解析完整路径需要 OpenFileById
@@ -345,26 +343,49 @@ func (d *Defense) Consume(ev Event) {
 	}
 }
 
-// maintain 是周期自检：缺失诱饵静默重建 + 窗口修剪。也不做内容比对——
-// 见包注释的诚实边界。
+// maintain 是周期自检：内容校验 + 缺失诱饵静默重建 + 窗口修剪。
+//
+// 内容校验（v0.9.10 深化新增）收口一个漏报盲区：Documents 不在 RDCW
+// 监控目录内，那里的诱饵被"原地改写不删不改名"时（少见但存在的加密
+// 形态），文件系统事件一路都收不到——16 个小文件每 30s 读一遍比对
+// sha256，成本可忽略。发现不符只告警不恢复（覆盖=销毁证据）。
 func (d *Defense) maintain() {
+	var hits []tamperHit
 	for _, spec := range d.canaries {
-		if _, err := os.Stat(spec.display); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
+		raw, err := os.ReadFile(spec.display)
+		switch {
+		case err == nil:
+			if sha256.Sum256(raw) != d.contentHash {
+				hits = append(hits, tamperHit{
+					key: spec.key, display: spec.display,
+					kind: "modified", source: "self-check", when: d.now(),
+					note: "周期自检发现诱饵内容与预期不符（可能被篡改，请人工确认）",
+				})
+			}
+		case os.IsNotExist(err):
+			if werr := os.WriteFile(spec.display, []byte(canaryContent), 0o644); werr != nil {
+				d.log.Warn("canary_rebuild_failed", "path", spec.display, "err", werr)
+				continue
+			}
+			d.rebuilt.Add(1)
+			d.log.Info("canary_rebuilt", "path", spec.display)
+		default:
 			// 权限类错误：不动，下轮再试
 			continue
 		}
-		if err := os.WriteFile(spec.display, []byte(canaryContent), 0o644); err != nil {
-			d.log.Warn("canary_rebuild_failed", "path", spec.display, "err", err)
-			continue
-		}
-		d.rebuilt.Add(1)
-		d.log.Info("canary_rebuilt", "path", spec.display)
 	}
 	d.mu.Lock()
+	var findings []Finding
+	for _, h := range hits {
+		if f := d.canaryFinding(h); f.RuleID != "" {
+			findings = append(findings, f)
+		}
+	}
 	d.pruneLocked(d.now())
 	d.mu.Unlock()
+	for _, f := range findings {
+		d.emitFinding(f)
+	}
 }
 
 // ---------------------------------------------------------------- canary

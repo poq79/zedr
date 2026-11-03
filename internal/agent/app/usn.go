@@ -47,6 +47,12 @@ const (
 	// 权限/卷结构问题，超时就保持 10 分钟节奏不再增长——不放弃
 	// （卷可能恢复），也不让指数失控。
 	usnPollMaxBackoff = 10 * time.Minute
+	// usnMaxCatchRounds/usnCatchupRounds 是 tick 内/启动时的追赶轮数上限：
+	// 4×20000=8 万条/卷/tick（poll）、3×20000=6 万条/卷（catchup，阻塞
+	// 启动路径刻意少一轮）。读满即再读，读不满 = 已追平；跑满上限仍未
+	// 追平则置 lagging（自监控告警）。
+	usnMaxCatchRounds = 4
+	usnCatchupRounds  = 3
 )
 
 type usnVolumeState struct {
@@ -92,17 +98,35 @@ func (a *Agent) usnCatchup() {
 	changed := false
 	for vol := range volumes {
 		st := cp.Volumes[vol]
-		events, next, journalID, reset, err := winapi.ReadUSNJournal(
-			vol, st.NextUSN, st.JournalID, usnMaxRecords)
-		if err != nil {
-			a.log.Warn("usn_catchup_failed", "volume", vol, "err", err)
-			continue
+		now := time.Now()
+		var sumEvents, sumRecorded, sumDefense int
+		reset := false
+		for attempt := 0; attempt < usnCatchupRounds; attempt++ {
+			events, next, journalID, r, err := winapi.ReadUSNJournal(
+				vol, st.NextUSN, st.JournalID, usnMaxRecords)
+			if err != nil {
+				a.log.Warn("usn_catchup_failed", "volume", vol, "err", err)
+				break
+			}
+			if r {
+				reset = true
+			}
+			recorded, defense := a.dispatchUSNEvents(events, reset, now)
+			sumEvents += len(events)
+			sumRecorded += recorded
+			sumDefense += defense
+			st = usnVolumeState{JournalID: journalID, NextUSN: next}
+			if len(events) < usnMaxRecords {
+				break // 追平
+			}
 		}
-		recorded, defense := a.dispatchUSNEvents(events, reset, time.Now())
-		cp.Volumes[vol] = usnVolumeState{JournalID: journalID, NextUSN: next}
+		// 超长停机（>3×20000 条/卷）按设计截断推进：reset 语义已如实
+		// 报告，不假装全量——追平的长尾由 usnPollLoop 的 tick 内追赶继续
+		cp.Volumes[vol] = st
 		changed = true
-		a.log.Info("usn_catchup", "volume", vol, "events", len(events),
-			"recorded", recorded, "defense", defense, "reset", reset, "next_usn", next)
+		a.log.Info("usn_catchup", "volume", vol, "events", sumEvents,
+			"recorded", sumRecorded, "defense", sumDefense,
+			"reset", reset, "next_usn", st.NextUSN)
 	}
 	if changed {
 		a.saveUSNCheckpoint(cp)
@@ -127,6 +151,7 @@ func (a *Agent) usnPollLoop(ctx context.Context) {
 
 	delay := interval
 	failStreak := 0
+	lagStreak := 0
 	for {
 		timer := time.NewTimer(delay)
 		select {
@@ -135,12 +160,27 @@ func (a *Agent) usnPollLoop(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		if a.usnPollOnce() {
+		ok, lagging := a.usnPollOnce()
+		if ok {
 			failStreak = 0
 			delay = interval
+		} else {
+			failStreak++
+		}
+		// 滞后自监控：跑满追赶预算仍未追平 = 卷产量超过检测预算，
+		// 事件将滞后（缺失是可接受的降级，但必须让运维看得见）
+		if lagging {
+			lagStreak++
+			if lagStreak == 3 {
+				a.log.Warn("usn_poll_lagging",
+					"hint", "卷的 USN 产量超过 tick 内追赶预算（4x20000/卷），删除/改名事件将滞后到达；持续如此可调大 HG_AGENT_USN_POLL_INTERVAL 并关注该卷的写入活动")
+			}
+		} else {
+			lagStreak = 0
+		}
+		if ok {
 			continue
 		}
-		failStreak++
 		if failStreak < 3 {
 			a.log.Warn("usn_poll_failed", "fail_streak", failStreak)
 			continue
@@ -157,12 +197,13 @@ func (a *Agent) usnPollLoop(ctx context.Context) {
 	}
 }
 
-// usnPollOnce 跑一轮全卷增量读取。返回本轮是否"有卷成功"（全部失败
-// 才算轮次失败，驱动退避）。
-func (a *Agent) usnPollOnce() bool {
+// usnPollOnce 跑一轮全卷增量读取。返回（是否有卷成功, 是否仍有滞后）：
+// 前者驱动退避（全部失败才算轮次失败），后者驱动滞后自监控——
+// 跑满追赶预算还没追平说明卷产量超过检测预算。
+func (a *Agent) usnPollOnce() (ok bool, lagging bool) {
 	volumes := a.usnPollVolumes()
 	if len(volumes) == 0 {
-		return true // 没有可读卷不是失败：静默跳过，等卷出现
+		return true, false // 没有可读卷不是失败：静默跳过，等卷出现
 	}
 	cp := a.loadUSNCheckpoint()
 	if cp.Volumes == nil {
@@ -170,6 +211,7 @@ func (a *Agent) usnPollOnce() bool {
 	}
 
 	successes := 0
+	laggingAny := false
 	changed := false
 	now := time.Now()
 	for _, vol := range volumes {
@@ -178,9 +220,9 @@ func (a *Agent) usnPollOnce() bool {
 		// 构建工具、包管理器），单轮 maxRecords 顶格说明还没追平——
 		// 不追平的话事件滞后会无限增长（实测 5000/30s 预算下滞后
 		// 超过分钟级，落地类全被 30min 新鲜度过滤掉）。同一 tick 内
-		// 最多再读 3 轮（4×20000=8 万条/卷/tick 硬上限），读不满即追平。
+		// 最多 usnMaxCatchRounds 轮，读不满即追平。
 		var sumEvents, sumRecorded, sumDefense, rounds int
-		for attempt := 0; attempt < 4; attempt++ {
+		for attempt := 0; attempt < usnMaxCatchRounds; attempt++ {
 			events, next, journalID, reset, err := winapi.ReadUSNJournal(
 				vol, st.NextUSN, st.JournalID, usnMaxRecords)
 			if err != nil {
@@ -212,11 +254,14 @@ func (a *Agent) usnPollOnce() bool {
 				"recorded", sumRecorded, "defense", sumDefense,
 				"rounds", rounds, "next_usn", st.NextUSN)
 		}
+		if rounds == usnMaxCatchRounds {
+			laggingAny = true // 最后一轮仍读满 = 未追平
+		}
 	}
 	if changed {
 		a.saveUSNCheckpoint(cp)
 	}
-	return successes > 0
+	return successes > 0, laggingAny
 }
 
 // usnPollVolumes 圈定本轮要轮询的卷：全部固定 NTFS 卷（覆盖"文件被
@@ -287,6 +332,16 @@ func (a *Agent) dispatchUSNEvents(events []winapi.USNEvent, reset bool, now time
 			a.fileDefense.Consume(ransom.Event{
 				Kind: "renamed", Path: ev.Name, OldPath: ev.OldName,
 				When: ev.When, Source: "usn",
+			})
+			defense++
+		case winapi.USNKindRenameOld:
+			// 未配对的 rename_old（改出本卷/跨批次改名）：旧名在语义上
+			// 已消失，按 renamed_old 投递——canary 按名匹配能抓到"诱饵
+			// 被改名走"（否则 USN 路径对此漏报），而速率窗口对
+			// renamed_old 权重为 0，正常改名的海量 rename_old 不会变成
+			// 勒索速率噪声。冷却键按诱饵去重，双事件同达只告警一次。
+			a.fileDefense.Consume(ransom.Event{
+				Kind: "renamed_old", Path: ev.Name, When: ev.When, Source: "usn",
 			})
 			defense++
 		}

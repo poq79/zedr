@@ -40,8 +40,12 @@ func (a *Agent) netObserve(snap *collect.Snapshot) {
 	procs := make(map[uint32]netwatch.ProcIdent, len(snap.Conns))
 	for pid := range snap.Conns {
 		name, start := a.coll.IdentOf(snap, pid)
+		ppid := uint32(0)
+		if p, ok := snap.Procs[pid]; ok {
+			ppid = p.PPID
+		}
 		procs[pid] = netwatch.ProcIdent{
-			PID: pid, Name: name, StartTime: start,
+			PID: pid, PPID: ppid, Name: name, StartTime: start,
 			Trusted: systemProcNames[strings.ToUpper(name)],
 		}
 	}
@@ -95,10 +99,15 @@ func (a *Agent) emitNetFinding(f netwatch.Finding, snap *collect.Snapshot) {
 			"pid", f.Ident.PID, "name", f.Ident.Name, "path", path)
 	}
 
+	// 运行身份：行为告警的证据面与进程告警对齐（AI 研判与运营视图都
+	// 依赖"谁在跑"）；进程已退出时解析失败留空，不冒充 SYSTEM。
+	procUser, _ := winapi.ProcessUser(f.Ident.PID)
+
 	evidence := model.Evidence{
 		Process: model.ProcEvidence{
-			PID: f.Ident.PID, Name: f.Ident.Name, Path: path,
-			StartTime:  f.Ident.StartTime,
+			PID: f.Ident.PID, PPID: f.Ident.PPID, Name: f.Ident.Name, Path: path,
+			User:      procUser,
+			StartTime: f.Ident.StartTime,
 			HashSHA256: meta.Hash, Signer: meta.Signer,
 			Signed: meta.Signed, SignatureOK: meta.SignatureOK,
 		},
@@ -135,8 +144,10 @@ func (a *Agent) emitNetFinding(f netwatch.Finding, snap *collect.Snapshot) {
 		Severity:    f.Severity,
 		Score:       f.Score,
 		PID:         f.Ident.PID,
+		PPID:        f.Ident.PPID,
 		ProcessName: f.Ident.Name,
 		ImagePath:   path,
+		ProcUser:    procUser,
 		RuleIDs:     []string{f.RuleID},
 		MITRE:       f.MITRE,
 		Evidence:    evidence,

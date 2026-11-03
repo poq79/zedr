@@ -68,8 +68,12 @@ func (a *Agent) emitFileDefenseFinding(f ransom.Finding) {
 		Verdict:     f.Verdict,
 		Severity:    f.Severity,
 		Score:       f.Score,
-		RuleIDs:     []string{f.RuleID},
-		MITRE:       f.MITRE,
+		// 两路事件源都不带发起者 PID（ransom 包的诚实边界），
+		// ProcUser 用命名空间占位说明信号来源，对齐 persist 的
+		// "SYSTEM/PERSISTENCE" 先例——空 source 字段在 UI 上更难解释
+		ProcUser: "SYSTEM/FILE-DEFENSE",
+		RuleIDs:  []string{f.RuleID},
+		MITRE:    f.MITRE,
 		Evidence: model.Evidence{
 			Signals: []model.Signal{{
 				Layer: "filedef", ID: f.RuleID, Name: "文件防御（诱饵/勒索行为）",
