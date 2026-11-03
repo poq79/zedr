@@ -30,7 +30,13 @@ fi
 build() {
   local pkg="$1" out="$2"
   echo ">> building $pkg -> bin/$out"
-  go build -ldflags "-X main.version=${VERSION}" -o "bin/$out" "./cmd/$pkg"
+  # 桌面面板用 GUI 子系统：双击启动不闪控制台窗口；其余保留控制台
+  # （服务端/探针要打印日志与 -install 输出，服务化也依赖控制台语义）。
+  if [ "$pkg" = "desktop" ]; then
+    go build -ldflags "-X main.version=${VERSION} -H=windowsgui" -o "bin/$out" "./cmd/$pkg"
+  else
+    go build -ldflags "-X main.version=${VERSION}" -o "bin/$out" "./cmd/$pkg"
+  fi
 }
 
 build server     zedr-server.exe

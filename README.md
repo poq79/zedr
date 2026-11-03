@@ -91,6 +91,14 @@ cp .env.example .env             # set HG_SERVER_JWT_SECRET + HG_SERVER_ENROLL_T
 ```
 
 Console: `http://127.0.0.1:8080` · local panel: `http://127.0.0.1:8843` (loopback only).
+
+**Desktop panel**: launch `bin\zedr-ui.exe` for a native frameless window
+(custom titlebar, system-tray notifier, close-to-tray). It auto-connects to
+the local agent and starts it if it is not running. The UI process does
+nothing in the background — closing the window frees its memory while the
+tray notifier (~12 MB) and the agent service keep protecting. The tray menu
+offers open/scan/autostart/service-install/quit.
+
 Beyond detection, the local panel ships read-only hygiene views: installed
 software (with hidden-uninstaller flags), Autoruns-style startup audit
 (signature / file-missing flags), security posture & patch checks
