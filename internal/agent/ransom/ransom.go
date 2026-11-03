@@ -514,14 +514,16 @@ func (d *Defense) rateActive(when time.Time) bool {
 // ---------------------------------------------------------------- 速率
 
 // churnMarkers 是"天然高频增删"的目录特征：浏览器缓存、系统临时目录、
-// 更新器暂存。这些位置的批量删除/改名是正常软件行为（实测一次浏览器
-// 缓存清理 + 一次 go build 链接即可在 60s 内贡献 20+ 权重），剔除后
-// 速率窗口才保得住信噪比。USN 事件只有 leaf name 无法判目录——这类
-// 事件保留计数，由"独立速率只做观察级"的定级策略兜底（见 rateFinding）。
+// 回收站、更新器暂存。这些位置的批量删除/改名是正常软件行为（实测一次
+// 浏览器缓存清理 + 一次 go build 链接即可在 60s 内贡献 20+ 权重；清空
+// 回收站同理——文件改名进 $Recycle.Bin 再批量删除），剔除后速率窗口
+// 才保得住信噪比。USN 事件只有 leaf name 无法判目录——这类事件保留
+// 计数，由"独立速率只做观察级"的定级策略兜底（见 rateFinding）。
 var churnMarkers = []string{
 	`\appdata\local\temp\`, `\appdata\local\temp-`, `\windows\temp\`,
 	`\cache\`, `\cache_data`, `\code cache`, `\gpucache`, `\inetcache\`,
 	`\crashpad\`, `\go-build\`, `\npm-\`, `\pip-\`, `\.tmp`,
+	`$recycle.bin`, `\recycle`,
 }
 
 // churnPath 判断路径是否落在高频增删目录（rdcw 来源有完整路径才判得了）。

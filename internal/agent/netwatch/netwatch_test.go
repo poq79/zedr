@@ -401,3 +401,27 @@ func TestRateStreakResetOnGap(t *testing.T) {
 		t.Fatal("中断后 streak 未清零，导致提前触发 NW-005")
 	}
 }
+
+// NW-004 的非常见端口占比条件：DNS 故障/断网时全机失败集中在常用端口
+//（53 等），形态与扫描正交——不应触发（v0.9.10 深化二轮误报收口）。
+func TestNoResponseCommonPortExempt(t *testing.T) {
+	w := New(Config{}, 1)
+	ident := pid100(t0)
+	prime(w, t0, ident)
+	// 16 次全部打向 53 端口（4 个 IP × 4 次同端口重试——DNS 故障形态）
+	var conns []winapi.TCPConn
+	for ip := 0; ip < 4; ip++ {
+		for p := 0; p < 4; p++ {
+			conns = append(conns, conn(fmt.Sprintf("203.0.113.%d", 60+ip), 53, "SYN_SENT"))
+		}
+	}
+	w.Observe(tickOf(t0.Add(time.Second), map[uint32][]winapi.TCPConn{100: conns},
+		map[uint32]ProcIdent{100: ident}))
+	fs := w.Observe(tickOf(t0.Add(3*time.Second), map[uint32][]winapi.TCPConn{100: nil},
+		map[uint32]ProcIdent{100: ident}))
+	for _, f := range fs {
+		if f.RuleID == "NW-004" {
+			t.Fatalf("常用端口的全量失败不应触发 NW-004: %+v", f)
+		}
+	}
+}

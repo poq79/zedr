@@ -64,9 +64,16 @@ type Agent struct {
 	// 事件流；nil = 开关关闭
 	fileDefense *ransom.Defense
 
+	// 行为检测健康度快照（scan 回调读，各写入方自管同步）
+	usnLagging   atomic.Bool
+	evtChannels  atomic.Int64
+
 	// 网络行为检测（NW 规则族）：消费每轮连接表快照做滑动窗口聚合，
 	// 无独立线程与系统调用；nil = 开关关闭
 	nw *netwatch.Watch
+	// trustCache 是"系统进程名抽查"的结论缓存（见 procTrusted）
+	trustMu    sync.Mutex
+	trustCache map[trustKey]trustEntry
 
 	// 泛安全体检：驻留项画像缓存随 Agent 存活（文件签名验读一次后复用）
 	auditor *hygiene.Auditor
@@ -191,6 +198,7 @@ func New(version string) (*Agent, error) {
 		cpu:       &winapi.CPUSampler{},
 		startedAt: time.Now(),
 		scanReq:   make(chan bool, 1),
+		trustCache: map[trustKey]trustEntry{},
 	}
 	// 网络行为检测：构造成本为零（纯内存结构），关闭开关时不创建。
 	// 阈值可用 HG_AGENT_NET_* 覆盖（0/空 = 内置默认）——现场按机器
@@ -743,9 +751,26 @@ func (a *Agent) scan(deep bool) int {
 			ri.FileWatch = true
 			ri.WatchedDirs = len(a.fw.WatchedDirs())
 			ri.DropEvents = a.fw.Events()
+			ri.FileWatchOverflow = a.fw.Overflow()
 		} else {
 			ri.FileWatch = false
 		}
+
+		// 行为检测器健康度：计数来自各检测器的诚实计数器（见 RuntimeInfo
+		// 字段注释）。这里只读快照——各检测器内部自有锁/atomic。
+		if a.nw != nil {
+			ns := a.nw.Stats()
+			ri.NetWatchEvents = ns.EventsSeen
+			ri.NetWatchAlerts = ns.AlertsFired
+			ri.NetWatchTracked = ns.TrackedProcs
+			ri.NetWatchDropped = ns.Dropped
+		}
+		ri.USNPollLagging = a.usnLagging.Load()
+		if a.fileDefense != nil {
+			ri.CanaryRebuilt = a.fileDefense.Rebuilt()
+			ri.FileDefDropped = a.fileDefense.Dropped()
+		}
+		ri.EvtLogChannels = int(a.evtChannels.Load())
 	})
 
 	return len(newProcs)

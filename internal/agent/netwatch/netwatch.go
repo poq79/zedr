@@ -24,6 +24,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,12 +187,26 @@ type ev struct {
 }
 
 // procState 是单个进程的行为窗口。
+// synPend 是一条未决 SYN_SENT 尝试。
+type synPend struct {
+	first    time.Time
+	uncommon bool // 目标端口非常见服务端口（NW-004 的占比条件用）
+}
+
+// failRec 是一次无响应尝试；uncommon 随失败记录固化——DNS/断网场景
+// 的失败几乎全落在 53/80/443 这类常用端口上，与扫描（多样非常见端口）
+// 的失败形态正交，NW-004 靠占比区分两者。
+type failRec struct {
+	at       time.Time
+	uncommon bool
+}
+
 type procState struct {
 	ident  ProcIdent
 	events []ev                 // 按 t 升序的滚动窗口（≤ MaxEventsPerProc）
 	seen   map[string]time.Time // "ip|port" -> 首次记录时间（去重，窗口 2 倍后过期）
-	syn    map[string]time.Time // 未决 SYN_SENT："ip|port" -> 首次观测时间
-	fails  []time.Time          // 短窗口内的无响应尝试
+	syn    map[string]synPend   // 未决 SYN_SENT："ip|port" -> 首次观测
+	fails  []failRec            // 短窗口内的无响应尝试
 	succ   []time.Time          // 短窗口内 SYN_SENT→ESTABLISHED 的成功转化
 	// rateStreak 是 NW-005 连续达标周期数；lastRate 是上一周期的新建连接数。
 	rateStreak int
@@ -402,7 +417,7 @@ func (w *Watch) Observe(t Tick) []Finding {
 			case alive:
 				// 进入其他状态（如 SYN_RCVD/fin 系），语义不明，保留观察
 			default:
-				st.fails = append(st.fails, now)
+				st.fails = append(st.fails, failRec{at: now, uncommon: st.syn[pair].uncommon})
 				delete(st.syn, pair)
 			}
 		}
@@ -415,7 +430,8 @@ func (w *Watch) Observe(t Tick) []Finding {
 			for pair, ps := range pairs {
 				if ps[0] {
 					if _, ok := st.syn[pair]; !ok {
-						st.syn[pair] = now
+						port := portOfPair(pair)
+						st.syn[pair] = synPend{first: now, uncommon: !commonPorts[port]}
 					}
 				}
 			}
@@ -471,7 +487,7 @@ func (w *Watch) stateFor(pid uint32, procs map[uint32]ProcIdent, now time.Time) 
 		st = &procState{
 			ident: ident,
 			seen:  map[string]time.Time{},
-			syn:   map[string]time.Time{},
+			syn:   map[string]synPend{},
 		}
 		w.states[pid] = st
 		return st
@@ -481,7 +497,7 @@ func (w *Watch) stateFor(pid uint32, procs map[uint32]ProcIdent, now time.Time) 
 	if ident.PID != 0 {
 		if !ident.StartTime.IsZero() && !st.ident.StartTime.IsZero() &&
 			!ident.StartTime.Equal(st.ident.StartTime) {
-			*st = procState{ident: ident, seen: map[string]time.Time{}, syn: map[string]time.Time{}}
+			*st = procState{ident: ident, seen: map[string]time.Time{}, syn: map[string]synPend{}}
 			return st
 		}
 		if ident.Name != "" {
@@ -524,9 +540,9 @@ func (s *procState) prune(now time.Time, cfg *Config) {
 	s.events = s.events[:k]
 
 	k = 0
-	for _, t := range s.fails {
-		if t.After(cutShort) {
-			s.fails[k] = t
+	for _, f := range s.fails {
+		if f.at.After(cutShort) {
+			s.fails[k] = f
 			k++
 		}
 	}
@@ -545,9 +561,9 @@ func (s *procState) prune(now time.Time, cfg *Config) {
 			delete(s.seen, pair)
 		}
 	}
-	for pair, first := range s.syn {
+	for pair, pend := range s.syn {
 		// 正常尝试几十秒内必有去向；留 10 分钟余量防快照抖动
-		if now.Sub(first) > 10*time.Minute {
+		if now.Sub(pend.first) > 10*time.Minute {
 			delete(s.syn, pair)
 		}
 	}
@@ -645,6 +661,19 @@ func (w *Watch) refreshOwnIPs(now time.Time) {
 
 func pairKey(ip string, port uint16) string {
 	return ip + "|" + strconv.Itoa(int(port))
+}
+
+// portOfPair 从 "ip|port" 键里还原端口（未决尝试的端口固化用）。
+func portOfPair(pair string) uint16 {
+	_, p, ok := strings.Cut(pair, "|")
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil {
+		return 0
+	}
+	return uint16(n)
 }
 
 // ---------------------------------------------------------------- 规则评估
@@ -779,22 +808,38 @@ func (w *Watch) evaluate(pid uint32, st *procState, now time.Time) []Finding {
 		})
 	}
 
-	// NW-004 无响应扫描 / SYN 压力
+	// NW-004 无响应扫描 / SYN 压力。
+	// 失败占比之外还要求"非常见端口占比 ≥50%"：DNS 服务器故障/断网时
+	// 全机的失败都集中在 53/80/443 这类常用端口，形态与扫描（多样非常见
+	// 端口）正交——不加这个条件，网络故障会变成全网扫描误报。
 	att := len(st.fails) + len(st.succ)
 	ratio := 0.0
+	uncommonFail := 0
+	for _, f := range st.fails {
+		if f.uncommon {
+			uncommonFail++
+		}
+	}
+	uncommonFailRatio := 0.0
+	if len(st.fails) > 0 {
+		uncommonFailRatio = float64(uncommonFail) / float64(len(st.fails))
+	}
 	if att > 0 {
 		ratio = float64(len(st.fails)) / float64(att)
 	}
 	thr = w.cfg.NoRespFails * scale
-	if (att >= thr && ratio >= w.cfg.NoRespRatio) || len(st.syn) >= w.cfg.SynFloodConns {
+	if (att >= thr && ratio >= w.cfg.NoRespRatio && uncommonFailRatio >= 0.5) ||
+		len(st.syn) >= w.cfg.SynFloodConns {
 		out = append(out, Finding{
 			RuleID: "NW-004",
 			Title: fmt.Sprintf("网络行为：无响应连接扫描（%d 次尝试无响应，并发 SYN_SENT %d）",
 				len(st.fails), len(st.syn)),
 			Summary: fmt.Sprintf("进程 %s(PID %d) 的连接尝试大量得不到响应：%s 内 %d 次尝试中 %.0f%% 无响应"+
-				"（当前并发 SYN_SENT %d，阈值：尝试≥%d 且失败比≥%.0f%%，或并发≥%d）。"+
+				"（其中 %.0f%% 打向非常见服务端口；当前并发 SYN_SENT %d）。"+
+				"阈值：尝试≥%d 且失败比≥%.0f%% 且非常见端口占比≥50%%，或并发≥%d。"+
 				"SYN 发出后石沉大海指向被防火墙静默丢弃的目标段——防火墙探测/隐蔽扫描（T1046）的典型残留。",
-				st.ident.Name, pid, w.cfg.WindowShort, att, ratio*100, len(st.syn),
+				st.ident.Name, pid, w.cfg.WindowShort, att, ratio*100,
+				uncommonFailRatio*100, len(st.syn),
 				thr, w.cfg.NoRespRatio*100, w.cfg.SynFloodConns),
 			Severity: model.SeverityHigh,
 			Score:    55,

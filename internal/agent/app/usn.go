@@ -161,6 +161,7 @@ func (a *Agent) usnPollLoop(ctx context.Context) {
 		case <-timer.C:
 		}
 		ok, lagging := a.usnPollOnce()
+		a.usnLagging.Store(lagging)
 		if ok {
 			failStreak = 0
 			delay = interval
@@ -357,6 +358,16 @@ func (a *Agent) loadUSNCheckpoint() usnCheckpoint {
 	}
 	if err := json.Unmarshal(raw, &cp); err != nil {
 		a.log.Warn("usn_checkpoint_parse_failed", "err", err)
+		// 主文件损坏：回退上一份备份。检查点倒退的最坏后果是"重放一小段
+		// 已处理记录"（落地有 byBase 去重、删除有冷却去重），好过整份
+		// 基线作废——作废会让所有卷当首次运行，停机窗口全部漏掉。
+		if bak, err2 := os.ReadFile(a.cfg.Path(usnCheckpointFile + ".bak")); err2 == nil {
+			if err3 := json.Unmarshal(bak, &cp); err3 == nil && cp.Volumes != nil {
+				a.log.Warn("usn_checkpoint_fallback_bak", "err", err)
+				return cp
+			}
+		}
+		return usnCheckpoint{}
 	}
 	return cp
 }
@@ -368,6 +379,12 @@ func (a *Agent) saveUSNCheckpoint(cp usnCheckpoint) {
 		return
 	}
 	path := a.cfg.Path(usnCheckpointFile)
+	// 写前轮换：当前主文件挪成 .bak（存在才挪），再做 temp+rename 原子写。
+	// .bak 是 load 侧损坏回退的来源——两次写入都损坏（掉电/杀进程）才
+	// 会真的丢基线，概率远低于单文件。
+	if old, err := os.ReadFile(path); err == nil {
+		_ = os.WriteFile(path+".bak", old, 0o600)
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		a.log.Warn("usn_checkpoint_write_failed", "err", err)

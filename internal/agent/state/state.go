@@ -91,6 +91,24 @@ type RuntimeInfo struct {
 	DropEvents   int64 `json:"drop_events"`
 	PersistCount int   `json:"persist_count"`
 
+	// 行为检测器健康度（v0.9.10 深化）：计数全部来自各检测器的诚实
+	// 计数器——运维/面板据此判断"检测器活着吗、有没有在丢数据"，
+	// 而不是只能翻日志。
+	// NetWatch* 是网络行为检测的事件/告警/内存护栏计数；
+	// FileWatchOverflow>0 说明 RDCW 缓冲溢出丢过整批（事件有空洞）；
+	// USNPollLagging 表示 USN 卷产量超过追赶预算（事件将滞后）；
+	// CanaryRebuilt/FileDefDropped 是诱饵重建与防御窗口丢弃计数；
+	// EvtLogChannels 是事件日志接入的活跃通道数（0=未启用/全降级）。
+	NetWatchEvents    int64 `json:"netwatch_events"`
+	NetWatchAlerts    int64 `json:"netwatch_alerts"`
+	NetWatchTracked   int   `json:"netwatch_tracked"`
+	NetWatchDropped   int64 `json:"netwatch_dropped"`
+	FileWatchOverflow int64 `json:"filewatch_overflow"`
+	USNPollLagging    bool  `json:"usn_poll_lagging"`
+	CanaryRebuilt     int64 `json:"canary_rebuilt"`
+	FileDefDropped    int64 `json:"filedef_dropped"`
+	EvtLogChannels    int   `json:"evtlog_channels"`
+
 	// 下发数据的落地情况：IOC 表与资产清单是否真的在本探针生效。
 	// 没有这两项，"服务端下发了"和"终端在用"之间隔着一次静默失败
 	// （验签拒绝/版本回退都发生在终端侧），排障时只能翻日志。

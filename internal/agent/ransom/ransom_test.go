@@ -480,3 +480,25 @@ func TestMaintainDetectsContentTamper(t *testing.T) {
 		t.Fatal("自检不应覆盖被篡改的诱饵（销毁证据）")
 	}
 }
+
+// 清空回收站 = $Recycle.Bin 内批量删除 + 改名进回收站（新路径命中），
+// 都应被剔除——否则用户清一次回收站就是一次 FILE-RANSOM 误报。
+func TestRecycleBinChurnExcluded(t *testing.T) {
+	dir := t.TempDir()
+	d, r, ck := newDefense(t, []string{dir}, nil)
+	rb := `C:\$Recycle.Bin\S-1-5-21-1234`
+	for i := 0; i < 25; i++ {
+		d.Consume(Event{Kind: "removed",
+			Path:   fmt.Sprintf(`%s\$R%02dX.docx`, rb, i),
+			Source: "rdcw", When: ck.Now()})
+		d.Consume(Event{Kind: "renamed",
+			Path:    fmt.Sprintf(`%s\$R%02dX.docx`, rb, i),
+			OldPath: filepath.Join(dir, fmt.Sprintf("doc%02d.docx", i)),
+			Source:  "rdcw", When: ck.Now()})
+	}
+	for _, f := range r.fs {
+		if f.RuleID == RuleRansom {
+			t.Fatalf("回收站 churn 不应触发: %+v", f)
+		}
+	}
+}

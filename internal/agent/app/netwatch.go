@@ -31,6 +31,56 @@ var systemProcNames = map[string]bool{
 	"RUNTIMEBROKER.EXE": true, "SIHOST.EXE": true, "CTFMON.EXE": true,
 }
 
+// trustKey 是 trusted 抽查结果的缓存键（PID 复用靠启动时间区分）。
+type trustKey struct {
+	pid  uint32
+	start int64
+}
+
+// trustEntry 是一次抽查结论与其新鲜度。
+type trustEntry struct {
+	trusted bool
+	at      time.Time
+}
+
+// procTrusted 判定 netwatch 的"可信进程"（阈值放大 ×3 的依据）。
+//
+// 名字在系统进程名集合只是初筛——名字可伪造：svchost.exe 落在 TEMP 是
+// 老把戏，放大会让伪装者的扫描阈值变成三倍（漏报方向）。对命中系统名
+// 的进程抽查一次 ImagePath：镜像不在系统目录 → 不放大（宁可多告警也
+// 不给伪装者降敏），且告警侧本就有"名像系统、路径不像"的伪装标注。
+// 每 tick 只对 1-3 个 svchost 类进程发生，成本可忽略；结论按
+// (pid, starttime) 缓存 60s，长驻进程不重复验路径。路径解析失败
+// （进程刚退出）→ 不放大也不缓存，倾向更敏感的一侧。
+func (a *Agent) procTrusted(pid uint32, name string, start time.Time) bool {
+	if !systemProcNames[strings.ToUpper(name)] {
+		return false
+	}
+	now := time.Now()
+	key := trustKey{pid: pid, start: start.Unix()}
+	a.trustMu.Lock()
+	if e, ok := a.trustCache[key]; ok && now.Sub(e.at) < time.Minute {
+		a.trustMu.Unlock()
+		return e.trusted
+	}
+	a.trustMu.Unlock()
+
+	path, err := winapi.ImagePath(pid)
+	trusted := err == nil && path != "" && looksLikeSystemPath(path)
+	a.trustMu.Lock()
+	if len(a.trustCache) > 128 {
+		a.trustCache = map[trustKey]trustEntry{} // 防无界：整体重建即可
+	}
+	a.trustCache[key] = trustEntry{trusted: trusted, at: now}
+	a.trustMu.Unlock()
+	if !trusted && err == nil {
+		a.log.Warn("netwatch_name_disguise_suspect",
+			"pid", pid, "name", name, "path", path,
+			"note", "系统进程名、非系统目录镜像——不享受阈值放大")
+	}
+	return trusted
+}
+
 // netObserve 消费一轮采集快照，驱动网络行为检测并把命中转为告警。
 func (a *Agent) netObserve(snap *collect.Snapshot) {
 	now := time.Now()
@@ -46,7 +96,7 @@ func (a *Agent) netObserve(snap *collect.Snapshot) {
 		}
 		procs[pid] = netwatch.ProcIdent{
 			PID: pid, PPID: ppid, Name: name, StartTime: start,
-			Trusted: systemProcNames[strings.ToUpper(name)],
+			Trusted: a.procTrusted(pid, name, start),
 		}
 	}
 

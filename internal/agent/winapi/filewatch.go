@@ -20,6 +20,8 @@ import (
 	"time"
 	"unicode/utf16"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 var procReadDirectoryChangesW = modKernel32.NewProc("ReadDirectoryChangesW")
@@ -106,6 +108,9 @@ type FileWatcher struct {
 	closed  atomic.Bool
 	events  atomic.Int64
 	dropped atomic.Int64
+	// overflow 是 RDCW 缓冲溢出（丢整批）的诚实计数：溢出说明该目录
+	// 的变更速率超过 64KB/批的缓冲设计，暴露给状态页供运维判断。
+	overflow atomic.Int64
 	watched []string
 }
 
@@ -140,6 +145,11 @@ func WatchDirs() []string {
 	if up := os.Getenv("USERPROFILE"); up != "" {
 		add(filepath.Join(up, "Downloads"))
 		add(filepath.Join(up, "Desktop"))
+		// Documents 是勒索软件的加密主战场（诱饵也在此），此前只有
+		// USN 30s 滞后覆盖——加入 RDCW 后删除/改名/落地全部实时。
+		// 代价：用户批量整理文档会进勒索速率窗口（观察级 medium，
+		// 与"可能是人工操作"的口径一致，可接受）。
+		add(filepath.Join(up, "Documents"))
 		add(filepath.Join(up, "AppData", "Roaming"))
 	}
 	add(os.Getenv("PUBLIC"))
@@ -198,6 +208,10 @@ func (w *FileWatcher) WatchedDirs() []string { return w.watched }
 // Events 返回已处理的落地事件数。
 func (w *FileWatcher) Events() int64 { return w.events.Load() }
 
+// Overflow 返回缓冲溢出（丢整批）次数。>0 说明有目录变更速率超设计，
+// 事件存在空洞——诚实暴露而不是假装无损。
+func (w *FileWatcher) Overflow() int64 { return w.overflow.Load() }
+
 // Close 停止监控。
 func (w *FileWatcher) Close() {
 	if w.closed.Swap(true) {
@@ -239,7 +253,7 @@ func (w *FileWatcher) watchLoop(dir string, h syscall.Handle) {
 			return
 		}
 		var returned uint32
-		r, _, _ := procReadDirectoryChangesW.Call(
+		r, _, callErr := procReadDirectoryChangesW.Call(
 			uintptr(h),
 			uintptr(unsafe.Pointer(&buf[0])),
 			uintptr(len(buf)),
@@ -249,8 +263,19 @@ func (w *FileWatcher) watchLoop(dir string, h syscall.Handle) {
 			uintptr(unsafe.Pointer(&returned)),
 			0, 0,
 		)
-		if r == 0 || returned == 0 {
+		if r == 0 {
+			// 缓冲溢出（ERROR_MORE_DATA=234）：单批变更超过 64KB 缓冲
+			//（解压/npm install 会触发）。此前这里直接退出监控——目录
+			// 监控从此静默死亡，是比"丢一批事件"严重得多的稳定性 bug
+			//（Wazuh 同位置只 warn 继续）。丢当批 + 计数，监控保住。
+			if callErr == windows.ERROR_MORE_DATA {
+				w.overflow.Add(1)
+				continue
+			}
 			// 句柄被关闭（Close）或目录不可访问：退出本目录的监控
+			return
+		}
+		if returned == 0 {
 			return
 		}
 		w.parse(dir, buf[:returned])
