@@ -20,6 +20,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -83,6 +84,23 @@ func main() {
 	})
 }
 
+// withToken 给面板 URL 附上本地接口访问令牌（仅供浏览器回退通道使用；
+// WebView2 模式走 Init 注入，令牌不落命令行——进程命令行可被同机进程
+// 经 WMI 枚举，属信息泄露面）。
+func withToken(target string) string {
+	if tok := readLocalToken(); tok != "" {
+		sep := "?"
+		if strings.Contains(target, "?") {
+			sep = "&"
+		}
+		target = target + sep + "token=" + url.QueryEscape(tok)
+	}
+	return target
+}
+
+// panelURL 计算面板基础地址（默认读 HG_AGENT_LOCAL_ADDR）。
+// 注意：这里刻意**不带**令牌——WebView2 模式由 runPanel 经 Init 注入
+// localStorage，浏览器回退模式才经 withToken 拼 URL（页面会从地址栏抹除）。
 func panelURL(urlFlag string) string {
 	target := urlFlag
 	if target == "" {
@@ -91,15 +109,6 @@ func panelURL(urlFlag string) string {
 			addr = "127.0.0.1:8843"
 		}
 		target = "http://" + addr + "/"
-	}
-	// 附带本地接口访问令牌。本地 API 已启用访问控制，不带令牌会拿到 401——
-	// 宿主进程负责把令牌交给页面，页面存进 localStorage 后即从地址栏抹掉。
-	if tok := readLocalToken(); tok != "" {
-		sep := "?"
-		if strings.Contains(target, "?") {
-			sep = "&"
-		}
-		target = target + sep + "token=" + url.QueryEscape(tok)
 	}
 	return target
 }
@@ -135,7 +144,7 @@ func runPanel(opts runPanelOpts) {
 	}
 
 	if opts.browser {
-		openBrowser(opts.target)
+		openBrowser(withToken(opts.target))
 		return
 	}
 
@@ -153,10 +162,19 @@ func runPanel(opts runPanelOpts) {
 	if w == nil {
 		fmt.Println("未检测到 WebView2 运行时，改用默认浏览器打开。")
 		fmt.Println("（安装 Microsoft Edge WebView2 Runtime 后可获得原生窗口体验）")
-		openBrowser(opts.target)
+		openBrowser(withToken(opts.target))
 		return
 	}
 	defer w.Destroy()
+
+	// 令牌注入：走 Init 脚本写 localStorage，而不是拼进 -url 命令行参数。
+	// 进程命令行可被同机任意进程经 WMI 枚举，令牌不该出现在那里；
+	// 浏览器回退模式（-browser）没有注入通道，仍用 URL 传递（页面会从
+	// 地址栏抹除），这是唯一例外。
+	if tok := readLocalToken(); tok != "" {
+		b, _ := json.Marshal(tok)
+		w.Init("try{localStorage.setItem('zedr_local_token', " + string(b) + ");}catch(e){}")
+	}
 
 	// 无边框：去系统标题栏，顶栏自绘（拖动走 CSS app-region，缩放走贴边热区）。
 	makeFrameless(uintptr(w.Window()))

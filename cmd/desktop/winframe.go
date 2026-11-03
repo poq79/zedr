@@ -49,6 +49,9 @@ func makeFrameless(hwnd uintptr) {
 	frame.oldProc, _, _ = procGetWindowLongPtrW.Call(hwnd, minus(gwlpWndProc))
 	procSetWindowLongPtrW.Call(hwnd, minus(gwlpWndProc), windows.NewCallback(frameWndProc))
 	tryRoundWin11Corners(hwnd)
+	// 用户上次调整的窗口大小/位置/最大化状态要记得——每次都回 1180x820
+	// 居中是典型的"工具不尊重用户"体验。
+	restorePlacement(hwnd)
 	// subclass 不会追溯已发生的 NCCALCSIZE：必须主动触发一次
 	// frame 重算，否则系统标题栏一直留着（窗口尺寸没变就再也不发）。
 	const swpFrameChanged = 0x0020
@@ -79,6 +82,9 @@ func frameWndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		mmi := (*minMaxInfo)(ptrFromLParam(lp))
 		mmi.PtMinTrackSize = point{X: 900, Y: 620}
 		return 0
+	case wmDestroy:
+		// 面板进程退出前记住窗口形态，下次打开原样恢复
+		savePlacement(hwnd)
 	}
 	if frame.oldProc != 0 {
 		r, _, _ := procCallWindowProcW.Call(frame.oldProc, hwnd, msg, wp, lp)
