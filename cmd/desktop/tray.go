@@ -33,12 +33,13 @@ const (
 
 // 菜单项 ID（TrackPopupMenuEx TPM_RETURNCMD 返回值）
 const (
-	menuOpenPanel   = 1
-	menuScan        = 2
-	menuStartAgent  = 3
-	menuAutostart   = 4
-	menuInstallSvc  = 5
-	menuQuit        = 6
+	menuOpenPanel  = 1
+	menuScan       = 2
+	menuStartAgent = 3
+	menuAutostart  = 4
+	menuInstallSvc = 5
+	menuQuit       = 6
+	menuStartSvc   = 7
 )
 
 const (
@@ -46,6 +47,7 @@ const (
 	niifWarning = 0x2
 	niifError   = 0x3
 	mfChecked   = 0x00000008
+	mfGrayed    = 0x00000001
 )
 
 type notifier struct {
@@ -54,6 +56,12 @@ type notifier struct {
 	added      bool
 	url        string
 	localToken string
+	// taskbarCreatedMsg 是 explorer 广播的"任务栏重建"消息 ID：
+	// explorer 崩溃/重启后所有托盘图标被系统移除，收到此消息必须重新注册，
+	// 否则图标永久消失（Windows 托盘开发的第一经典坑）。
+	taskbarCreatedMsg uint32
+	// iconID 当前展示的状态图标（1=绿 2=黄 3=红），避免无谓的 NIM_MODIFY
+	iconID uint32
 	// seen 记录已弹过气球的告警 ID：轮询去重，同一告警只打扰一次
 	seen map[string]bool
 }
@@ -118,6 +126,9 @@ func (n *notifier) createWindow() bool {
 		LpszClassName: className,
 	}
 	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+
+	// explorer 重启广播：必须在此之前注册，收到后重挂图标
+	n.taskbarCreatedMsg = registerTaskbarMessage()
 
 	hwnd, _, _ := procCreateWindowExW.Call(0,
 		uintptr(unsafe.Pointer(className)),
@@ -203,6 +214,13 @@ func (n *notifier) balloon(title, text string, flag uint32) {
 
 // trayWndProc 托盘隐藏窗口的过程。static 回调要求签名固定 uintptr 三参。
 func trayWndProc(hwnd, msg, wp, lp uintptr) uintptr {
+	switch {
+	case msg == 0x0400+5: // NIN_BALLOONUSERCLICK：用户点了气球 → 打开面板看详情
+		if activeTray != nil {
+			activeTray.openPanel()
+		}
+		return 0
+	}
 	switch msg {
 	case wmTrayCallback:
 		if activeTray != nil {
@@ -214,6 +232,14 @@ func trayWndProc(hwnd, msg, wp, lp uintptr) uintptr {
 		return 0
 	case wmDestroy:
 		procPostQuitMessage.Call(0)
+		return 0
+	}
+	if activeTray != nil && activeTray.taskbarCreatedMsg != 0 && uint32(msg) == activeTray.taskbarCreatedMsg {
+		// explorer 重启：托盘图标已被系统移除，重新注册（自愈）
+		if activeTray.added {
+			activeTray.remove()
+			activeTray.add()
+		}
 		return 0
 	}
 	r, _, _ := procDefWindowProcW.Call(hwnd, msg, wp, lp)
@@ -235,6 +261,40 @@ func (n *notifier) onTrayCallback(lParam uintptr) {
 	}
 }
 
+// swapIcon 切换托盘状态图标（绿/黄/红），只在变化时发 NIM_MODIFY。
+func (n *notifier) swapIcon(id uint32) {
+	if !n.added || n.iconID == id {
+		return
+	}
+	h := loadIconResource(uintptr(id), 0, 0)
+	if h == 0 {
+		return
+	}
+	nid := n.nid()
+	nid.UFlags = nifIcon
+	nid.HIcon = h
+	if _, _, _ = procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid))); n.hicon != 0 {
+		// LR_SHARED 的句柄不需要 DestroyIcon；旧句柄由系统管理
+	}
+	n.hicon = h
+	n.iconID = id
+}
+
+// iconForStatus 把探针状态映射为托盘图标：
+// 绿=防护运行中（在线或仅本地）；黄=降级（注册过但总控离线/学习中）；红=探针失联。
+func (n *notifier) iconForStatus(s statusSnapshot, alive bool) uint32 {
+	if !alive || n.token() == "" {
+		return iconIDDown
+	}
+	if s.Online {
+		return iconIDOK
+	}
+	if s.Enrolled {
+		return iconIDWarn
+	}
+	return iconIDOK
+}
+
 func (n *notifier) popupMenu() {
 	menu, _, _ := procCreatePopupMenu.Call()
 	if menu == 0 {
@@ -248,6 +308,10 @@ func (n *notifier) popupMenu() {
 		}
 		procAppendMenuW.Call(menu, flags, id, uintptr(unsafe.Pointer(utf16(text))))
 	}
+	// 灰项只作状态展示，不可点击（MF_GRAYED 时 TrackPopupMenu 不返回它）
+	appendGray := func(text string) {
+		procAppendMenuW.Call(menu, uintptr(mfString|mfGrayed), 0, uintptr(unsafe.Pointer(utf16(text))))
+	}
 	appendItem(menuOpenPanel, "打开面板", false)
 	appendItem(menuScan, "立即扫描", false)
 	// 探针没在跑才给"启动探针"入口（健康探测 800ms，菜单弹出前的一次性成本）
@@ -255,8 +319,16 @@ func (n *notifier) popupMenu() {
 		appendItem(menuStartAgent, "启动探针", false)
 	}
 	procAppendMenuW.Call(menu, mfSeparator, 0, 0)
+	// 服务状态感知：运行中显示灰项；已停止给启动入口；未安装给安装入口
+	switch st := serviceState("ZEDRAgent"); {
+	case st == 4: // SERVICE_RUNNING
+		appendGray("探针服务：运行中")
+	case st > 0: // 已安装但停止
+		appendItem(menuStartSvc, "启动探针服务（需管理员）", false)
+	default: // -1 = 未安装（或 SCM 不可查）
+		appendItem(menuInstallSvc, "安装探针服务（开机自启，需管理员）", false)
+	}
 	appendItem(menuAutostart, "登录时自动启动托盘", autostartEnabled())
-	appendItem(menuInstallSvc, "安装探针服务（开机自启，需管理员）", false)
 	procAppendMenuW.Call(menu, mfSeparator, 0, 0)
 	appendItem(menuQuit, "退出托盘（探针继续运行）", false)
 
@@ -273,6 +345,9 @@ func (n *notifier) popupMenu() {
 		_ = launchAgent()
 	case menuAutostart:
 		_ = setAutostart(!autostartEnabled())
+	case menuStartSvc:
+		// 已安装但停止：sc start 提权启动（与 -install 同一条 UAC 通道）
+		_ = runElevated("sc.exe", "start ZEDRAgent")
 	case menuInstallSvc:
 		if agentPath, err := siblingExe("zedr-agent.exe"); err == nil {
 			_ = runElevated(agentPath, "-install")
@@ -329,29 +404,37 @@ func (n *notifier) refreshToken() {
 
 // ---- 轮询 ---------------------------------------------------------------
 
-// pollStatus 每 5 秒读一次探针状态，映射成一句人话放进托盘提示。
+// pollStatus 每 5 秒读一次探针状态：tooltip 换成一句人话，图标换三态。
 func (n *notifier) pollStatus() {
 	lastText := ""
 	for {
 		time.Sleep(5 * time.Second)
 		n.refreshToken()
 		text := "Z-EDR · 探针未运行（托盘菜单可启动）"
-		if n.token() == "" {
-			text = "Z-EDR · 探针未运行（托盘菜单可启动）"
-		} else if s, ok := n.fetchStatus(); ok {
-			switch {
-			case s.Online:
-				text = "Z-EDR · 防护运行中（已连接总控）"
-			case s.Enrolled:
-				text = "Z-EDR · 总控离线，本机防护继续"
-			default:
-				text = "Z-EDR · 本机防护运行中（未配置总控）"
+		alive := n.token() != ""
+		var snap statusSnapshot
+		if alive {
+			var ok bool
+			snap, ok = n.fetchStatus()
+			alive = ok
+			if alive {
+				switch {
+				case snap.Online:
+					text = "Z-EDR · 防护运行中（已连接总控）"
+				case snap.Enrolled:
+					text = "Z-EDR · 总控离线，本机防护继续"
+				default:
+					text = "Z-EDR · 本机防护运行中（未配置总控）"
+				}
+			} else {
+				text = "Z-EDR · 探针未响应"
 			}
 		}
 		if text != lastText {
 			n.setTip(text)
 			lastText = text
 		}
+		n.swapIcon(n.iconForStatus(snap, alive))
 	}
 }
 
@@ -373,7 +456,7 @@ func (n *notifier) pollAlerts() {
 			ProcessName string `json:"process_name"`
 		}
 		client := apiHTTPClient()
-		resp, err := client.Get(strings.TrimRight(n.url, "/") + "/api/local/alerts?limit=10")
+		resp, err := client.Get(strings.TrimRight(n.url, "/") + "/api/local/alerts?limit=30")
 		if err != nil {
 			continue
 		}

@@ -18,6 +18,7 @@ var (
 	moddwmapi   = windows.NewLazySystemDLL("dwmapi.dll")
 	modgdi32    = windows.NewLazySystemDLL("gdi32.dll")
 	modkernel32 = windows.NewLazySystemDLL("kernel32.dll")
+	modadvapi32 = windows.NewLazySystemDLL("advapi32.dll")
 
 	procRegisterClassExW        = moduser32.NewProc("RegisterClassExW")
 	procCreateWindowExW         = moduser32.NewProc("CreateWindowExW")
@@ -39,6 +40,7 @@ var (
 	procSendMessageW            = moduser32.NewProc("SendMessageW")
 	procPostMessageW            = moduser32.NewProc("PostMessageW")
 	procShellNotifyIconW        = modshell32.NewProc("Shell_NotifyIconW")
+	procRegisterWindowMessageW  = moduser32.NewProc("RegisterWindowMessageW")
 	procCreatePopupMenu         = moduser32.NewProc("CreatePopupMenu")
 	procAppendMenuW             = moduser32.NewProc("AppendMenuW")
 	procTrackPopupMenuEx        = moduser32.NewProc("TrackPopupMenuEx")
@@ -49,6 +51,10 @@ var (
 	procSystemParametersInfoW   = moduser32.NewProc("SystemParametersInfoW")
 	procSetWindowPos            = moduser32.NewProc("SetWindowPos")
 	procDwmSetWindowAttribute   = moddwmapi.NewProc("DwmSetWindowAttribute")
+	procOpenSCManagerW          = modadvapi32.NewProc("OpenSCManagerW")
+	procOpenServiceW            = modadvapi32.NewProc("OpenServiceW")
+	procQueryServiceStatus      = modadvapi32.NewProc("QueryServiceStatus")
+	procCloseServiceHandle      = modadvapi32.NewProc("CloseServiceHandle")
 	procGetModuleHandleExW      = modkernel32.NewProc("GetModuleHandleExW")
 )
 
@@ -96,6 +102,12 @@ const (
 	nifTip                        = 0x04
 	nifInfo                       = 0x10
 	notifyIconVersion             = 3
+	// NIN_BALLOONUSERCLICK：气球被用户点击（v3 仍走回调 lParam）
+	ninBalloonUserClick           = 0x0405 // WM_USER + 5
+	// 托盘图标三态（资源 ID，见 cmd/desktop/winres/winres.json）
+	iconIDOK   = 1 // 绿勾——防护运行中
+	iconIDWarn = 2 // 黄叹号——降级（总控离线/未注册）
+	iconIDDown = 3 // 红叉——探针失联
 	wmTrayCallback                = wmUser + 1
 	mfString                      = 0x00000000
 	mfSeparator                   = 0x00000800
@@ -216,4 +228,54 @@ func tryRoundWin11Corners(hwnd uintptr) {
 	// 深色标题栏（有边框模式下标题栏跟随 Carbon 深色，不刺眼）
 	dark := uint32(1)
 	_, _, _ = procDwmSetWindowAttribute.Call(hwnd, dwmwaUseImmersiveDarkMode, uintptr(unsafe.Pointer(&dark)), 4)
+}
+
+// registerTaskbarMessage 注册 explorer 广播的重建消息。
+// explorer.exe 崩溃/重启后任务栏重建，所有托盘图标都会被系统移除，
+// 收到该消息必须重新 Shell_NotifyIcon——不处理 = 图标永久消失。
+func registerTaskbarMessage() uint32 {
+	r, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(utf16("TaskbarCreated"))))
+	return uint32(r)
+}
+
+// serviceState 查询 Windows 服务的运行状态；服务不存在返回 -1。
+// 供托盘菜单感知"探针服务"是否已安装/运行（服务名与 agent -install 一致）。
+func serviceState(name string) int32 {
+	const (
+		scManagerConnect    = 0x0001
+		serviceQueryStatus  = 0x0004
+		serviceRunning      = 0x4
+		serviceStopPending  = 0x3
+		serviceStartPending = 0x2
+		serviceStopped      = 0x1
+	)
+	type serviceStatus struct {
+		ServiceType     uint32
+		CurrentState    uint32
+		Controls        uint32
+		Win32ExitCode   uint32
+		ServiceExitCode uint32
+		CheckPoint      uint32
+		WaitHint        uint32
+	}
+	mgr, _, _ := procOpenSCManagerW.Call(0, 0, scManagerConnect)
+	if mgr == 0 {
+		return -1
+	}
+	defer procCloseServiceHandle.Call(mgr)
+	svc, _, _ := procOpenServiceW.Call(mgr, uintptr(unsafe.Pointer(utf16(name))), serviceQueryStatus)
+	if svc == 0 {
+		return -1
+	}
+	defer procCloseServiceHandle.Call(svc)
+	var ss serviceStatus
+	r, _, _ := procQueryServiceStatus.Call(svc, uintptr(unsafe.Pointer(&ss)))
+	if r == 0 {
+		return -1
+	}
+	switch ss.CurrentState {
+	case serviceRunning, serviceStopPending, serviceStartPending:
+		return int32(ss.CurrentState)
+	}
+	return int32(serviceStopped)
 }
