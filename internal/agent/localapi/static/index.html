@@ -108,6 +108,7 @@
         <span class="page-sub" id="pageSub">本机安全状态</span>
       </div>
       <div class="topbar-right">
+        <div class="win-controls" id="winControls" hidden></div>
         <div class="host-chip" id="hostChip" hidden></div>
         <div class="freshness" title="数据新鲜度">
           <span class="live-dot" id="liveDot"></span>
@@ -129,6 +130,14 @@
 </div>
 
 <div id="overlayRoot"></div>
+<div class="rz rz-n" data-edge="top"></div>
+<div class="rz rz-s" data-edge="bottom"></div>
+<div class="rz rz-w" data-edge="left"></div>
+<div class="rz rz-e" data-edge="right"></div>
+<div class="rz rz-nw" data-edge="top-left"></div>
+<div class="rz rz-ne" data-edge="top-right"></div>
+<div class="rz rz-sw" data-edge="bottom-left"></div>
+<div class="rz rz-se" data-edge="bottom-right"></div>
 <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
 <div id="liveRegion" class="sr-only" aria-live="polite"></div>
 

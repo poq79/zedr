@@ -1103,3 +1103,41 @@ html.light .palette-scrim { background: rgba(0, 0, 0, .24); }
 /* 驻留行徽标 */
 .persist-flags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
 .persist-flags:empty { display: none; }
+
+/* ------------------------------------------------------------
+   无边框窗口宿主（zedr-ui）——浏览器直开时这些规则不生效
+   ------------------------------------------------------------ */
+.win-controls { display: flex; align-items: center; gap: 2px; margin-left: 6px; }
+.wbtn {
+  width: 30px; height: 26px; padding: 0;
+  border: 0; border-radius: 6px;
+  background: transparent; color: var(--faint);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background var(--speed-quick) var(--ease), color var(--speed-quick) var(--ease);
+}
+.wbtn:hover { background: var(--accent); color: var(--fg); }
+.wbtn svg { width: 13px; height: 13px; }
+.wbtn-close:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* 顶栏当标题栏：拖动交给 WebView2 的 app-region，交互控件排除 */
+body.frameless .topbar { -webkit-app-region: drag; app-region: drag; }
+body.frameless .topbar button,
+body.frameless .topbar input,
+body.frameless .topbar select,
+body.frameless .topbar .host-chip,
+body.frameless .topbar .win-controls {
+  -webkit-app-region: no-drag; app-region: no-drag;
+}
+
+/* 贴边缩放热区：7px 边缘 + 12px 角 */
+.rz { position: fixed; z-index: 250; display: none; }
+body.frameless .rz { display: block; }
+.rz-n { top: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
+.rz-s { bottom: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
+.rz-w { top: 12px; bottom: 12px; left: 0; width: 7px; cursor: ew-resize; }
+.rz-e { top: 12px; bottom: 12px; right: 0; width: 7px; cursor: ew-resize; }
+.rz-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.rz-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.rz-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.rz-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }

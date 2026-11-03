@@ -70,6 +70,10 @@ const ICONS = {
   network: '<rect x="9" y="3" width="6" height="5" rx="1"/><rect x="2" y="16" width="6" height="5" rx="1"/><rect x="16" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M5 16v-2h14v2"/>',
   terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/>',
   list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
+  winMin: '<path d="M5 12h14"/>',
+  winMax: '<rect x="5.5" y="5.5" width="13" height="13" rx="1.5"/>',
+  winRestore: '<rect x="4.5" y="8" width="11.5" height="11.5" rx="1.5"/><path d="M8.5 8V6a2 2 0 0 1 2-2H18a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-2"/>',
+  winClose: '<path d="M6 6l12 12M18 6L6 18"/>',
   layers: '<path d="m12 2 9 4.9-9 4.9L3 6.9 12 2Z"/><path d="m3 11.8 9 4.9 9-4.9"/><path d="m3 16.7 9 4.9 9-4.9"/>',
   zap: '<path d="M13 2 4.5 13H11l-1 9L19.5 11H13Z"/>',
   filter: '<path d="M3 5h18l-7 8v6l-4 2v-8Z"/>',
@@ -2433,6 +2437,19 @@ async function onClick(e) {
     case 'retry-privacy':
       refreshPrivacy();
       break;
+    case 'win-min':
+      window.zedrHostMinimize?.();
+      break;
+    case 'win-max': {
+      const z = await window.zedrHostMaximizeToggle?.();
+      renderWinControls(Boolean(z));
+      break;
+    }
+    case 'win-close':
+      // 关闭 = 面板进程退出：WebView2 内存随之释放；
+      // 托盘是独立常驻进程（Notifier），探针不受任何影响。
+      window.zedrHostClose?.();
+      break;
   }
 }
 
@@ -2741,7 +2758,43 @@ function errorHTML() {
 
 let pollTick = 0;
 
+// ---- 无边框窗口宿主集成 ------------------------------------------------
+// 桌面宿主（zedr-ui）通过 Bind 注入 zedrHost* 全局函数；浏览器直开时
+// 这些函数不存在，窗口控制按钮与贴边热区自动隐藏，页面行为不变。
+
+const HAS_WINDOW_HOST = typeof window.zedrHostMinimize === 'function';
+
+function renderWinControls(maximized = false) {
+  const box = $('#winControls');
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = `
+    <button class="wbtn" data-act="win-min" aria-label="最小化" title="最小化">${icon('winMin')}</button>
+    <button class="wbtn" data-act="win-max" aria-label="${maximized ? '还原' : '最大化'}" title="${maximized ? '还原' : '最大化'}">${icon(maximized ? 'winRestore' : 'winMax')}</button>
+    <button class="wbtn wbtn-close" data-act="win-close" aria-label="关闭" title="关闭面板（托盘与防护继续运行）">${icon('winClose')}</button>`;
+}
+
+function setupWindowHost() {
+  if (!HAS_WINDOW_HOST) return;
+  document.body.classList.add('frameless');
+  renderWinControls(false);
+  // 贴边缩放热区：mousedown 交给 Windows 的模态缩放循环
+  $$('.rz').forEach((zone) => {
+    zone.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      window.zedrHostResizeEdge?.(zone.dataset.edge);
+    });
+  });
+  // 双击顶栏切换最大化（app-region drag 区域内 dblclick 可能被拖动吞掉，尽力而为）
+  $('.topbar')?.addEventListener('dblclick', (e) => {
+    if (e.target.closest('button, input, select, a, .host-chip')) return;
+    window.zedrHostMaximizeToggle?.().then?.((z) => renderWinControls(Boolean(z)));
+  });
+}
+
 function boot() {
+  setupWindowHost();
   initTheme();
   state.route = routeFromHash();
 
