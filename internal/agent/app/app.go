@@ -65,8 +65,10 @@ type Agent struct {
 	fileDefense *ransom.Defense
 
 	// 行为检测健康度快照（scan 回调读，各写入方自管同步）
-	usnLagging   atomic.Bool
-	evtChannels  atomic.Int64
+	usnLagging  atomic.Bool
+	evtChannels atomic.Int64
+	// brute 是事件日志 4625 的滑动窗口聚合器（evtlogLoop 单 goroutine）
+	brute evtBruteAgg
 
 	// 网络行为检测（NW 规则族）：消费每轮连接表快照做滑动窗口聚合，
 	// 无独立线程与系统调用；nil = 开关关闭
@@ -309,6 +311,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	//（5min 周期轮询保留兜底，见 persistenceWatchLoop）
 	if a.cfg.RegWatch {
 		a.startRegWatch(ctx)
+	}
+
+	// 事件日志接入（E1）：轮询式只读订阅精选事件，游标增量
+	if a.cfg.EvtLog {
+		a.startEvtLog(ctx)
 	}
 
 	// 注册与规则同步在后台进行，不阻塞采集

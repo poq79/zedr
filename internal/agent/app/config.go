@@ -106,6 +106,11 @@ type Config struct {
 	// 加载期解析进 NetLateralPortList，非法值启动即报错。
 	NetLateralPorts    string
 	NetLateralPortList []uint16
+	// EvtLog 控制事件日志接入（E1）：轮询模式读取 System/Security/TSLSM
+	// 三通道的精选事件（服务安装/日志清空/登录失败/RDP 入站），游标增量。
+	// 只读订阅，不改任何审核策略——策略未开启的通道无事件（诚实边界，
+	// 见 DETECTION §3.6.3）。
+	EvtLog bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -151,6 +156,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.NetSweepIPs = l.Int("HG_AGENT_NET_SWEEP_IPS", 0)
 	c.NetLateralIPs = l.Int("HG_AGENT_NET_LATERAL_IPS", 0)
 	c.NetLateralPorts = l.Env("HG_AGENT_NET_LATERAL_PORTS", "")
+	c.EvtLog = l.Bool("HG_AGENT_EVTLOG", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
