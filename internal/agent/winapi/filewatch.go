@@ -205,6 +205,35 @@ func StartFileWatcher(dirs []string) (*FileWatcher, error) {
 // WatchedDirs 返回实际挂上监控的目录。
 func (w *FileWatcher) WatchedDirs() []string { return w.watched }
 
+// AddDir 动态追加监控目录（可移动介质到达时挂卷根目录用）。
+//
+// 线程纪律：handles/watched 的追加与 Close 的关闭都要持 w.mu——此前
+// Close 不持锁是因为目录集合启动后不变；动态追加后两者可能并发。
+// watchLoop 退出条件不变（closed 或句柄失效）；卷被拔出时句柄失效，
+// watchLoop 自动退出，调用方通过 WatchedDirs 对比感知并清理记录。
+func (w *FileWatcher) AddDir(dir string) error {
+	if w.closed.Load() {
+		return fmt.Errorf("filewatcher 已关闭")
+	}
+	h, err := openDirForWatch(dir)
+	if err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, d := range w.watched {
+		if strings.EqualFold(d, dir) {
+			_ = syscall.CloseHandle(h)
+			return fmt.Errorf("目录已在监控中: %s", dir)
+		}
+	}
+	w.handles = append(w.handles, h)
+	w.watched = append(w.watched, dir)
+	w.wg.Add(1)
+	go w.watchLoop(dir, h)
+	return nil
+}
+
 // Events 返回已处理的落地事件数。
 func (w *FileWatcher) Events() int64 { return w.events.Load() }
 
@@ -218,10 +247,13 @@ func (w *FileWatcher) Close() {
 		return
 	}
 	close(w.stop)
-	// 关闭句柄会让阻塞中的 ReadDirectoryChangesW 立即返回
+	// 关闭句柄会让阻塞中的 ReadDirectoryChangesW 立即返回。
+	// 持 w.mu 与 AddDir 的追加互斥：动态追加（USB 到达）可能正在进行。
+	w.mu.Lock()
 	for _, h := range w.handles {
 		_ = syscall.CloseHandle(h)
 	}
+	w.mu.Unlock()
 	w.wg.Wait()
 }
 

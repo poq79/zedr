@@ -25,19 +25,19 @@ type Config struct {
 	Version     string
 
 	// Collector 选择进程采集引擎：auto / ntquery / toolhelp
-	Collector     string
-	ScanInterval  time.Duration
-	FullRescan    time.Duration
-	MaxHashMB     int64
-	OfflineQueue  int
-	KillEnabled   bool
+	Collector    string
+	ScanInterval time.Duration
+	FullRescan   time.Duration
+	MaxHashMB    int64
+	OfflineQueue int
+	KillEnabled  bool
 	// QuarantineEnabled 控制是否执行文件隔离指令。
 	// 与 KillEnabled 同一套双层开关先例：服务端、终端都要显式打开，
 	// 隔离动作才会真正执行——现场排障时可以只关终端侧。
 	QuarantineEnabled bool
-	BaselineLearn bool
-	Warmup        time.Duration
-	HeartbeatSec  int
+	BaselineLearn     bool
+	Warmup            time.Duration
+	HeartbeatSec      int
 
 	// PersistCheck 是自启动项（持久化）扫描间隔。
 	// 比进程扫描慢一个数量级即可——自启动项的变化频率远低于进程创建。
@@ -111,6 +111,12 @@ type Config struct {
 	// 只读订阅，不改任何审核策略——策略未开启的通道无事件（诚实边界，
 	// 见 DETECTION §3.6.3）。
 	EvtLog bool
+	// MemWatch 控制内存威胁巡检：周期性对"引擎有信号"的进程做地址空间
+	// 元数据扫描（私有可执行+PE 头 = 注入残留证据 T1055）。只读元数据 +
+	// 每区域 2 字节 MZ 探测；误报源（JIT/打包程序）与护栏见 DETECTION。
+	MemWatch         bool
+	UsbWatch         bool
+	MemWatchInterval time.Duration
 }
 
 // LoadConfig 读取并校验配置。
@@ -157,6 +163,9 @@ func LoadConfig(version string) (*Config, error) {
 	c.NetLateralIPs = l.Int("HG_AGENT_NET_LATERAL_IPS", 0)
 	c.NetLateralPorts = l.Env("HG_AGENT_NET_LATERAL_PORTS", "")
 	c.EvtLog = l.Bool("HG_AGENT_EVTLOG", true)
+	c.MemWatch = l.Bool("HG_AGENT_MEMWATCH", true)
+	c.MemWatchInterval = l.Duration("HG_AGENT_MEMWATCH_INTERVAL", 5*time.Minute)
+	c.UsbWatch = l.Bool("HG_AGENT_USBWATCH", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
@@ -171,6 +180,7 @@ func LoadConfig(version string) (*Config, error) {
 	l.Check(c.HeartbeatSec >= 5, "HG_AGENT_HEARTBEAT_SEC 至少 5 秒")
 	l.Check(c.PersistCheck >= 30*time.Second, "HG_AGENT_PERSIST_INTERVAL 至少 30s（枚举注册表本身有成本）")
 	l.Check(c.USNPollInterval >= 5*time.Second, "HG_AGENT_USN_POLL_INTERVAL 不能小于 5s（增量读取虽轻，也不必贴着内核刷）")
+	l.Check(c.MemWatchInterval >= time.Minute, "HG_AGENT_MEMWATCH_INTERVAL 不能小于 1m（巡检有真实扫描成本）")
 	l.Check(c.NetScanPorts >= 0 && c.NetScanPorts <= 1000, "HG_AGENT_NET_SCAN_PORTS 应在 0..1000（0=默认）")
 	l.Check(c.NetSweepIPs >= 0 && c.NetSweepIPs <= 1000, "HG_AGENT_NET_SWEEP_IPS 应在 0..1000（0=默认）")
 	l.Check(c.NetLateralIPs >= 0 && c.NetLateralIPs <= 1000, "HG_AGENT_NET_LATERAL_IPS 应在 0..1000（0=默认）")

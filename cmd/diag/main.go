@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"zedr/internal/agent/winapi"
 )
 
@@ -35,6 +37,8 @@ func main() {
 	usnProbe := flag.Bool("usn", false, "实测 USN Journal 断点补采（TEMP 落探针文件后回读）")
 	netburst := flag.String("netburst", "", "受控端口扫描模拟：host:端口数（如 203.0.113.9:16）。"+
 		"仅发 SYN 尝试不传数据，目标应为不可路由测试网段；配合 -hold 指定持续时间")
+	memTest := flag.Bool("memtest", false, "内存威胁巡检自测：在本进程内分配一块含 PE 头的私有可执行内存"+
+		"（ VirtualAlloc RWX + 写入 2 字节 MZ，不注入任何进程），供 MEM-1055 检测链路端到端验证；配合 -hold")
 	flag.Parse()
 
 	fmt.Println("=== Z-EDR 采集层自检 ===")
@@ -163,16 +167,53 @@ func main() {
 		testETW(*etwWatch)
 	}
 
-	// -netburst 与 -hold 二选一占用进程生命周期：前者自己按 hold 时长
-	// 跑连接尝试，后者才是纯保活
+	// -netburst/-memtest 与 -hold 二选一占用进程生命周期
 	if *netburst != "" {
 		netBurst(*netburst, *hold)
+	} else if *memTest {
+		memTestSelf(*hold)
 	} else if *hold > 0 {
 		fmt.Printf("按 -hold 参数保持存活 %s（供检测链路验证使用）\n", *hold)
 		time.Sleep(*hold)
 	}
 
 	fmt.Println("\n自检完成。")
+}
+
+// memTestSelf 在**本进程内**分配一块含 PE 头的私有可执行内存：
+// VirtualAlloc(MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE) 64KB +
+// 写入 2 字节 "MZ"。不注入任何其他进程、不含任何可执行逻辑——
+// 这正是内存威胁巡检（MEM-1055）要找的形态，作为端到端验证的
+// 自造样本。配合 -hold 让进程活过巡检周期。
+func memTestSelf(hold time.Duration) {
+	if hold <= 0 {
+		hold = 40 * time.Second
+	}
+	const allocSize = 64 << 10
+	buf, err := windows.VirtualAlloc(0, allocSize,
+		windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_EXECUTE_READWRITE)
+	if err != nil {
+		fmt.Printf("!! VirtualAlloc 失败: %v\n", err)
+		return
+	}
+	defer windows.VirtualFree(buf, 0, windows.MEM_RELEASE)
+	// 写 PE 头标志：只写 2 字节，无任何可执行逻辑。
+	// 经 WriteProcessMemory（本进程伪句柄）写入——buf 保持 uintptr 直传，
+	// 避免 uintptr→unsafe.Pointer 的 vet misuse 告警。
+	var mz [2]byte
+	mz[0], mz[1] = 'M', 'Z'
+	var written uintptr
+	if err := windows.WriteProcessMemory(windows.CurrentProcess(), buf,
+		&mz[0], 2, &written); err != nil {
+		fmt.Printf("!! WriteProcessMemory 失败: %v\n", err)
+		return
+	}
+
+	fmt.Printf("\n--- 内存巡检自测样本已就位 ---\n")
+	fmt.Printf("本进程 PID=%d，私有可执行区域 base=0x%x size=%dKB 起始=MZ\n",
+		os.Getpid(), buf, allocSize/1024)
+	fmt.Printf("保持 %s 供巡检周期（默认 5m）捕获；可用 HG_AGENT_MEMWATCH_INTERVAL=1m 加速验证\n", hold)
+	time.Sleep(hold)
 }
 
 // netBurst 受控模拟端口扫描行为：对目标 host 发起 count 个 SYN 连接尝试

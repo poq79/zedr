@@ -7,20 +7,20 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sync/atomic"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"zedr/internal/agent/allow"
 	"zedr/internal/agent/baseline"
 	"zedr/internal/agent/collect"
-	"zedr/internal/agent/hygiene"
 	"zedr/internal/agent/detect"
 	"zedr/internal/agent/enrich"
+	"zedr/internal/agent/hygiene"
 	"zedr/internal/agent/inventory"
 	"zedr/internal/agent/liveapi"
 	"zedr/internal/agent/localapi"
@@ -32,10 +32,10 @@ import (
 	"zedr/internal/agent/tunnel"
 	"zedr/internal/agent/uplink"
 	"zedr/internal/agent/winapi"
+	"zedr/internal/model"
 	"zedr/internal/platform/httpx"
 	"zedr/internal/platform/idgen"
 	"zedr/internal/platform/logx"
-	"zedr/internal/model"
 )
 
 // Agent 是探针实例。
@@ -69,6 +69,11 @@ type Agent struct {
 	evtChannels atomic.Int64
 	// brute 是事件日志 4625 的滑动窗口聚合器（evtlogLoop 单 goroutine）
 	brute evtBruteAgg
+	// memwatch 计数（memwatchLoop 单 goroutine 写，scan 回调读）
+	memScans atomic.Int64
+	memHits  atomic.Int64
+	// usb 在位可移动卷数（usbwatchLoop 单 goroutine 写）
+	usbVolumes atomic.Int64
 
 	// 网络行为检测（NW 规则族）：消费每轮连接表快照做滑动窗口聚合，
 	// 无独立线程与系统调用；nil = 开关关闭
@@ -194,12 +199,12 @@ func New(version string) (*Agent, error) {
 	a := &Agent{
 		cfg: cfg, log: log, store: store,
 		coll: coll, enr: enr, base: base, alw: alw, eng: eng, up: up,
-		pm:      pm,
-		auditor: auditor,
-		qtn: qtn,
-		cpu:       &winapi.CPUSampler{},
-		startedAt: time.Now(),
-		scanReq:   make(chan bool, 1),
+		pm:         pm,
+		auditor:    auditor,
+		qtn:        qtn,
+		cpu:        &winapi.CPUSampler{},
+		startedAt:  time.Now(),
+		scanReq:    make(chan bool, 1),
 		trustCache: map[trustKey]trustEntry{},
 	}
 	// 网络行为检测：构造成本为零（纯内存结构），关闭开关时不创建。
@@ -318,6 +323,16 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.startEvtLog(ctx)
 	}
 
+	// 内存威胁巡检：周期性对引擎有信号的进程做地址空间元数据扫描
+	if a.cfg.MemWatch {
+		go a.memwatchLoop(ctx)
+	}
+
+	// 可移动介质监控：接入告警 + 新卷动态挂落地监控（摆渡链 T1091）
+	if a.cfg.UsbWatch {
+		go a.usbwatchLoop(ctx)
+	}
+
 	// 注册与规则同步在后台进行，不阻塞采集
 	go a.enrollLoop(ctx)
 	go a.scanLoop(ctx)
@@ -338,27 +353,27 @@ func (a *Agent) Run(ctx context.Context) error {
 			ServerURL: a.cfg.ServerURL,
 			Creds:     a.up.TunnelCreds,
 			Handler: liveapi.New(liveapi.Deps{
-					Version:   a.cfg.Version,
-					Hostname:  winapi.Hostname(),
-					StartTime: a.startedAt,
-					Procs:     a.Procs,
-					Modules:   a.coll.Modules,
-					Snapshot: func() []state.ProcRow {
-						// procinfo 需要全量快照做 PID 定位与 netstat join；
-						// 2000 与 localapi/processes 的钳制口径一致
-						return a.store.Procs(2000)
-					},
-					Runtime: a.store.Runtime,
-					Netstat: func() []winapi.NetRow {
-						// GetNetstat 带错误返回而 Deps 收敛为行切片：
-						// 失败时记日志返回空表，让端点保持 200 语义
-						rows, err := winapi.GetNetstat()
-						if err != nil {
-							a.log.Warn("netstat_query_failed", "err", err)
-						}
-						return rows
-					},
-				}),
+				Version:   a.cfg.Version,
+				Hostname:  winapi.Hostname(),
+				StartTime: a.startedAt,
+				Procs:     a.Procs,
+				Modules:   a.coll.Modules,
+				Snapshot: func() []state.ProcRow {
+					// procinfo 需要全量快照做 PID 定位与 netstat join；
+					// 2000 与 localapi/processes 的钳制口径一致
+					return a.store.Procs(2000)
+				},
+				Runtime: a.store.Runtime,
+				Netstat: func() []winapi.NetRow {
+					// GetNetstat 带错误返回而 Deps 收敛为行切片：
+					// 失败时记日志返回空表，让端点保持 200 语义
+					rows, err := winapi.GetNetstat()
+					if err != nil {
+						a.log.Warn("netstat_query_failed", "err", err)
+					}
+					return rows
+				},
+			}),
 		})
 		go mgr.Start(ctx)
 		defer mgr.Stop()
@@ -540,8 +555,8 @@ func (a *Agent) syncIOCs(ctx context.Context, force bool) {
 // saveIOCsCache 把已验签的 IOC 表落盘，重启后无需等首轮拉取即生效。
 func (a *Agent) saveIOCsCache(bundle *model.IOCBundle) {
 	type cache struct {
-		Version int            `json:"version"`
-		SavedAt time.Time      `json:"saved_at"`
+		Version int               `json:"version"`
+		SavedAt time.Time         `json:"saved_at"`
 		IOCs    map[string]string `json:"iocs"`
 	}
 	m := make(map[string]string, len(bundle.IOCs))
@@ -587,8 +602,8 @@ func (a *Agent) loadIOCsCache() {
 // 攻击者真正活动时进程创建是连续的，退避不会持续生效；
 // 而空闲时段（夜间、无人值守）CPU 占用可以降到四分之一以下。
 const (
-	adaptiveQuietRounds = 6                // 连续多少轮无新进程视为"安静"
-	adaptiveMaxInterval = 6 * time.Second  // 退避上限
+	adaptiveQuietRounds = 6               // 连续多少轮无新进程视为"安静"
+	adaptiveMaxInterval = 6 * time.Second // 退避上限
 )
 
 func (a *Agent) scanLoop(ctx context.Context) {
@@ -778,6 +793,9 @@ func (a *Agent) scan(deep bool) int {
 			ri.FileDefDropped = a.fileDefense.Dropped()
 		}
 		ri.EvtLogChannels = int(a.evtChannels.Load())
+		ri.MemWatchScans = a.memScans.Load()
+		ri.MemWatchHits = a.memHits.Load()
+		ri.UsbVolumes = int(a.usbVolumes.Load())
 	})
 
 	return len(newProcs)
@@ -991,12 +1009,12 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			ri := a.store.Runtime()
 			req := model.HeartbeatRequest{
 				AgentTime:  time.Now(),
-				Hostname:    ri.Hostname,
-				Version:     a.cfg.Version,
-				ProcCount:   ri.ProcCount,
-				CPUPercent:  ri.CPUPercent,
-				MemMB:       ri.MemMB,
-				UptimeSec:   int64(time.Since(a.startedAt).Seconds()),
+				Hostname:   ri.Hostname,
+				Version:    a.cfg.Version,
+				ProcCount:  ri.ProcCount,
+				CPUPercent: ri.CPUPercent,
+				MemMB:      ri.MemMB,
+				UptimeSec:  int64(time.Since(a.startedAt).Seconds()),
 				// 上报终端实际应用的版本（0 = 尚未成功拉取）。
 				// 规则包版本由 uplink 在验签/版本单调检查通过后记录，
 				// 服务端据此判断灰度是否真正落地。
@@ -1008,7 +1026,7 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 					Whitelisted:   ri.Stats.Whitelisted,
 					AvgLatencyMs:  ri.Stats.AvgLatencyMs,
 				},
-				Samples: ri.Stats.Scanned,
+				Samples:      ri.Stats.Scanned,
 				QueueDropped: a.up.Dropped(),
 			}
 			hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1139,7 +1157,7 @@ func (a *Agent) handleQuarantineFile(c model.Command) model.CommandResult {
 		return res
 	}
 	var payload struct {
-		Path  string `json:"path"`
+		Path   string `json:"path"`
 		Reason string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(c.Payload), &payload); err != nil {
@@ -1297,9 +1315,9 @@ func (a *Agent) inventoryLoop(ctx context.Context) {
 	// 没有稳定的条目主键（defender 的排除列表作为整节 changed 处理），
 	// 不做条目级 diff。
 	keyFns := map[string]func(map[string]any) string{
-		"services":  inventoryFieldKey("name"),
-		"tasks":     inventoryFieldKey("path"),
-		"adapters":  inventoryFieldKey("name"),
+		"services": inventoryFieldKey("name"),
+		"tasks":    inventoryFieldKey("path"),
+		"adapters": inventoryFieldKey("name"),
 		// listeners 的 payload 是 {"tcp":[...],"udp":[...]}，Diff 会合并
 		// 两个表并给条目注入列表名作为 proto 字段，key 形如 "tcp|8080"。
 		"listeners": inventoryFieldKey("proto", "port"),
@@ -1709,7 +1727,6 @@ func (a *Agent) PersistAudit() []hygiene.PersistAudit {
 	}
 	return a.auditor.Audit(baseline)
 }
-
 
 // ---------------------------------------------------------------- 服务端策略
 

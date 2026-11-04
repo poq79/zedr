@@ -58,32 +58,32 @@ type Alert struct {
 
 // RuntimeInfo 是探针自身运行状态。
 type RuntimeInfo struct {
-	Hostname     string    `json:"hostname"`
-	OSVersion    string    `json:"os_version"`
-	AgentVersion string    `json:"agent_version"`
-	AgentID      string    `json:"agent_id"`
-	Enrolled     bool      `json:"enrolled"`
-	ServerURL    string    `json:"server_url"`
-	Online       bool      `json:"online"`
+	Hostname      string    `json:"hostname"`
+	OSVersion     string    `json:"os_version"`
+	AgentVersion  string    `json:"agent_version"`
+	AgentID       string    `json:"agent_id"`
+	Enrolled      bool      `json:"enrolled"`
+	ServerURL     string    `json:"server_url"`
+	Online        bool      `json:"online"`
 	LastHeartbeat time.Time `json:"last_heartbeat"`
-	UptimeSec    int64     `json:"uptime_sec"`
-	ProcCount    int       `json:"proc_count"`
-	CPUPercent   float64   `json:"cpu_percent"`
-	MemMB        float64   `json:"mem_mb"`
-	RuleCount    int       `json:"rule_count"`
+	UptimeSec     int64     `json:"uptime_sec"`
+	ProcCount     int       `json:"proc_count"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemMB         float64   `json:"mem_mb"`
+	RuleCount     int       `json:"rule_count"`
 	// RuleVersion 是终端实际应用的规则包版本（0=尚未成功拉取）。
 	// 与心跳上报同源，本地 UI 和服务端看到的是同一个事实。
-	RuleVersion  int       `json:"rule_version"`
-	BaselineSize int64     `json:"baseline_size"`
-	PendingAlerts int      `json:"pending_alerts"`
-	DroppedAlerts int64    `json:"dropped_alerts"`
-	ScanInterval string    `json:"scan_interval"`
-	Collector    string    `json:"collector"`
-	LastScanAt   time.Time `json:"last_scan_at"`
-	Warmup       bool      `json:"warmup"`
-	WarmupUntil  time.Time `json:"warmup_until"`
-	Stats        detect.Stats `json:"stats"`
-	Whitelist    map[string]int `json:"whitelist"`
+	RuleVersion   int            `json:"rule_version"`
+	BaselineSize  int64          `json:"baseline_size"`
+	PendingAlerts int            `json:"pending_alerts"`
+	DroppedAlerts int64          `json:"dropped_alerts"`
+	ScanInterval  string         `json:"scan_interval"`
+	Collector     string         `json:"collector"`
+	LastScanAt    time.Time      `json:"last_scan_at"`
+	Warmup        bool           `json:"warmup"`
+	WarmupUntil   time.Time      `json:"warmup_until"`
+	Stats         detect.Stats   `json:"stats"`
+	Whitelist     map[string]int `json:"whitelist"`
 
 	// 行为采集层状态：文件落地监控与持久化项监控。
 	FileWatch    bool  `json:"file_watch"`
@@ -108,6 +108,10 @@ type RuntimeInfo struct {
 	CanaryRebuilt     int64 `json:"canary_rebuilt"`
 	FileDefDropped    int64 `json:"filedef_dropped"`
 	EvtLogChannels    int   `json:"evtlog_channels"`
+	UsbVolumes        int   `json:"usb_volumes"`
+	// MemWatch* 是内存威胁巡检的轮次计数（0=未启用或尚无轮次）
+	MemWatchScans int64 `json:"memwatch_scans"`
+	MemWatchHits  int64 `json:"memwatch_hits"`
 
 	// 下发数据的落地情况：IOC 表与资产清单是否真的在本探针生效。
 	// 没有这两项，"服务端下发了"和"终端在用"之间隔着一次静默失败
