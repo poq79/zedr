@@ -37,6 +37,8 @@ func main() {
 	usnProbe := flag.Bool("usn", false, "实测 USN Journal 断点补采（TEMP 落探针文件后回读）")
 	netburst := flag.String("netburst", "", "受控端口扫描模拟：host:端口数（如 203.0.113.9:16）。"+
 		"仅发 SYN 尝试不传数据，目标应为不可路由测试网段；配合 -hold 指定持续时间")
+	etw2Watch := flag.Duration("etw2", 0, "ETW 消费端对照实验（0xrawsec 骨架；需 -tags etw2 编译）")
+	etw2Attach := flag.String("etw2attach", "", "消费者 attach 到已存在会话（决定性判别实验；配合 logman）")
 	memTest := flag.Bool("memtest", false, "内存威胁巡检自测：在本进程内分配一块含 PE 头的私有可执行内存"+
 		"（ VirtualAlloc RWX + 写入 2 字节 MZ，不注入任何进程），供 MEM-1055 检测链路端到端验证；配合 -hold")
 	flag.Parse()
@@ -168,7 +170,11 @@ func main() {
 	}
 
 	// -netburst/-memtest 与 -hold 二选一占用进程生命周期
-	if *netburst != "" {
+	if *etw2Attach != "" {
+		testETW2Attach(*etw2Attach, 30*time.Second)
+	} else if *etw2Watch > 0 {
+		testETW2(*etw2Watch)
+	} else if *netburst != "" {
 		netBurst(*netburst, *hold)
 	} else if *memTest {
 		memTestSelf(*hold)
