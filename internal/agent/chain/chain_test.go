@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"math/rand"
 	"strings"
 	"sync"
 	"testing"
@@ -372,5 +373,159 @@ func TestNilEngineSafe(t *testing.T) {
 	e.Feed(Stage{Kind: KindConn, PID: 1}) // 不应 panic
 	if e.Stats().Fired != 0 {
 		t.Fatalf("nil 引擎 Stats 应为零值")
+	}
+}
+
+// ---------------------------------------------------------------- 补强测试
+
+func TestStageTimeSkewTolerance(t *testing.T) {
+	e, fs, now := newTestEngine(nil)
+	// evtlog 事件时间可能略早于消费时刻（30s 轮询 + 采样粒度）——
+	// 链内允许 ≤2min 的倒挂
+	e.Feed(Stage{Kind: KindBrute, When: *now, FailCount: 14, SrcIP: "198.51.100.7"})
+	e.Feed(Stage{Kind: KindLogonOK, When: now.Add(-90 * time.Second), SrcIP: "198.51.100.7"})
+	e.Feed(Stage{Kind: KindProc, PID: 777, StartTime: time.Unix(2000, 0),
+		Path: `C:\temp\t.exe`, Dropped: true, Signed: false, When: *now})
+	if findingsCount(fs) != 1 {
+		t.Fatalf("≤2min 事件时间倒挂应能推进链")
+	}
+}
+
+func TestStageSkewBeyondToleranceNoFire(t *testing.T) {
+	e, fs, now := newTestEngine(nil)
+	e.Feed(Stage{Kind: KindBrute, When: *now, FailCount: 14, SrcIP: "198.51.100.7"})
+	// 倒挂超过 2min 容忍：视为乱序噪声，不推进
+	e.Feed(Stage{Kind: KindLogonOK, When: now.Add(-5 * time.Minute), SrcIP: "198.51.100.7"})
+	e.Feed(Stage{Kind: KindProc, PID: 777, StartTime: time.Unix(2000, 0),
+		Path: `C:\temp\t.exe`, Dropped: true, Signed: false, When: *now})
+	if findingsCount(fs) != 0 {
+		t.Fatalf("超容忍倒挂不应成链")
+	}
+}
+
+func TestBruteProcExactlyAt3minBoundary(t *testing.T) {
+	e, fs, now := newTestEngine(nil)
+	e.Feed(Stage{Kind: KindBrute, When: *now, FailCount: 14, SrcIP: "1.2.3.4"})
+	e.Feed(Stage{Kind: KindLogonOK, When: *now, SrcIP: "1.2.3.4"})
+	advance(now, 3*time.Minute) // 恰好 3min：边界内（<=）应成链
+	e.Feed(Stage{Kind: KindProc, PID: 777, StartTime: time.Unix(2000, 0),
+		Path: `C:\temp\t.exe`, Dropped: true, Signed: false, When: *now})
+	if findingsCount(fs) != 1 {
+		t.Fatalf("恰好 3min 边界应成链")
+	}
+}
+
+func TestRefFingerprintPassthrough(t *testing.T) {
+	e, fs, now := newTestEngine(nil)
+	e.Feed(Stage{Kind: KindMem, PID: 900, Name: "p.exe", When: *now,
+		RefRuleID: "MEM-1055", RefScore: 60, RefFingerprint: "memwatch:900:1000"})
+	e.Feed(Stage{Kind: KindConn, PID: 900, PeerIP: "203.0.113.9", When: *now})
+	f := lastFinding(t, fs)
+	if f.Stages[0].RefFingerprint != "memwatch:900:1000" {
+		t.Fatalf("阶段指纹未透传: %q", f.Stages[0].RefFingerprint)
+	}
+}
+
+func TestStatsByRule(t *testing.T) {
+	e, _, now := newTestEngine(nil)
+	// DROP-EXEC-C2 一条
+	e.Feed(Stage{Kind: KindProc, PID: 1, StartTime: time.Unix(1000, 0),
+		Path: `C:\temp\a.exe`, Dropped: true, Signed: false, When: *now})
+	e.Feed(Stage{Kind: KindConn, PID: 1, StartTime: time.Unix(1000, 0),
+		PeerIP: "203.0.113.9", When: *now})
+	// INJECT-OUT 两条（不同 PID）
+	for _, pid := range []uint32{2, 3} {
+		e.Feed(Stage{Kind: KindMem, PID: pid, When: *now})
+		e.Feed(Stage{Kind: KindConn, PID: pid, PeerIP: "203.0.113.9", When: *now})
+	}
+	st := e.Stats()
+	if st.ByRule["CHAIN-DROP-EXEC-C2"] != 1 || st.ByRule["CHAIN-INJECT-OUT"] != 2 {
+		t.Fatalf("ByRule = %v", st.ByRule)
+	}
+	if st.Fired != 3 {
+		t.Fatalf("Fired = %d", st.Fired)
+	}
+}
+
+func TestAllowPersistItemPath(t *testing.T) {
+	alw := allow.New("")
+	if err := alw.AddLocal(allow.TypePath, `c:\tools\kept.exe`, "test"); err != nil {
+		t.Fatal(err)
+	}
+	e, fs, now := newTestEngine(alw)
+	// 持久化项指向被信任路径：链首直接被拦
+	e.Feed(Stage{Kind: KindPersist, When: *now, ItemKind: "run", ItemName: "K",
+		ItemPath: `C:\Tools\Kept.EXE`})
+	e.Feed(Stage{Kind: KindProc, PID: 5, StartTime: time.Unix(1000, 0),
+		Path: `C:\tools\kept.exe`, Signed: false, When: *now})
+	if findingsCount(fs) != 0 {
+		t.Fatalf("白名单持久化项不应成链")
+	}
+}
+
+// TestPropertyRandomStreams 用固定种子的随机阶段流做不变量校验：
+// 不 panic、活跃链 ≤ 上限、完成的链阶段数与叙事行一一对应、MITRE 非空。
+// 这是"生产可用"的最低韧性门槛——任何后续改动破坏了状态机不变量，
+// 这里先炸。
+func TestPropertyRandomStreams(t *testing.T) {
+	rng := rand.New(rand.NewSource(20261106))
+	kinds := []string{KindProc, KindConn, KindNet, KindBrute, KindLogonOK, KindSvcInst, KindPersist, KindMem}
+
+	// 第一段：全种类乱序大流（±1h）——只校验不 panic 与容量不变量
+	e := New(Options{Now: func() time.Time { return time.Unix(2000, 0) }, OnFinding: func(Finding) {}})
+	for i := 0; i < 3000; i++ {
+		e.Feed(Stage{
+			Kind: kinds[rng.Intn(len(kinds))],
+			When: time.Unix(2000, 0).Add(time.Duration(rng.Intn(7200)-3600) * time.Second),
+			PID:  uint32(rng.Intn(64) + 1),
+			Name: "p.exe", Path: `C:\temp\p.exe`,
+			Dropped: rng.Intn(2) == 0, Signed: rng.Intn(2) == 0,
+			PeerIP: "203.0.113.9", PeerPort: 443,
+			FailCount: rng.Intn(20), SrcIP: "1.2.3.4",
+			ItemPath: `C:\temp\p.exe`, ItemKind: "run", ItemName: "k",
+		})
+		if st := e.Stats(); st.Active > maxMachines {
+			t.Fatalf("活跃链越界: %d", st.Active)
+		}
+	}
+
+	// 第二段：高碰撞小键空间——逼出完成的链，校验结构不变量
+	e2 := New(Options{
+		Now: func() time.Time { return time.Unix(2000, 0) },
+		OnFinding: func(f Finding) {
+			if len(f.Stages) < 2 || len(f.Lines) != len(f.Stages) || len(f.MITRE) == 0 {
+				t.Errorf("链结构不变量被破坏: stages=%d lines=%d mitre=%v",
+					len(f.Stages), len(f.Lines), f.MITRE)
+			}
+		},
+	})
+	for i := 0; i < 3000; i++ {
+		e2.Feed(Stage{Kind: kinds[rng.Intn(len(kinds))],
+			When: time.Unix(2000, 0).Add(time.Duration(rng.Intn(120)-60) * time.Second),
+			PID:  uint32(rng.Intn(8) + 1), Name: "p.exe", Path: `C:\temp\p.exe`,
+			Dropped: true, Signed: false, PeerIP: "203.0.113.9",
+			FailCount: 20, SrcIP: "1.2.3.4", ItemPath: `C:\temp\p.exe`,
+			ItemKind: "run", ItemName: "k",
+		})
+	}
+	t.Logf("不变量校验完成，完成链 %d 条", e2.Stats().Fired)
+}
+
+// BenchmarkFeedHot 量化热路径成本：512 条 pending 链 + 高频外联阶段
+// （每轮 scan 对每个有连接的进程喂一次 conn 阶段，链 key 大多对不上）。
+// 预算：单次 Feed ≤ 数微秒，否则 2s 扫描周期会被 Feed 拖垮。
+func BenchmarkFeedHot(b *testing.B) {
+	base := time.Unix(1000, 0)
+	e := New(Options{Now: func() time.Time { return base.Add(time.Minute) }, OnFinding: func(Finding) {}})
+	// 灌满链首
+	for i := uint32(1); i <= maxMachines; i++ {
+		e.Feed(Stage{Kind: KindProc, PID: i, StartTime: base,
+			Path: `C:\temp\e.exe`, Dropped: true, Signed: false, When: base})
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pid := uint32(i%256 + 1)
+		e.Feed(Stage{Kind: KindConn, PID: pid, StartTime: base,
+			PeerIP: "203.0.113.9", PeerPort: 443, When: base.Add(time.Minute)})
 	}
 }

@@ -69,6 +69,11 @@ const (
 	maxMachines = 512
 	// maxIgnores 是防洪表上限，超限先清过期再淘汰最旧。
 	maxIgnores = 1024
+	// sweepInterval 是过期链惰性回收的最小间隔。回收是纯内存释放——
+	// 链的正确性由推进时的窗口检查保证，过期机器本来就推不动；
+	// 每次 Feed 全表扫描在 512 链规模下是 15µs/op 的纯浪费
+	// （BenchmarkFeedHot 实测），节流到 30s 一次。
+	sweepInterval = 30 * time.Second
 )
 
 // Stage 是喂给关联引擎的一条信号。字段按 Kind 取用，不用的留零值；
@@ -109,10 +114,13 @@ type Stage struct {
 
 	// MITRE 是该阶段自身的技术映射（persist/svc 阶段决定链告警的 MITRE）
 	MITRE string
-	// RefRuleID/RefScore/Note 是阶段来源告警的引用（阶段已产出独立告警时填写）
-	RefRuleID string
-	RefScore  int
-	Note      string
+	// RefRuleID/RefScore/RefFingerprint/Note 是阶段来源告警的引用（阶段
+	// 已产出独立告警时填写）。Fingerprint 让服务端与 AI 研判能把链阶段
+	// 精确回指到原始告警（事件叙事的 A1..An 引用天然可对账）。
+	RefRuleID      string
+	RefScore       int
+	RefFingerprint string
+	Note           string
 }
 
 // Finding 是关联引擎产出的一条攻击链告警（emit 前的中间结构，
@@ -150,8 +158,10 @@ type Engine struct {
 	machines map[string]*machine // ruleID \x00 key -> machine
 	ignores  map[string]time.Time
 	dropped  int64 // 超上限淘汰的链数（mu 保护）
+	lastSweep time.Time
 
-	fired atomic.Int64
+	fired       atomic.Int64
+	firedByRule map[string]int64 // mu 保护
 }
 
 // machine 是一条进行中的链（EQL 语义：每 key 每状态只保留最新 pending——
@@ -170,17 +180,19 @@ func New(opts Options) *Engine {
 		opts.Now = time.Now
 	}
 	return &Engine{
-		opts:     opts,
-		machines: make(map[string]*machine, 64),
-		ignores:  make(map[string]time.Time, 64),
+		opts:        opts,
+		machines:    make(map[string]*machine, 64),
+		ignores:     make(map[string]time.Time, 64),
+		firedByRule: make(map[string]int64, 8),
 	}
 }
 
 // Stats 是引擎健康度快照（本地面板/心跳可见）。
 type Stats struct {
-	Active  int   // 当前活跃链数
-	Fired   int64 // 累计完成的链数
-	Dropped int64 // 超上限淘汰的链数
+	Active  int               // 当前活跃链数
+	Fired   int64             // 累计完成的链数
+	Dropped int64             // 超上限淘汰的链数
+	ByRule  map[string]int64  // 按规则累计完成数（运营视角"哪条链在响"）
 }
 
 // Stats 返回健康度快照。
@@ -190,10 +202,15 @@ func (e *Engine) Stats() Stats {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	byRule := make(map[string]int64, len(e.firedByRule))
+	for k, v := range e.firedByRule {
+		byRule[k] = v
+	}
 	return Stats{
 		Active:  len(e.machines),
 		Fired:   e.fired.Load(),
 		Dropped: e.dropped,
+		ByRule:  byRule,
 	}
 }
 
@@ -260,6 +277,7 @@ func (e *Engine) Feed(s Stage) {
 			completed = append(completed, r.build(m))
 			delete(e.machines, id)
 			e.ignores[id] = now.Add(firedIgnore)
+			e.firedByRule[r.id]++
 			if len(e.ignores) > maxIgnores {
 				e.pruneIgnoresLocked(now)
 			}
@@ -277,9 +295,15 @@ func (e *Engine) Feed(s Stage) {
 	}
 }
 
-// sweepLocked 回收过期链（窗口内未走完即断裂）。Feed 频率远高于链建立
-// 频率，惰性清理足够；512 上限兜底极端情况。
+// sweepLocked 回收过期链（窗口内未走完即断裂）。节流到 sweepInterval
+// 一次：回收只释放内存，链推进的正确性由 Feed 内的窗口检查独立保证，
+// 过期机器最多多活一个节流周期。Feed 频率远高于链建立频率，全表扫描
+// 每次 Feed 都做是纯浪费。
 func (e *Engine) sweepLocked(now time.Time) {
+	if !e.lastSweep.IsZero() && now.Sub(e.lastSweep) < sweepInterval {
+		return
+	}
+	e.lastSweep = now
 	for id, m := range e.machines {
 		if now.Sub(m.created) > m.rule.span {
 			delete(e.machines, id)

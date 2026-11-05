@@ -1019,12 +1019,14 @@ func (a *Agent) emitPersistFinding(f persist.Finding) int {
 	// 攻击链馈送：PERSIST-RUN 的链首。放在低分闸之前——链消费的是
 	// "新增了指向 X 的持久化项"这一事实，分数阈值是告警策略不是链策略；
 	// 探针自安装产物在 chainNotSelf 排除（否则每次安装/升级都自产链告警）。
+	// 指纹与 Finding.ToAlert 的格式保持同值（persist:<Key>）。
 	if a.chainE != nil && f.Path != "" && chainNotSelf(f.Path) {
 		a.chainE.Feed(chain.Stage{
 			Kind: chain.KindPersist, When: time.Now(),
 			ItemPath: f.Path, ItemKind: f.Item.Type, ItemName: f.Item.Name,
 			Hash: f.Hash, Signer: f.Signer, Signed: f.Signed,
 			MITRE: chainFirstMITRE(f.MITRE), RefRuleID: "P-001", RefScore: f.Score,
+			RefFingerprint: "persist:" + f.Item.Key,
 		})
 	}
 

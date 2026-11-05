@@ -89,12 +89,14 @@ func (a *Agent) evtLogonWatch(ev winapi.EvtEvent) {
 		})
 
 		// 攻击链馈送：暴破成功序列作为 BRUTE-SUCCESS 第二环（事件时间
-		// 口径与链首暴破波对齐）。
+		// 口径与链首暴破波对齐；指纹与告警本体同值）。
 		if a.chainE != nil {
 			a.chainE.Feed(chain.Stage{
 				Kind: chain.KindLogonOK, When: ev.TimeCreated,
 				LoginUser: user, SrcIP: srcIP, LogonType: logonType,
 				FailCount: n, RefRuleID: "EVT-BRUTE-SUCCESS", RefScore: 85,
+				RefFingerprint: fmt.Sprintf("evt:brute-success:%s:%d",
+					strings.ToLower(user), ev.TimeCreated.Unix()/300),
 			})
 		}
 	}

@@ -141,6 +141,12 @@ func (a *Agent) emitNetFinding(f netwatch.Finding, snap *collect.Snapshot) {
 		return
 	}
 
+	// 指纹先算：链阶段的来源回指与告警本体必须同值（AI 研判/事件叙事
+	// 靠它把链阶段精确对账回原始告警）
+	bucket := time.Now().Truncate(15 * time.Minute).Unix()
+	fp := fmt.Sprintf("nw:%s:%d:%d:%d",
+		f.RuleID, f.Ident.PID, f.Ident.StartTime.Unix(), bucket)
+
 	// 攻击链馈送：NW 命中作为链的外联证据（DROP-EXEC-C2 / INJECT-OUT
 	// 的第二环）。对端样例从同轮快照补齐。
 	if a.chainE != nil {
@@ -151,7 +157,7 @@ func (a *Agent) emitNetFinding(f netwatch.Finding, snap *collect.Snapshot) {
 			Name: f.Ident.Name, Path: path,
 			Hash: meta.Hash, Signer: meta.Signer, Signed: meta.Signed,
 			PeerIP: ip, PeerPort: uint32(port),
-			RefRuleID: f.RuleID, RefScore: f.Score,
+			RefRuleID: f.RuleID, RefScore: f.Score, RefFingerprint: fp,
 			MITRE: chainFirstMITRE(f.MITRE), Note: f.Summary,
 		})
 	}
@@ -201,10 +207,8 @@ func (a *Agent) emitNetFinding(f netwatch.Finding, snap *collect.Snapshot) {
 
 	// 指纹带 15 分钟桶：持续扫描按桶重复送达（证据会更新），
 	// 同一桶内的重复命中交给服务端指纹去重吸收
-	bucket := time.Now().Truncate(15 * time.Minute).Unix()
 	a.emitAlert(model.AlertEnvelope{
-		Fingerprint: fmt.Sprintf("nw:%s:%d:%d:%d",
-			f.RuleID, f.Ident.PID, f.Ident.StartTime.Unix(), bucket),
+		Fingerprint: fp,
 		Title:       f.Title,
 		Summary:     summary,
 		Verdict:     f.Verdict,

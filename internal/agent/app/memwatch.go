@@ -196,6 +196,9 @@ func (a *Agent) memwatchOnce() {
 
 // emitMemFinding 组装 T1055 证据告警。
 func (a *Agent) emitMemFinding(c memWatchCandidate, f memFinding, meta enrich.Meta) {
+	// 指纹先算：链阶段的来源回指与告警本体同值
+	fp := fmt.Sprintf("memwatch:%d:%d", c.PID, c.StartTime.Unix())
+
 	// 攻击链馈送：MEM-1055 作为注入链首（INJECT-OUT）。白名单/签名
 	// 护栏已在 memwatchOnce 过滤，这里无条件喂。
 	if a.chainE != nil {
@@ -203,7 +206,7 @@ func (a *Agent) emitMemFinding(c memWatchCandidate, f memFinding, meta enrich.Me
 			Kind: chain.KindMem, When: time.Now(),
 			PID: c.PID, Name: c.Name, Path: c.Path, CmdLine: c.CmdLine,
 			Hash: meta.Hash, Signer: meta.Signer, Signed: meta.Signed,
-			RefRuleID: "MEM-1055", RefScore: f.Score,
+			RefRuleID: "MEM-1055", RefScore: f.Score, RefFingerprint: fp,
 		})
 	}
 
@@ -214,7 +217,7 @@ func (a *Agent) emitMemFinding(c memWatchCandidate, f memFinding, meta enrich.Me
 			"注意：打包程序（UPX 运行时解压）也可能呈现此形态，请结合签名与落地记录判断。",
 		c.Name, c.PID, f.Hit.Suspicious, f.Hit.MZConfirmed, size)
 	a.emitAlert(model.AlertEnvelope{
-		Fingerprint: fmt.Sprintf("memwatch:%d:%d", c.PID, c.StartTime.Unix()),
+		Fingerprint: fp,
 		Title: fmt.Sprintf("内存威胁：私有可执行内存含 PE 头（%d 区域 / %s）",
 			f.Hit.MZConfirmed, size),
 		Summary:     summary,

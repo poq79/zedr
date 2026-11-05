@@ -64,13 +64,18 @@ func (a *Agent) chainFeedProc(pi collect.ProcessInfo, res *detect.Result) {
 
 // chainObserveConns 每轮扫描喂外联阶段（来自本轮已拉取的连接表，
 // 零新增系统调用）。只喂"有非回环对端"的进程；引擎对没有 pending 链的
-// key 是 O(1) 丢弃，不需要在这里预筛。
+// key 是 O(1) 丢弃，不需要在这里预筛。探针自身进程跳过——它到服务端的
+// 上报连接是常态，且自身永远不会成为链的任何环节。
 func (a *Agent) chainObserveConns(snap *collect.Snapshot) {
 	if a.chainE == nil {
 		return
 	}
 	now := time.Now()
+	self := uint32(os.Getpid())
 	for pid, conns := range snap.Conns {
+		if pid == self {
+			continue
+		}
 		ip, port, ok := chainFirstOutbound(conns)
 		if !ok {
 			continue
@@ -187,6 +192,12 @@ func (a *Agent) emitChainFinding(f chain.Finding) {
 			MITRE: st.MITRE,
 		})
 		notes = append(notes, line)
+		// 阶段回指来源告警：服务端事件叙事（A1..An）与 AI 研判引用
+		// 靠它把链阶段对账回真实告警，不靠时间窗猜
+		if st.RefFingerprint != "" {
+			notes = append(notes, fmt.Sprintf("stage%d_ref=%s %s",
+				i+1, st.RefRuleID, st.RefFingerprint))
+		}
 	}
 	env.Evidence = model.Evidence{Signals: sigs, Notes: notes}
 	if f.Root != nil {

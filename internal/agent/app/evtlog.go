@@ -253,6 +253,9 @@ func (a *Agent) emitEvtServiceInstall(ev winapi.EvtEvent) {
 		summary += "；服务二进制无数字签名"
 	}
 
+	// 指纹先算：链阶段的来源回指与告警本体同值
+	fp := fmt.Sprintf("evt:7045:%s:%s:%d", strings.ToLower(svcName), meta.Hash, ev.TimeCreated.Unix()/60)
+
 	// 攻击链馈送：新服务安装作为 PERSIST-RUN 链首（7045 比 persist 的
 	// 5min 轮询快，秒级进链）；自安装产物排除。
 	if a.chainE != nil {
@@ -261,13 +264,13 @@ func (a *Agent) emitEvtServiceInstall(ev winapi.EvtEvent) {
 				Kind: chain.KindSvcInst, When: ev.TimeCreated,
 				ItemPath: p, ItemKind: "service", ItemName: svcName,
 				MITRE: "T1543.003", RefRuleID: "EVT-SVCINST", RefScore: score,
-				Note: "安装账户 " + acct,
+				RefFingerprint: fp, Note: "安装账户 " + acct,
 			})
 		}
 	}
 
 	a.emitAlert(model.AlertEnvelope{
-		Fingerprint: fmt.Sprintf("evt:7045:%s:%s:%d", strings.ToLower(svcName), meta.Hash, ev.TimeCreated.Unix()/60),
+		Fingerprint: fp,
 		Title:       "事件日志：新服务安装 " + svcName,
 		Summary:     summary,
 		Verdict:     model.VerdictSuspicious,
@@ -460,7 +463,7 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 
 	// 攻击链馈送：暴破波作为 BRUTE-SUCCESS 链首。When 用最新失败样本的
 	// 事件时间（行为时刻口径，与后续 4624 的事件时间同源对齐——若用
-	// 消费时刻，30s 轮询滞后会让链内时间倒挂）。
+	// 消费时刻，30s 轮询滞后会让链内时间倒挂）；指纹与告警本体同值。
 	if a.chainE != nil {
 		src := ""
 		if len(ips) > 0 {
@@ -469,7 +472,9 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 		a.chainE.Feed(chain.Stage{
 			Kind: chain.KindBrute, When: newest,
 			FailCount: len(a.brute.window), SrcIP: src,
-			RefRuleID: "EVT-BRUTE", RefScore: 60, Note: summary,
+			RefRuleID: "EVT-BRUTE", RefScore: 60,
+			RefFingerprint: fmt.Sprintf("evt:4625:%d", time.Now().Truncate(15*time.Minute).Unix()),
+			Note:           summary,
 		})
 	}
 	a.emitAlert(model.AlertEnvelope{
