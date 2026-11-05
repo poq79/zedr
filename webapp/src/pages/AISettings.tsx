@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Bot, CheckCircle2, ChevronDown, History, KeyRound, Pencil, Plus, Save, XCircle, FlaskConical } from 'lucide-react';
 import { api } from '../lib/api';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
@@ -750,15 +751,31 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
 interface OpsItem {
   id: string; alert_id: string; title: string; hostname: string; severity: string;
   score: number; verdict: string; confidence: number; summary: string;
+  findings?: { text: string; citations?: string[] }[];
   actions?: { type: string; target?: string; detail?: string }[];
   engine: string; created_at: string; status: string;
   reviewed_by?: string; reviewed_at?: string;
+}
+
+// 判定芯片：中文 + 语义色。历史条目里存有旧枚举串（"benign-需人工确认"），
+// 按关键词兜底到证据不足，避免直接显示原始英文。
+const VERDICT_META: Record<string, { label: string; tone: string }> = {
+  malicious: { label: '恶意', tone: 'malicious' },
+  suspicious: { label: '可疑', tone: 'suspicious' },
+  inconclusive: { label: '证据不足', tone: 'acknowledged' },
+  benign: { label: '倾向误报', tone: 'resolved' },
+};
+function verdictMeta(v: string) {
+  if (VERDICT_META[v]) return VERDICT_META[v];
+  if (v.includes('benign')) return { label: '证据不足（旧）', tone: 'acknowledged' };
+  return { label: v, tone: 'neutral' };
 }
 
 function OpsQueueCard() {
   const toast = useToast();
   const [items, setItems] = useState<OpsItem[] | null>(null);
   const [busy, setBusy] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
   const load = useCallback(async () => {
     try { setItems(await api.get<OpsItem[]>('/api/v1/ai/ops/queue')); } catch { setItems([]); }
   }, []);
@@ -769,6 +786,16 @@ function OpsQueueCard() {
       await api.post(`/api/v1/ai/ops/${encodeURIComponent(it.id)}/review`, { action });
       toast(action === 'approve' ? '已认可建议（处置仍需人工执行）' : '已忽略该建议');
       load();
+    } catch (e) { toast((e as Error).message, 'err'); }
+    finally { setBusy(''); }
+  };
+  // 重新评估：调查规则改进后旧条目靠它跟上（判定/摘要/证据全部刷新）
+  const reeval = async (it: OpsItem) => {
+    setBusy(it.id);
+    try {
+      const fresh = await api.post<OpsItem>(`/api/v1/ai/ops/${encodeURIComponent(it.id)}/reevaluate`, {});
+      setItems((prev) => (prev || []).map((x) => (x.id === it.id ? fresh : x)));
+      toast(`已按当前调查逻辑重评：${verdictMeta(fresh.verdict).label}（置信 ${Math.round((fresh.confidence || 0) * 100)}%）`);
     } catch (e) { toast((e as Error).message, 'err'); }
     finally { setBusy(''); }
   };
@@ -787,30 +814,81 @@ function OpsQueueCard() {
         <div className="px-2 pb-1 text-[12px] text-faint">暂无建议——critical 告警出现时会自动入队。</div>
       ) : (
         <div className="grid gap-1.5 px-2">
-          {items.slice(0, 10).map((it) => (
-            <div key={it.id} className="rounded-md border border-border-soft bg-card px-3 py-2">
-              <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                <Badge tone={it.severity}>{SEV_LABEL[it.severity] || it.severity}</Badge>
-                <b className="min-w-0 flex-1 truncate" title={it.title}>{it.title}</b>
-                <span className="text-faint">{it.hostname} · {it.score} 分</span>
-                <Badge tone={it.status === 'pending' ? 'medium' : it.status === 'approved' ? 'resolved' : 'neutral'}>
-                  {it.status === 'pending' ? '待审' : it.status === 'approved' ? '已认可' : '已忽略'}
-                </Badge>
+          {items.slice(0, 10).map((it) => {
+            const vm = verdictMeta(it.verdict);
+            const open = expanded === it.id;
+            return (
+              <div key={it.id} className="rounded-md border border-border-soft bg-card px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                  <Badge tone={it.severity}>{SEV_LABEL[it.severity] || it.severity}</Badge>
+                  <b className="min-w-0 flex-1 truncate" title={it.title}>{it.title}</b>
+                  <span className="text-faint">{it.hostname} · {it.score} 分</span>
+                  <Badge tone={vm.tone} title={`调查判定：${it.verdict} · 置信 ${Math.round((it.confidence || 0) * 100)}%`}>
+                    {vm.label} {Math.round((it.confidence || 0) * 100)}%
+                  </Badge>
+                  <Badge tone={it.status === 'pending' ? 'medium' : it.status === 'approved' ? 'resolved' : 'neutral'}>
+                    {it.status === 'pending' ? '待审' : it.status === 'approved' ? '已认可' : '已忽略'}
+                  </Badge>
+                </div>
+                <div className="mt-1 text-[11.5px] leading-[1.6] text-muted-foreground">{it.summary}</div>
+
+                {/* 查看详情：调查证据（findings 带引用）+ 建议动作理由 + 原告警入口。
+                    没有这一层，审批就是闭眼签字。 */}
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  <Button size="sm" variant="ghost" onClick={() => setExpanded(open ? null : it.id)} aria-expanded={open}>
+                    <ChevronDown className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+                    {open ? '收起详情' : '查看详情'}
+                  </Button>
+                  <Link to={`/alerts?open=${encodeURIComponent(it.alert_id)}`} className="inline-flex h-7 items-center rounded-[7px] border border-border px-2 text-[11.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+                    打开原告警
+                  </Link>
+                  {it.status === 'pending' && (
+                    <Button size="sm" variant="ghost" disabled={busy === it.id} onClick={() => reeval(it)} title="调查规则改进后，用当前逻辑重评这条建议">
+                      重新评估
+                    </Button>
+                  )}
+                </div>
+
+                {open && (
+                  <div className="mt-2 rounded-md border border-border-soft bg-background px-3 py-2.5">
+                    <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-faint">调查证据（五步确定性 · {it.engine === 'heuristic' ? '规则版' : it.engine}）</div>
+                    <ol className="grid gap-1.5">
+                      {(it.findings || []).map((f, i) => (
+                        <li key={i} className="text-[11.5px] leading-[1.65] text-muted-foreground">
+                          <span className="mr-1 font-mono text-faint">{i + 1}.</span>{f.text}
+                          {!!f.citations?.length && (
+                            <span className="ml-1.5 font-mono text-[10px] text-faint">[{f.citations.map((c, j) => j < 3 ? c : '…').slice(0, 4).join(' · ')}]</span>
+                          )}
+                        </li>
+                      ))}
+                      {!(it.findings || []).length && <li className="text-[11.5px] text-faint">本条目为旧版入队快照，无证据记录——点「重新评估」按当前调查逻辑重跑。</li>}
+                    </ol>
+                    {!!it.actions?.length && (
+                      <>
+                        <div className="mb-1.5 mt-2.5 text-[10.5px] font-semibold uppercase tracking-wide text-faint">建议动作（都不自动执行）</div>
+                        <div className="grid gap-1">
+                          {it.actions.filter((a) => a.target).map((a, i) => (
+                            <div key={i} className="flex flex-wrap items-baseline gap-1.5 text-[11.5px]">
+                              <span className="rounded border border-border-soft px-1.5 py-0.5 font-mono text-[10.5px] text-faint">{a.type}:{a.target}</span>
+                              {a.detail && <span className="text-[11px] text-faint">{a.detail}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    <div className="mt-2 text-[10.5px] text-faint">入队于 {relTime(it.created_at)} · 来源 {it.engine === 'heuristic' ? '确定性调查（零模型调用）' : it.engine}</div>
+                  </div>
+                )}
+
+                {it.status === 'pending' && (
+                  <div className="mt-1.5 flex gap-1.5">
+                    <Button size="sm" variant="primary" disabled={busy === it.id} onClick={() => review(it, 'approve')}>认可建议</Button>
+                    <Button size="sm" variant="ghost" disabled={busy === it.id} onClick={() => review(it, 'dismiss')}>忽略</Button>
+                  </div>
+                )}
               </div>
-              <div className="mt-1 text-[11.5px] leading-[1.6] text-muted-foreground">{it.summary}</div>
-              {!!it.actions?.length && (
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  {it.actions.map((a, i) => <span key={i} className="rounded border border-border-soft px-1.5 py-0.5 font-mono text-[10.5px] text-faint">{a.type}:{a.target}</span>)}
-                </div>
-              )}
-              {it.status === 'pending' && (
-                <div className="mt-1.5 flex gap-1.5">
-                  <Button size="sm" variant="primary" disabled={busy === it.id} onClick={() => review(it, 'approve')}>认可建议</Button>
-                  <Button size="sm" variant="ghost" disabled={busy === it.id} onClick={() => review(it, 'dismiss')}>忽略</Button>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Card>
