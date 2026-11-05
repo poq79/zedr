@@ -52,6 +52,11 @@ type Config struct {
 	// UpgradeFile/UpgradeVersion 探针自升级包路径与版本；空=升级端点不可用
 	UpgradeFile    string
 	UpgradeVersion string
+	// DeployPackage/DeployVersion 是"接入新主机"部署包（zip：探针+托盘+安装脚本）。
+	// 与自升级包的区别：面向还没装探针的新机器，由管理台管理员经 JWT 下载；
+	// 空=部署端点返回"未启用"，管理台据此隐藏下载入口。
+	DeployPackage string
+	DeployVersion string
 
 	// 实时隧道/实时查询（只读调查面，docs/LIVE-TUNNEL.md）。
 	// LiveQueryEnabled 默认开：只读 + JWT + 全程审计，风险面低于处置类，
@@ -98,6 +103,7 @@ type Config struct {
 	IngestMaxInflight int
 	KillEnabled     bool
 	QuarantineEnabled bool
+	DrillEnabled    bool // 检测演练指令总开关（HG_SERVER_DRILL_ENABLED，默认关）
 	RetentionDays   int
 	DupWindow       time.Duration // 同指纹告警聚合窗口
 	HeartbeatSec    int
@@ -141,6 +147,8 @@ func LoadConfig() (*Config, error) {
 	c.OpenAlertTTL = l.Duration("HG_SERVER_OPEN_ALERT_TTL", 0)
 	c.UpgradeFile = l.Env("HG_SERVER_UPGRADE_FILE", "")
 	c.UpgradeVersion = l.Env("HG_SERVER_UPGRADE_VERSION", "")
+	c.DeployPackage = l.Env("HG_SERVER_DEPLOY_PACKAGE", "")
+	c.DeployVersion = l.Env("HG_SERVER_DEPLOY_VERSION", "")
 	c.LiveQueryEnabled = l.Bool("HG_SERVER_LIVEQUERY_ENABLED", true)
 	c.LiveQueryFileRead = l.Bool("HG_SERVER_LIVEQUERY_FILEREAD", false)
 
@@ -181,6 +189,9 @@ func LoadConfig() (*Config, error) {
 		"HG_SERVER_INGEST_MAX_INFLIGHT 必须在 1-64 之间")
 	c.KillEnabled = l.Bool("HG_SERVER_KILL_ENABLED", false)
 	c.QuarantineEnabled = l.Bool("HG_SERVER_QUARANTINE_ENABLED", false)
+	// 检测演练默认关：会让探针在目标机器跑受控自测，只在交付验收/
+	// 升级回归场景显式打开（终端侧 HG_AGENT_DRILL_ENABLED 是第二道闸）
+	c.DrillEnabled = l.Bool("HG_SERVER_DRILL_ENABLED", false)
 	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 30)
 	c.DupWindow = l.Duration("HG_SERVER_DUP_WINDOW", 5*time.Minute) // 同指纹告警聚合窗口
 	c.HeartbeatSec = l.Int("HG_SERVER_HEARTBEAT_SEC", 30)

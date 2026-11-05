@@ -42,6 +42,12 @@ type enrollResult struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+	return newTestEnvWith(t, nil)
+}
+
+// newTestEnvWith 允许用例在路由构建前改 Deps（如 deploy 端点的包路径/token）。
+func newTestEnvWith(t *testing.T, extra func(*Deps)) *testEnv {
+	t.Helper()
 
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -74,7 +80,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("创建管理员失败: %v", err)
 	}
 
-	router := Router(Deps{
+	deps := Deps{
 		Services:     svc,
 		Tokens:       tokens,
 		Log:          log,
@@ -87,7 +93,11 @@ func newTestEnv(t *testing.T) *testEnv {
 		StartedAt:    time.Now(),
 		Bus:          svc.Bus,
 		RuleSignKey:  rulehash.DeriveKey([]byte(testJWTSecret), "rule-signing"),
-	})
+	}
+	if extra != nil {
+		extra(&deps)
+	}
+	router := Router(deps)
 
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)

@@ -49,6 +49,13 @@ type Deps struct {
 	// 服务端配置；任一为空 = 升级端点按"未启用"返回 503
 	UpgradeFile    string
 	UpgradeVersion string
+	// DeployPackage/DeployVersion 是"接入新主机"部署包（zip，管理台下载）；
+	// 空 = 部署端点按"未启用"返回 503，管理台据此隐藏下载入口。
+	// EnrollToken 是终端注册预共享令牌（接入引导展示用，adminOnly + 审计）；
+	// 经 Deps 透传而非让 api 层直接摸 service 配置。
+	DeployPackage string
+	DeployVersion string
+	EnrollToken   string
 
 	// MCP 是对外 MCP Server（nil = 未启用，端点不注册）；
 	// MCPToken 是独立 Bearer Token（与 JWT 分离，只读访问）。
@@ -211,8 +218,15 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))
 	mux.Handle("DELETE /api/v1/hosts/{id}", adminOnly(adminH.deleteHost))
 	mux.Handle("POST /api/v1/hosts/{id}/commands", writer(adminH.sendCommand))
+	// 检测演练：发起（analyst+，服务端总开关 HG_SERVER_DRILL_ENABLED 把门）
+	// 与报告列表（viewer 可读，复盘/验收场景常需要只读角色能看到结果）
+	mux.Handle("POST /api/v1/hosts/{id}/drill", writer(adminH.startDrill))
+	mux.Handle("GET /api/v1/hosts/{id}/drills", viewer(adminH.listDrills))
 	mux.Handle("GET /api/v1/hosts/{id}/inventory", viewer(adminH.getHostInventory))
 	mux.Handle("GET /api/v1/commands", viewer(adminH.listCommands))
+	// 接入新主机部署引导（adminOnly + 审计，见 api/deploy.go）
+	mux.Handle("GET /api/v1/deploy/enroll-config", adminOnly(adminH.deployEnrollConfig))
+	mux.Handle("GET /api/v1/deploy/agent-package", adminOnly(adminH.deployAgentPackage))
 
 	mux.Handle("GET /api/v1/rules", viewer(adminH.listRules))
 	mux.Handle("POST /api/v1/rules", writer(adminH.upsertRule))
