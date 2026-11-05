@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Bot, CheckCircle2, ChevronDown, History, KeyRound, Pencil, Plus, Save, XCircle, FlaskConical } from 'lucide-react';
+import { cn } from '../lib/utils';
 import { api } from '../lib/api';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useConfirm, useToast } from '../components/ui/overlays';
@@ -625,6 +626,8 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
 
       <OpsQueueCard />
 
+      <QualityCard />
+
       {/* 提示词模板 */}
       <Card className="mb-4 p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -744,6 +747,91 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
         )}
       </Drawer>
     </div>
+  );
+}
+
+/* ---------------- 研判质量运营闭环 ---------------- */
+interface QualityReport {
+  sampled: number; agree_rate: number; ai_fp_rate: number; ai_miss_rate: number;
+  counts?: Record<string, number>; unscored: number;
+  disagreements?: { alert_id: string; title: string; hostname: string;
+    ai_verdict: string; ai_confidence: number; ai_source: string;
+    analyst_said: string; kind: string; occurred_at: string }[];
+}
+
+// 研判质量对账（Prophet 信任三步的第一步：先度量再谈自治）。
+// AI 说"有问题/没问题" × 分析师处置（真阳性/误报/良性）→ 四格矩阵。
+// ai_miss 是最危险的一格：AI 说没问题、结果真是攻击——头号监控指标。
+function QualityCard() {
+  const [rep, setRep] = useState<QualityReport | null>(null);
+  useEffect(() => {
+    api.get<QualityReport>('/api/v1/ai/quality/report').then(setRep).catch(() => setRep(null));
+  }, []);
+  const pct = (v?: number) => `${Math.round((v || 0) * 100)}%`;
+
+  const cells: { key: string; label: string; tone: string; title: string }[] = [
+    { key: 'tp_agree', label: '预警正确', tone: 'resolved', title: 'AI 说有问题，分析师确认真阳性' },
+    { key: 'noise_agree', label: '降噪正确', tone: 'resolved', title: 'AI 说没问题，分析师判误报/良性' },
+    { key: 'ai_fp', label: 'AI 误报', tone: 'critical', title: 'AI 说有问题，分析师判良性/误报——最毁信任的一格' },
+    { key: 'ai_miss', label: 'AI 漏报', tone: 'medium', title: 'AI 说没问题，分析师判真阳性——最危险的一格' },
+  ];
+
+  return (
+    <Card className="mb-4 px-2 pb-3 pt-3.5">
+      <div className="mb-2 flex items-center justify-between px-2">
+        <div>
+          <CardTitle>研判质量</CardTitle>
+          <p className="mt-0.5 text-[11px] text-faint">
+            AI/调查结论 × 分析师处置结案理由的对账矩阵——调提示词和阈值前先看这里，盲调没有意义
+          </p>
+        </div>
+        {rep && <Badge tone={rep.sampled ? 'info' : 'neutral'}>样本 {rep.sampled}</Badge>}
+      </div>
+      {!rep ? (
+        <div className="px-2 pb-1 text-[12px] text-faint">对账数据加载中…</div>
+      ) : !rep.sampled ? (
+        <div className="px-2 pb-1 text-[12px] text-faint">
+          还没有可对账的样本：在值班队列用结案理由（真阳性/误报/良性）处理建议，或把告警标记为误报后，这里会自动累积。
+          {rep.unscored > 0 && <>（另有 {rep.unscored} 条已处理但未给定性理由，不计入）</>}
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-1.5 px-2 sm:grid-cols-4">
+            {cells.map((c) => (
+              <div key={c.key} className="rounded-md border border-border-soft bg-card px-3 py-2" title={c.title}>
+                <div className="text-[10.5px] text-faint">{c.label}</div>
+                <div className="mt-0.5 flex items-baseline gap-1.5">
+                  <b className={cn('text-[18px] font-semibold', c.tone === 'critical' ? 'text-crit' : c.tone === 'medium' ? 'text-warn' : 'text-ok')}>{rep.counts?.[c.key] ?? 0}</b>
+                  <span className="text-[10.5px] text-faint">{pct((rep.counts?.[c.key] ?? 0) / rep.sampled)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 px-2 text-[11px] text-faint">
+            一致率 <b className="text-foreground">{pct(rep.agree_rate)}</b>
+            {rep.unscored > 0 && <> · 已处理未定性 {rep.unscored} 条不计入</>}
+          </div>
+          {!!rep.disagreements?.length && (
+            <div className="mt-2 px-2">
+              <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-faint">最近分歧（点开人工复核）</div>
+              <div className="grid gap-1">
+                {rep.disagreements.map((d) => (
+                  <div key={d.alert_id} className="flex flex-wrap items-center gap-2 rounded-md border border-border-soft bg-card px-2.5 py-1.5 text-[11.5px]">
+                    <Badge tone={d.kind === 'ai_miss' ? 'medium' : 'critical'}>{d.kind === 'ai_miss' ? 'AI 漏报' : 'AI 误报'}</Badge>
+                    <b className="min-w-0 flex-1 truncate" title={d.title}>{d.title}</b>
+                    <span className="text-faint" title={`AI 判定 ${d.ai_verdict}（${d.ai_source === 'ai' ? '模型' : '确定性'}）`}>
+                      AI：{VERDICT_META[d.ai_verdict]?.label || d.ai_verdict} {Math.round((d.ai_confidence || 0) * 100)}%
+                    </span>
+                    <span className="text-faint">分析师：{d.analyst_said === 'true_positive' ? '真阳性' : d.analyst_said === 'known_benign' ? '良性' : '误报'}</span>
+                    <Link to={`/alerts?open=${encodeURIComponent(d.alert_id)}`} className="text-[11px] text-primary underline-offset-2 hover:underline">复核</Link>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 

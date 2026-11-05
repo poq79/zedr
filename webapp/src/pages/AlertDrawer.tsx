@@ -16,6 +16,16 @@ interface TriageResp {
   attack_chain?: string[];
 }
 
+// 置信档位（调研 Confidence Thermometer 口径）：档位+百分比并用；
+// 低置信度必须用同等视觉权重明示"需人工复核"——不要把弱推断渲染得
+// 和强证据一样，那会训练分析师照单全收。
+function confBand(c?: number): { label: string; tone: string; note: string } {
+  const v = c || 0;
+  if (v >= 0.7) return { label: '高置信', tone: 'resolved', note: '证据充分，结论可直接采信' };
+  if (v >= 0.45) return { label: '中置信', tone: 'medium', note: '部分证据支持，建议结合上下文核对' };
+  return { label: '低置信', tone: 'acknowledged', note: '证据不足——结论仅供参考，必须人工复核后再处置' };
+}
+
 const TRIAGE_VERDICT: Record<string, [string, string]> = {
   malicious: ['恶意', 'critical'], suspicious: ['可疑', 'medium'],
   benign: ['倾向误报', 'resolved'], inconclusive: ['证据不足', 'info'],
@@ -288,7 +298,7 @@ function TriageBody({ r }: { r: TriageResp }) {
     <div className="text-[12.5px]">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Badge tone={vTone} className="px-3 py-1 text-[14px]">{vLabel}</Badge>
-        <span className="text-xs text-faint">置信度 <b className="text-foreground">{conf}%</b></span>
+        {(() => { const b = confBand(r.confidence); return <Badge tone={b.tone} title={b.note}>{b.label} {conf}%</Badge>; })()}
         <Badge tone={r.engine === 'llm' ? 'resolved' : 'info'}>{r.engine === 'llm' ? '大模型' : '确定性引擎'}</Badge>
         {r.model && <Badge tone="info">{r.model}</Badge>}
         <Badge tone={r.grounded ? 'resolved' : 'medium'}>{r.grounded ? '结论全部可溯源' : `${r.uncited} 条结论无引用`}</Badge>
@@ -381,7 +391,7 @@ function InvestigatePanel({ alertId }: { alertId: string }) {
           <div className="flex flex-wrap items-center gap-2.5 rounded-lg border border-border-soft bg-secondary/40 px-3.5 py-3">
             <span className="text-xs text-faint">研判建议</span>
             <Badge tone={verdictTone(inv.verdict_suggestion)}>{VERDICT_LABEL[inv.verdict_suggestion] || inv.verdict_suggestion}</Badge>
-            <span className="text-xs text-faint">置信度 <b className="font-mono text-foreground">{(inv.confidence * 100).toFixed(0)}%</b></span>
+            {(() => { const b = confBand(inv.confidence); return <Badge tone={b.tone} title={b.note}>{b.label} {(inv.confidence * 100).toFixed(0)}%</Badge>; })()}
             <div className="flex-1" />
             <Button size="sm" variant="ghost" onClick={run} disabled={busy}>{busy ? '重算中…' : '重新调查'}</Button>
           </div>

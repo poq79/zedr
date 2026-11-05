@@ -871,7 +871,7 @@ export function IncidentsPage({ user }: { user?: { role: Role } }) {
 interface WeeklyReport {
   alerts_week?: number; resolved_week?: number; fp_rate?: number;
   mttr_min?: number; hosts_active?: number;
-  fp_ranking?: { rule_id: string; fp_rate: number; false_pos: number; handled: number }[];
+  fp_ranking?: { rule_id: string; fp_rate: number; false_pos: number; handled: number; tune_candidate?: boolean }[];
   [k: string]: unknown;
 }
 
@@ -921,6 +921,7 @@ export function ReportPage() {
                 </div>
                 <span className="w-28 text-xs text-faint">{r.false_pos}/{r.handled} 误报</span>
                 <b className={cn('w-12 text-right', r.fp_rate > 0.5 ? 'text-destructive' : 'text-warn')}>{Math.round(r.fp_rate * 100)}%</b>
+                {r.tune_candidate && <Badge tone="medium" title="已处置 ≥5 条且误报率 ≥80%：建议核对该规则的匹配条件与阈值，或为已确认的良性场景配置白名单">调优候选</Badge>}
               </div>
             ))}
             <div className="mt-2.5 text-xs text-faint">高误报规则建议核对命中样本后加白，或在规则页调整分值。</div>
