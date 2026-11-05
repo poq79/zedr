@@ -40,6 +40,7 @@ type memWatchCandidate struct {
 	PID       uint32
 	Name      string
 	Path      string
+	CmdLine   string
 	StartTime time.Time
 	Score     int
 }
@@ -58,7 +59,7 @@ func selectMemCandidates(rows []state.ProcRow, selfPID uint32, budget int, lande
 			continue
 		}
 		c := memWatchCandidate{
-			PID: r.PID, Name: r.Name, Path: r.Path,
+			PID: r.PID, Name: r.Name, Path: r.Path, CmdLine: r.CmdLine,
 			StartTime: r.FirstSeen, Score: r.Score,
 		}
 		if lt, ok := landed[r.PID]; ok && time.Since(lt) <= 10*time.Minute {
@@ -219,7 +220,7 @@ func (a *Agent) emitMemFinding(c memWatchCandidate, f memFinding, meta enrich.Me
 		MITRE:       []string{"T1055"},
 		Evidence: model.Evidence{
 			Process: model.ProcEvidence{
-				PID: c.PID, Name: c.Name, Path: c.Path,
+				PID: c.PID, Name: c.Name, Path: c.Path, CmdLine: c.CmdLine,
 				StartTime:  c.StartTime,
 				HashSHA256: meta.Hash, Signer: meta.Signer,
 				Signed: meta.Signed, SignatureOK: meta.SignatureOK,

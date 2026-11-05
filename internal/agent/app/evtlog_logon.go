@@ -21,6 +21,15 @@ import (
 	"zedr/internal/model"
 )
 
+// sensitiveGroups 是"加入即提权"的敏感组集合（Builtin 域本地组按
+// Server 中文/英文实测名匹配，EqualFold 不区分大小写）。其余组降 low。
+var sensitiveGroups = []string{
+	"Administrators", "远程桌面用户", "Remote Desktop Users",
+	"Distributed COM Users", "Event Log Readers", "Backup Operators",
+	"Server Operators", "Account Operators", "Print Operators",
+	"Cryptographic Operators", "Network Configuration Operators",
+}
+
 const (
 	// logonBaselineWarmup 是时段基线的学习样本数：交互/RDP 登录样本
 	// 少于此数时只学习小时分布不告警。样本是"真实登录"级别的事件，
@@ -47,6 +56,11 @@ func (a *Agent) evtLogonWatch(ev winapi.EvtEvent) {
 	switch logonType {
 	case "2", "3", "7", "10":
 	default:
+		return
+	}
+	// 机器账户（$ 结尾）与 SYSTEM 的 Type 3 网络登录是域/服务常态，
+	// 不进时段基线（否则基线被机器噪声铺满，人的异常时段反而不可见）。
+	if strings.HasSuffix(user, "$") || strings.EqualFold(user, "system") {
 		return
 	}
 
@@ -162,22 +176,37 @@ func (a *Agent) emitEvtGroupChange(ev winapi.EvtEvent) {
 	if group == "" || member == "" {
 		return
 	}
-	summary := fmt.Sprintf("账户 %q 被加入组 %q（操作者 %s）。敏感组成员变更是权限提升/持久化（T1098）的权威证据；inventory 管理员组变更告警与本事件同源互证。",
-		member, group, actor)
+	// 敏感组白名单：只对"权限提升有意义"的组产生 high 信号；Everyone/
+	// Users/Guests 等默认组是 Windows 常态（软件安装也会写入），降 low。
+	sensitive := false
+	for _, g := range sensitiveGroups {
+		if strings.EqualFold(group, g) {
+			sensitive = true
+			break
+		}
+	}
+	sev, score := model.SeverityLow, 30
+	if sensitive {
+		sev, score = model.SeverityHigh, 70
+	}
+	summary := fmt.Sprintf("账户 %q 被加入组 %q（操作者 %s）。%s",
+		member, group, actor,
+		map[bool]string{true: "敏感组成员变更是权限提升/持久化（T1098）的权威证据；inventory 管理员组变更告警与本事件同源互证。",
+			false: "非敏感组，仅记录。"}[sensitive])
 	a.emitAlert(model.AlertEnvelope{
 		Fingerprint: fmt.Sprintf("evt:%d:%s:%s:%d", ev.EventID, strings.ToLower(member), strings.ToLower(group), ev.TimeCreated.Unix()/60),
 		Title:       fmt.Sprintf("账户安全：成员加入组（%s → %s）", member, group),
 		Summary:     summary,
 		Verdict:     model.VerdictSuspicious,
-		Severity:    model.SeverityHigh,
-		Score:       70,
+		Severity:    sev,
+		Score:       score,
 		ProcUser:    "SYSTEM/EVTLOG",
 		RuleIDs:     []string{"EVT-GROUPCHG"},
 		MITRE:       []string{"T1098"},
 		Evidence: model.Evidence{
 			Signals: []model.Signal{{
 				Layer: "evtlog", ID: "EVT-GROUPCHG", Name: "敏感组成员变更",
-				Score: 70, Note: summary, MITRE: "T1098",
+				Score: score, Note: summary, MITRE: "T1098",
 			}},
 			Notes: []string{
 				"member=" + member, "group=" + group, "actor=" + actor,

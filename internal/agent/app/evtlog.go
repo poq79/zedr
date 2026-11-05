@@ -67,9 +67,10 @@ type evtCursor struct {
 
 // evtBruteRec 是聚合窗口内的一条登录失败样本。
 type evtBruteRec struct {
-	at   time.Time
-	ip   string
-	user string
+	at     time.Time
+	ip     string
+	user   string
+	status string // 4625 的 SubStatus（0xC0000234=锁定 0xC0000072=失效 6A=错密码）
 }
 
 // evtBruteAgg 是 4625 的滑动窗口聚合器（evtlogLoop 单 goroutine 访问，
@@ -374,7 +375,8 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 	if at.IsZero() {
 		at = time.Now()
 	}
-	rec := evtBruteRec{at: at, ip: ev.Data["ipaddress"], user: ev.Data["targetusername"]}
+	rec := evtBruteRec{at: at, ip: ev.Data["ipaddress"], user: ev.Data["targetusername"],
+		status: ev.Data["status"]}
 	a.brute.window = append(a.brute.window, rec)
 	cut := at.Add(-evtBruteWindow)
 	k := 0
@@ -426,25 +428,37 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 		userList = append(userList, u)
 	}
 
-	summary := fmt.Sprintf("%s 内 %d 次登录失败（阈值 %d）。目标账户样例：%s；来源 Top：%s。密集失败是密码暴破（T1110）的直接形态，互联网暴露机器尤其注意。",
-		evtBruteWindow, len(a.brute.window), evtBruteThreshold,
+	// 形态区分：单账户多 IP=在线暴破（T1110.001）；单 IP 多账户=密码
+	// 喷洒（T1110.003）——两者的处置动作不同（锁账户 vs 封 IP）。
+	uniqUsers := len(users)
+	uniqIPs := len(ipCount)
+	morph := "混合来源"
+	tactic := "T1110"
+	switch {
+	case uniqUsers == 1 && uniqIPs >= 2:
+		morph, tactic = "单账户多来源（在线暴破）", "T1110.001"
+	case uniqIPs == 1 && uniqUsers >= 2:
+		morph, tactic = "单来源多账户（密码喷洒）", "T1110.003"
+	}
+	summary := fmt.Sprintf("%s 内 %d 次登录失败（阈值 %d），形态：%s。目标账户样例：%s；来源 Top：%s。密集失败是密码攻击（T1110）的直接形态，互联网暴露机器尤其注意。",
+		evtBruteWindow, len(a.brute.window), evtBruteThreshold, morph,
 		strings.Join(userList, ", "), strings.Join(ips, ", "))
 	a.emitAlert(model.AlertEnvelope{
 		Fingerprint: fmt.Sprintf("evt:4625:%d", time.Now().Truncate(15*time.Minute).Unix()),
-		Title:       fmt.Sprintf("事件日志：登录失败暴发（%d 次/分钟）", len(a.brute.window)),
+		Title:       fmt.Sprintf("事件日志：登录失败暴发（%s，%d 次/分钟）", morph, len(a.brute.window)),
 		Summary:     summary,
 		Verdict:     model.VerdictSuspicious,
 		Severity:    model.SeverityHigh,
 		Score:       60,
 		ProcUser:    "SYSTEM/EVTLOG",
 		RuleIDs:     []string{"EVT-BRUTE"},
-		MITRE:       []string{"T1110"},
+		MITRE:       []string{tactic},
 		Evidence: model.Evidence{
 			Signals: []model.Signal{{
 				Layer: "evtlog", ID: "EVT-BRUTE", Name: "登录失败聚合",
-				Score: 60, Note: summary, MITRE: "T1110",
+				Score: 60, Note: summary, MITRE: tactic,
 			}},
-			Notes: []string{fmt.Sprintf("failed=%d window=60s", len(a.brute.window))},
+			Notes: []string{fmt.Sprintf("failed=%d window=60s users=%d ips=%d", len(a.brute.window), uniqUsers, uniqIPs)},
 		},
 		OccurredAt: time.Now(),
 	})
