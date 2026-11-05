@@ -144,6 +144,20 @@ def _port_scan():
     return spawn(dst, "-netburst", "203.0.113.9:16", "-hold", "25s")
 
 
+def _chain_enabled():
+    """探针是否启用攻击链关联引擎（/api/local/status 的 chain_enabled）。
+    旧版探针没有该字段——视为未启用，这是 S18「跳过而非漏检」语义的基础：
+    引擎没换装是部署问题，不能算检测能力缺失。"""
+    try:
+        st = http_get(AGENT + "/api/local/status")
+        data = st.get("data") if isinstance(st, dict) else None
+        if data is None:
+            data = st
+        return bool(data.get("chain_enabled"))
+    except Exception:
+        return False
+
+
 # ----------------------------------------------------------------- 场景定义
 SCENARIOS = [
     dict(id="S01", name="伪装系统进程（temp 下的 svchost.exe）",
@@ -228,6 +242,20 @@ SCENARIOS = [
     dict(id="S17", name="端口扫描行为（16 端口 SYN 扇出，NW-001）",
          run=lambda: _port_scan(),
          probe=("portscan.exe", "", WORK_MARK), expect=["NW-001"]),
+
+    # ---- S18：攻击链关联引擎（CHAIN 规则族，跨信号旁路链路）----
+    # zedr-diag -chaintest 把自身复制到 %TEMP%\hg-chaintest-* 后从该目录
+    # 重新执行并 -netburst：子进程构成「落地未签名程序 → 主动外联」
+    # 两阶段（CHAIN-DROP-EXEC-C2，T1105）。判定读 /api/local/alerts，
+    # 匹配 rule_ids（链告警的 evidence.signals ID 带 #阶段号 后缀）。
+    # 前置：探针已换装含 chain 引擎的二进制且 HG_AGENT_CHAIN 未关——
+    # 不满足时**诚实跳过**而不是记漏检。且 bin/zedr-diag.exe 必须是含
+    # -chaintest 的新版（旧版 flag 报错直接退出、无样本落地）。
+    dict(id="S18", name="攻击链：落地未签名程序执行后外联（CHAIN-DROP-EXEC-C2）",
+         run=lambda: spawn(HGD_IAG, "-chaintest"),
+         skip_if=lambda: not _chain_enabled(),
+         skip_reason="探针未启用攻击链引擎（需换装含 chain 的探针且 HG_AGENT_CHAIN=true）",
+         probe=None, expect=["CHAIN-DROP-EXEC-C2"]),
 ]
 
 def _admin_group_change():
@@ -299,6 +327,15 @@ def run_scenarios():
     results = []
     for sc in SCENARIOS:
         print(f"\n[{sc['id']}] {sc['name']}")
+        # 跳过语义：前置条件不满足（如引擎未换装）时明确标注"跳过"，
+        # 与"漏检"严格区分——部署缺口不是检测缺口
+        if sc.get("skip_if") and sc["skip_if"]():
+            reason = sc.get("skip_reason") or "前置条件不满足"
+            print(f"    跳过: {reason}")
+            results.append(dict(sc_id=sc["id"], name=sc["name"], state="跳过",
+                                score=0, suppressed=reason, title="",
+                                expect=sc.get("expect", []), new_alerts=0))
+            continue
         before = {a["id"] for a in alerts()}
         try:
             sc["run"]()
@@ -314,11 +351,12 @@ def run_scenarios():
 
         new_alerts = [a for a in alerts() if a["id"] not in before]
 
-        # 旁路告警类场景（expect 带 INV-/NW-/FILE- 前缀）：不依赖进程被
-        # 引擎打分，验证"行为/变更 → 旁路告警"管线；判定信号是
-        # evidence.signals 的 ID（netwatch/勒索检测与资产变更同口径）
+        # 旁路告警类场景（expect 带 INV-/NW-/FILE-/EVT-/CHAIN- 前缀）：
+        # 不依赖进程被引擎打分，验证"行为/变更 → 旁路告警"管线；判定信号是
+        # evidence.signals 的 ID 或 rule_ids（链告警的 signals ID 带 #n 后缀，
+        # 以 rule_ids 匹配；netwatch/勒索检测与资产变更同口径）
         sig_want = [e for e in sc.get("expect", [])
-                    if e.startswith(("INV-", "NW-", "FILE-", "EVT-", "REG-"))]
+                    if e.startswith(("INV-", "NW-", "FILE-", "EVT-", "REG-", "CHAIN-"))]
         if sig_want:
             matches = []
             hit = None
@@ -327,7 +365,8 @@ def run_scenarios():
                 fresh = [a for a in alerts() if a["id"] not in before]
                 for a in fresh:
                     sigs = [s.get("id") for s in (a.get("evidence") or {}).get("signals") or []]
-                    if sig_want[0] in sigs and a not in matches:
+                    rids = a.get("rule_ids") or []
+                    if (sig_want[0] in sigs or sig_want[0] in rids) and a not in matches:
                         matches.append(a)
                 # 取最高分匹配：add/remove 两向都会入集合（场景的清理
                 # 动作也会触发反向事件），锚定最能代表攻击语义的那条
