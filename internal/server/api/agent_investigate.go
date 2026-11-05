@@ -107,3 +107,18 @@ func (h *adminHandler) aiOpsReview(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, item)
 }
+
+// aiOpsReevaluate 用当前调查逻辑重评一条队列建议（刷新判定/摘要/证据，
+// 不改审批状态）。调查规则改进后旧条目靠它跟上，不再带着过期结论躺队列。
+func (h *adminHandler) aiOpsReevaluate(w http.ResponseWriter, r *http.Request) {
+	item, err := h.deps.Services.AI.ReevaluateOps(r.Context(), r.PathValue("id"))
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	if p := principal(r); p != nil {
+		h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "ai.ops.reevaluate", item.ID,
+			"alert="+item.AlertID+",verdict="+item.Verdict, httpx.ClientIP(r))
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, item)
+}

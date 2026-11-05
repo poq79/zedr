@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +71,39 @@ func (s *AIService) Chat(ctx context.Context, question string, history []ai.Chat
 
 const aiOpsQueueKey = "ai_ops_queue"
 
+// VerdictLabel 把调查判定枚举映射成值班界面的中文。
+// 队列里存有历史字符串（如旧版 "benign-需人工确认"），按关键词兜底。
+func VerdictLabel(v string) string {
+	switch v {
+	case "malicious":
+		return "恶意"
+	case "suspicious":
+		return "可疑"
+	case "inconclusive":
+		return "证据不足"
+	case "benign":
+		return "倾向误报"
+	}
+	if strings.Contains(v, "benign") {
+		return "证据不足"
+	}
+	return v
+}
+
+// verdictAdvice 给出与判定配套的下一步建议（摘要文案的一部分）。
+func verdictAdvice(v string) string {
+	switch v {
+	case "malicious":
+		return "复核属实后请人工执行处置"
+	case "suspicious":
+		return "请人工复核告警详情后决定处置"
+	case "inconclusive":
+		return "现有证据不足以定性，请点开告警详情核对"
+	default:
+		return "无加重证据，可结合上下文后忽略"
+	}
+}
+
 // OpsItem 是一条待审的 AI 值班建议。
 type OpsItem struct {
 	ID         string      `json:"id"`
@@ -110,23 +144,66 @@ func (s *AIService) AutoOps(ctx context.Context, alertID string) {
 	item := &OpsItem{
 		ID: idgen.URLSafe(10), AlertID: a.ID, Title: a.Title, Hostname: a.Hostname,
 		Severity: string(a.Severity), Score: a.Score,
-		Verdict: inv.VerdictSuggestion, Confidence: inv.Confidence,
-		Summary: "自动值班调查（确定性五步）：" + inv.VerdictSuggestion + "，建议人工复核后处置",
-		Engine:  "heuristic", CreatedAt: time.Now(), Status: "pending",
+		Engine: "heuristic", CreatedAt: time.Now(), Status: "pending",
 	}
+	fillOpsFromInvestigation(item, inv)
+	if err := s.enqueueOps(ctx, item); err != nil && s.log != nil {
+		s.log.WarnContext(ctx, "ai_ops_enqueue_failed", "alert_id", alertID, "err", err)
+	}
+}
+
+// fillOpsFromInvestigation 把调查报告的内容装进队列条目。
+// AutoOps（建条目）与 ReevaluateOps（刷新旧条目）共用，保证两处口径一致。
+// 摘要写人话：判定用中文 + 置信度 + 下一步建议——2026-11-06 复盘发现
+// 旧摘要直接拼英文枚举（"…:suspicious,建议人工复核后处置"），值班的人
+// 要自己翻译。
+func fillOpsFromInvestigation(item *OpsItem, inv *Investigation) {
+	item.Verdict = inv.VerdictSuggestion
+	item.Confidence = inv.Confidence
+	item.Summary = fmt.Sprintf("确定性五步调查：%s（置信 %.0f%%）——%s",
+		VerdictLabel(inv.VerdictSuggestion), inv.Confidence*100, verdictAdvice(inv.VerdictSuggestion))
+	item.Findings = nil
+	item.Actions = nil
 	for _, st := range inv.Steps {
 		cites := st.Citations
 		if len(cites) == 0 {
-			cites = []string{"核查:" + a.ID}
+			cites = []string{"核查:" + item.AlertID}
 		}
 		item.Findings = append(item.Findings, ai.Reason{Text: st.Name + "：" + st.Finding, Citations: cites})
 	}
 	for _, ra := range inv.RecommendedActions {
 		item.Actions = append(item.Actions, ai.Action{Type: ra.Action, Target: ra.Target, Detail: ra.Reason, RequiresApproval: true})
 	}
-	if err := s.enqueueOps(ctx, item); err != nil && s.log != nil {
-		s.log.WarnContext(ctx, "ai_ops_enqueue_failed", "alert_id", alertID, "err", err)
+}
+
+// ReevaluateOps 用当前调查逻辑重评一条队列建议并刷新其判定/摘要/证据。
+//
+// 为什么需要：队列条目是入队时刻的快照，而调查逻辑会改进（如 2026-11-06
+// 的打分重构）；旧条目带着旧结论躺在队列里，值班的人无从知道它已经
+// 过期。重评不改变条目的审批状态与审批人记录。
+func (s *AIService) ReevaluateOps(ctx context.Context, id string) (*OpsItem, error) {
+	opsQueueMu.Lock()
+	defer opsQueueMu.Unlock()
+	list, err := s.loadOpsQueue(ctx)
+	if err != nil {
+		return nil, err
 	}
+	for i := range list {
+		if list[i].ID != id {
+			continue
+		}
+		inv, err := s.Investigate(ctx, list[i].AlertID)
+		if err != nil {
+			return nil, err
+		}
+		fillOpsFromInvestigation(&list[i], inv)
+		if err := s.saveOpsQueue(ctx, list); err != nil {
+			return nil, err
+		}
+		out := list[i]
+		return &out, nil
+	}
+	return nil, apperr.NotFound("建议")
 }
 
 // enqueueOps 写队列：同告警去重、上限 50（丢最老）。

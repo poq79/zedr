@@ -213,6 +213,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/ai/chat", viewer(adminH.aiChat))
 	mux.Handle("GET /api/v1/ai/ops/queue", viewer(adminH.aiOpsQueue))
 	mux.Handle("POST /api/v1/ai/ops/{id}/review", writer(adminH.aiOpsReview))
+	mux.Handle("POST /api/v1/ai/ops/{id}/reevaluate", writer(adminH.aiOpsReevaluate))
 
 	mux.Handle("GET /api/v1/hosts", viewer(adminH.listHosts))
 	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))

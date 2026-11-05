@@ -334,8 +334,8 @@ func deterministicAgentReport(inv *Investigation, reason string) *ai.AgentReport
 		Engine: "heuristic", Model: "heuristic-v1",
 		Degraded: true, DegradedReason: reason,
 		Verdict: inv.VerdictSuggestion, Confidence: inv.Confidence,
-		Summary: fmt.Sprintf("确定性五步调查完成：%d 步取证，建议 %s（置信度 %.0f%%）。",
-			len(inv.Steps), inv.VerdictSuggestion, inv.Confidence*100),
+		Summary: fmt.Sprintf("确定性五步调查完成：%d 步取证，结论 %s（置信度 %.0f%%）。",
+			len(inv.Steps), VerdictLabel(inv.VerdictSuggestion), inv.Confidence*100),
 	}
 	uncited := 0
 	for i, st := range inv.Steps {
