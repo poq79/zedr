@@ -113,6 +113,19 @@ Install the agent as a Windows service (auto failure-recovery configured):
 .\bin\zedr-agent.exe -uninstall   # stop + remove
 ```
 
+**Deploy to a second machine** — the console's *Hosts → Onboard host* page closes
+the loop: download the deploy bundle (agent + tray + install scripts), copy the
+enrollment parameters, and run one command on the target:
+
+```powershell
+.\install-agent.ps1 -Url http://<server>:8080 -Token <enroll-token> [-Tags a,b] [-WithUI]
+```
+
+The script is idempotent (rerun = reinstall), exits with stable codes (0 enrolled
+/ 2 privileges / 4 arguments), and fleets verify via `-status -json` (`online`).
+Bare `-install` still works for local-only mode and warns loudly when enrollment
+is not configured.
+
 All configuration is environment variables (`HG_*`), validated at startup — see
 [`.env.example`](.env.example) for every option with comments.
 

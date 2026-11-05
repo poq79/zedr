@@ -93,6 +93,20 @@ cp .env.example .env             # 至少设置 HG_SERVER_JWT_SECRET 与 HG_SERV
 全部配置走环境变量（`HG_*`），启动时集中校验——每一项见
 [`.env.example`](.env.example) 内的注释。
 
+### 部署到第二台机器
+
+管理台「主机终端 → **接入新主机**」给出完整闭环：下载部署包
+（探针 + 托盘 + 安装脚本）、复制接入参数、生成一条安装命令：
+
+```powershell
+.\install-agent.ps1 -Url http://<总控地址>:8080 -Token <注册令牌> [-Tags 标签] [-WithUI]
+```
+
+脚本幂等（重复执行 = 重装），退出码稳定（0 上线 / 2 权限 / 4 参数），
+运维平台按 `-status -json` 的 `online` 字段判断接入结果；GPO/Intune 等
+MSI 分发见 `.env.example` 的 `HG_SERVER_DEPLOY_PACKAGE` 与私仓部署文档。
+不带参数的 `-install` 仍可用（本地模式，安装期会给出明确警告）。
+
 ## 检测模型
 
 | 层 | 名称 | 典型信号 |
