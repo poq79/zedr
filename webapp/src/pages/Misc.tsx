@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { KeyRound, Monitor, Plus, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
+import { Copy, Download, Eye, EyeOff, KeyRound, Monitor, Plus, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Host, AllowEntry, AuditRow, User as UserRow, Severity, Role, IntegrityReport, Incident, Burst } from '../lib/types';
 import { SEV_LABEL, relTime, fmtTime } from '../lib/format';
@@ -12,10 +12,178 @@ import { cn } from '../lib/utils';
 /* ================= 主机终端 ================= */
 /* 主机详情已升级为整页 /hosts/:id（见 HostDetail.tsx） */
 
+/** 接入引导配置（GET /api/v1/deploy/enroll-config，adminOnly）。 */
+interface EnrollConfig { enroll_token: string; deploy_enabled: boolean; deploy_version: string }
+
+/** 复制到剪贴板：管理台常经 http://局域网IP 访问（非安全上下文），
+    navigator.clipboard 不存在，必须留 execCommand 兜底。 */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* 落到 execCommand */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+
+/** 接入新主机抽屉：下载部署包 → 展示接入参数 → 生成一条命令。
+    面向"在另一台机器装探针"的运维人员，零外部文档闭环。 */
+function DeployDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const toast = useToast();
+  const [cfg, setCfg] = useState<EnrollConfig | null>(null);
+  const [cfgErr, setCfgErr] = useState<string | null>(null);
+  const [serverUrl, setServerUrl] = useState(() => window.location.origin);
+  const [showToken, setShowToken] = useState(false);
+  const [withUI, setWithUI] = useState(false);
+  const [tags, setTags] = useState('');
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    if (!open || cfg || cfgErr) return;
+    api.get<EnrollConfig>('/api/v1/deploy/enroll-config')
+      .then(setCfg)
+      .catch((e) => setCfgErr((e as Error).message));
+  }, [open, cfg, cfgErr]);
+
+  const token = cfg?.enroll_token || '';
+  const command = [
+    '.\\install-agent.ps1',
+    `-Url ${serverUrl.trim() || 'http://<总控地址>:8080'}`,
+    token ? `-Token ${showToken ? token : '<令牌>'}` : '-Token <注册令牌>',
+    tags.trim() ? `-Tags ${tags.trim()}` : '',
+    withUI ? '-WithUI' : '',
+  ].filter(Boolean).join(' ');
+
+  const doCopy = async (text: string, what: string) => {
+    const ok = await copyText(text);
+    toast(ok ? `已复制${what}` : '复制失败，请手动选择复制', ok ? undefined : 'err');
+  };
+
+  const doDownload = async () => {
+    setDownloading(true);
+    try {
+      const blob = await api.download('/api/v1/deploy/agent-package');
+      const name = cfg?.deploy_version ? `zedr-deploy-v${cfg.deploy_version}.zip` : 'zedr-deploy.zip';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast('部署包已开始下载');
+    } catch (e) {
+      toast((e as Error).message, 'err');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <Drawer open={open} onClose={onClose} width={720}
+      title="接入新主机"
+      sub={<>在目标 Windows 机器上以管理员完成以下三步；装完约 30 秒内出现在主机列表。</>}>
+      {/* 仅打开时渲染内容：Drawer 为动画常驻 DOM，children 常驻会出现在
+          无障碍树里，且配置未加载时第一步会闪出误导性的"未配置"占位 */}
+      {open && <div className="space-y-5">
+        {/* 第一步：下载部署包 */}
+        <section className="rounded-lg border border-border p-4">
+          <h3 className="m-0 flex items-center gap-2 text-[13.5px] font-semibold">第一步 · 下载部署包</h3>
+          <p className="mt-1.5 text-xs text-faint">
+            包内含探针、桌面托盘与官方安装/卸载脚本；响应头 X-ZEDR-Package-SHA256 可用于完整性核对。
+          </p>
+          <div className="mt-2.5">
+            {cfg?.deploy_enabled ? (
+              <Button size="sm" variant="primary" disabled={downloading} onClick={doDownload}>
+                <Download size={13} /> 下载部署包{cfg.deploy_version ? `（v${cfg.deploy_version}）` : ''}
+              </Button>
+            ) : (
+              <p className="m-0 text-xs text-medium">
+                部署包未配置：在服务端 <code className="font-mono">bash scripts/build.sh</code> 产出
+                <code className="mx-1 rounded bg-brand-soft px-1 font-mono">bin/zedr-deploy-v*.zip</code>
+                后，把 <code className="font-mono">HG_SERVER_DEPLOY_PACKAGE</code> 指向它并重启。
+                也可手工拷贝 bin/zedr-agent.exe 到目标机后按下述参数安装。
+              </p>
+            )}
+          </div>
+        </section>
+
+        {/* 第二步：接入参数 */}
+        <section className="rounded-lg border border-border p-4">
+          <h3 className="m-0 flex items-center gap-2 text-[13.5px] font-semibold">第二步 · 接入参数</h3>
+          {cfgErr ? (
+            <p className="mt-2 mb-0 text-xs text-medium">{cfgErr}（接入参数仅管理员可见；也可从服务端 .env 的 HG_SERVER_ENROLL_TOKEN 获取）</p>
+          ) : !cfg ? (
+            <p className="mt-2 mb-0 text-xs text-faint">读取接入配置…</p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              <label className="block">
+                <span className="mb-1 block text-[11.5px] text-faint">服务端地址（必须是目标机器可达的地址——本页地址栏不一定通）</span>
+                <Input value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} className="w-full font-mono" />
+              </label>
+              <div>
+                <span className="mb-1 block text-[11.5px] text-faint">注册令牌（预共享，仅管理员可见）</span>
+                <div className="flex items-center gap-2">
+                  <code className="min-w-0 flex-1 truncate rounded border border-border bg-[var(--code-bg)] px-2.5 py-1.5 font-mono text-[12px]">
+                    {token ? (showToken ? token : '•'.repeat(Math.min(24, token.length))) : '（未配置 HG_SERVER_ENROLL_TOKEN）'}
+                  </code>
+                  <Button size="sm" variant="ghost" onClick={() => setShowToken((v) => !v)} title={showToken ? '隐藏' : '显示'}>
+                    {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={!token} onClick={() => doCopy(token, '令牌')} title="复制令牌">
+                    <Copy size={13} />
+                  </Button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="mb-1 block text-[11.5px] text-faint">主机标签（可选，逗号分隔）</span>
+                  <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="office,finance" className="w-full" />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11.5px] text-faint">桌面托盘</span>
+                  <button type="button" onClick={() => setWithUI((v) => !v)}
+                    className={cn('flex h-[34px] w-full items-center gap-2 rounded-md border px-2.5 text-[12.5px] transition-colors',
+                      withUI ? 'border-primary bg-brand-soft text-primary' : 'border-border text-faint hover:bg-secondary')}>
+                    <span className={cn('inline-block h-3.5 w-3.5 shrink-0 rounded-sm border', withUI ? 'border-primary bg-primary' : 'border-border-strong')} />
+                    同时安装托盘自启（-WithUI）
+                  </button>
+                </label>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* 第三步：一条命令 */}
+        <section className="rounded-lg border border-border p-4">
+          <h3 className="m-0 flex items-center gap-2 text-[13.5px] font-semibold">第三步 · 在目标机器上执行</h3>
+          <p className="mt-1.5 text-xs text-faint">管理员 PowerShell，进入部署包解压目录；脚本幂等，重复执行等于重装。</p>
+          <div className="relative mt-2">
+            <pre className="m-0 rounded-lg border border-border bg-[var(--code-bg)] p-3 pr-10 font-mono text-[11.5px] leading-[1.6] break-all whitespace-pre-wrap">{command}</pre>
+            <Button size="icon" variant="ghost" className="!absolute top-1.5 right-1.5" title="复制命令" onClick={() => doCopy(command, '命令')}>
+              <Copy size={13} />
+            </Button>
+          </div>
+          <p className="mt-2.5 mb-0 text-xs text-faint">
+            卸载：<code className="font-mono">.\uninstall-agent.ps1</code>（默认保留数据目录，取证优先；<code className="font-mono">-Purge</code> 连数据一起删）。
+            脚本判断在线：<code className="font-mono">zedr-agent.exe -status -json</code> 的 <code className="font-mono">online</code> 字段。
+          </p>
+        </section>
+      </div>}
+    </Drawer>
+  );
+}
+
 export function HostsPage() {
   const err = useError();
   const navigate = useNavigate();
   const [hosts, setHosts] = useState<Host[] | null>(null);
+  const [deployOpen, setDeployOpen] = useState(false);
 
   const load = useCallback(async () => {
     try { setHosts((await api.get<{ items: Host[] }>('/api/v1/hosts')).items || []); }
@@ -28,11 +196,19 @@ export function HostsPage() {
 
   return (
     <div>
+      <DeployDrawer open={deployOpen} onClose={() => setDeployOpen(false)} />
       {!hosts ? <Card className="px-2 pb-2"><SkeletonRows rows={5} /></Card> : !hosts.length ? (
         <Card><EmptyState tone="info" icon={<Monitor size={20} />} title="还没有终端注册"
-          sub={<>在目标机器上启动 <b>zedr-agent.exe</b>，并配置正确的<br /><code className="rounded bg-brand-soft px-1 font-mono text-[11px] text-primary">HG_AGENT_SERVER_URL</code> 与 <code className="rounded bg-brand-soft px-1 font-mono text-[11px] text-primary">HG_AGENT_ENROLL_TOKEN</code>。<br />终端注册后约 30 秒内会出现在这里。</>} /></Card>
+          action={<Button size="sm" variant="primary" onClick={() => setDeployOpen(true)}><Plus size={13} /> 接入新主机</Button>}
+          sub={<>在目标机器上运行部署包里的 <b>install-agent.ps1</b>（「接入新主机」可下载包并生成命令），<br />或手工启动 <b>zedr-agent.exe</b> 并配置 <code className="rounded bg-brand-soft px-1 font-mono text-[11px] text-primary">HG_AGENT_SERVER_URL</code> 与 <code className="rounded bg-brand-soft px-1 font-mono text-[11px] text-primary">HG_AGENT_ENROLL_TOKEN</code>。<br />终端注册后约 30 秒内会出现在这里。</>} /></Card>
       ) : (
-        <Card className="overflow-x-auto px-2 py-3.5">
+        <>
+          <div className="mb-3 flex items-center gap-2.5">
+            <span className="text-xs text-faint">共 {hosts.length} 台终端 · 默认每 30 秒心跳一次</span>
+            <div className="flex-1" />
+            <Button size="sm" variant="primary" onClick={() => setDeployOpen(true)}><Plus size={13} /> 接入新主机</Button>
+          </div>
+          <Card className="overflow-x-auto px-2 py-3.5">
           <table className="w-full text-[13px]">
             <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
               {['状态', '主机', '系统', '运行账号', '进程数', 'CPU', '内存', '待处置', '最后心跳'].map((h) => <th key={h} className="px-3.5 py-2.5 font-semibold">{h}</th>)}
@@ -60,7 +236,8 @@ export function HostsPage() {
             </tbody>
           </table>
           <p className="mt-2 px-3.5 text-xs text-faint">点击任意一行进入主机详情整页：系统概要 · 网络适配器 · 监听端口 · 服务 · 计划任务 · 自启动 · 处置指令 · 指令历史。终端默认每 30 秒心跳一次。</p>
-        </Card>
+          </Card>
+        </>
       )}
     </div>
   );

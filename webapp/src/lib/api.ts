@@ -116,6 +116,9 @@ export const api = {
   del: <T>(p: string) => request<T>(p, { method: 'DELETE' }),
   login, logout, tryRefresh,
   me: () => request<import('./types').User>('/api/v1/me'),
+  /** 带鉴权的二进制下载（部署包等 attachment 端点）：走 liveRead 同款
+      401 刷新重放，返回 blob 由调用方触发浏览器保存。 */
+  download: (p: string) => liveRead(p).then((r) => r.blob),
 };
 
 export function sseConnect(onEvent: (a: import('./types').Alert) => void): EventSource {
