@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -41,6 +42,9 @@ func main() {
 	etw2Attach := flag.String("etw2attach", "", "消费者 attach 到已存在会话（决定性判别实验；配合 logman）")
 	memTest := flag.Bool("memtest", false, "内存威胁巡检自测：在本进程内分配一块含 PE 头的私有可执行内存"+
 		"（ VirtualAlloc RWX + 写入 2 字节 MZ，不注入任何进程），供 MEM-1055 检测链路端到端验证；配合 -hold")
+	chainTest := flag.Bool("chaintest", false, "攻击链关联自测：把自身复制到 %TEMP%\\hg-chaintest-* 后从该目录"+
+		"重新执行（子进程=落地未签名程序 → -netburst 外联，构成 CHAIN-DROP-EXEC-C2 的两阶段样本），"+
+		"父进程等待子进程退出后清理；全程零外部下载、零真实恶意内容")
 	flag.Parse()
 
 	fmt.Println("=== Z-EDR 采集层自检 ===")
@@ -169,8 +173,10 @@ func main() {
 		testETW(*etwWatch)
 	}
 
-	// -netburst/-memtest 与 -hold 二选一占用进程生命周期
-	if *etw2Attach != "" {
+	// -chaintest/-netburst/-memtest 与 -hold 二选一占用进程生命周期
+	if *chainTest {
+		chainTestRun()
+	} else if *etw2Attach != "" {
 		testETW2Attach(*etw2Attach, 30*time.Second)
 	} else if *etw2Watch > 0 {
 		testETW2(*etw2Watch)
@@ -184,6 +190,88 @@ func main() {
 	}
 
 	fmt.Println("\n自检完成。")
+}
+
+// chainTestRun 是攻击链关联引擎（CHAIN-*）的端到端自测原语：
+//
+//  1. 把自身复制到 %TEMP%\hg-chaintest-<rand>\chaindrop.exe——对探针而言
+//     这是一个"刚落地于可写目录的未签名程序"（RDCW/USN 落地记录 + 富化
+//     无签名），构成 CHAIN-DROP-EXEC-C2 的链首；
+//  2. 从该目录重新执行自己，子进程跑 -netburst（TEST-NET SYN，非回环
+//     外联）+ -hold——构成链的第二环；
+//  3. 父进程等待子进程退出后清理目录（子进程镜像锁已随退出释放）。
+//
+// 安全边界与 -memtest/-netburst 同款：样本是 zedr-diag 自身副本，零外部
+// 下载、零真实恶意内容；netburst 目标是不可路由测试网段。链闭合依赖
+// 探针观察窗口（扫描周期 2s 级），子进程 20s 生命周期足够；验证结果
+// 在探针告警里找 CHAIN-DROP-EXEC-C2（本机 API /api/local/alerts 或管理台）。
+func chainTestRun() {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Printf("!! 定位自身失败: %v\n", err)
+		return
+	}
+	// 防御性防递归：手动把 -chaintest 传给测试目录里的子进程时到此为止
+	if strings.Contains(strings.ToLower(exe), "hg-chaintest-") {
+		fmt.Println("!! 当前进程已是链自测样本（位于 hg-chaintest-*），不再递归复制。")
+		fmt.Println("   请对原始 zedr-diag.exe 执行 -chaintest。")
+		return
+	}
+
+	dir := filepath.Join(os.TempDir(),
+		fmt.Sprintf("hg-chaintest-%x", int64(os.Getpid())*(time.Now().UnixNano()&0xffff)))
+	dst := filepath.Join(dir, "chaindrop.exe")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Printf("!! 创建测试目录失败: %v\n", err)
+		return
+	}
+	if err := copyFile(exe, dst); err != nil {
+		fmt.Printf("!! 复制样本失败: %v\n", err)
+		_ = os.RemoveAll(dir)
+		return
+	}
+
+	fmt.Printf("\n--- 攻击链自测样本已就位 ---\n")
+	fmt.Printf("落地样本: %s（未签名，可写目录，RDCW/USN 将记录落地）\n", dst)
+	fmt.Printf("子进程将以 -netburst 203.0.113.9:16 + -hold 20s 运行，构成外联证据……\n")
+
+	// 等待子进程：上限 90s 兜底（-hold 20s 正常远用不满），超时强杀后照常清理
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, dst, "-hold", "20s", "-netburst", "203.0.113.9:16")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	runErr := cmd.Run()
+
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Printf("!! 清理测试目录失败（可手动删除）: %s: %v\n", dir, err)
+	} else {
+		fmt.Printf("测试目录已清理: %s\n", dir)
+	}
+	if runErr != nil {
+		fmt.Printf("!! 子进程异常退出: %v\n", runErr)
+		return
+	}
+	fmt.Println("样本生命周期结束。链闭合需探针扫描周期（2s 级）观察到落地与外联，")
+	fmt.Println("稍后在探针告警中核对 CHAIN-DROP-EXEC-C2（/api/local/alerts 或管理台告警页）。")
+}
+
+// copyFile 是自测样本复制（内容=zedr-diag 自身，无外部输入）。
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 // memTestSelf 在**本进程内**分配一块含 PE 头的私有可执行内存：
