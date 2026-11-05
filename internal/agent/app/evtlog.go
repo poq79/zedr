@@ -51,9 +51,11 @@ type evtChannelDef struct {
 // evtChannels 是首批订阅清单。System 通道事件是无名 Data（data[0..]），
 // Security/TSLSM 是 Name 属性型——两种口径 winapi.parseEvtXML 都归一成
 // map。XPath 在查询层过滤（通道全量不进探针），这是 4625 量级可控的前提。
+// 1102（Security 日志清空）需"审核策略变更"审计开启；4698 需对象访问审计
+// 子类——未开启的机器上对应事件缺失（诚实边界，见 DETECTION §3.6.3）。
 var evtChannels = []evtChannelDef{
 	{"System", "*[System[(EventID=7045) or (EventID=104)]]"},
-	{"Security", "*[System[(EventID=4625)]]"},
+	{"Security", "*[System[(EventID=4625) or (EventID=4698) or (EventID=1102)]]"},
 	{"Microsoft-Windows-TerminalServices-LocalSessionManager/Operational", "*[System[(EventID=1149)]]"},
 }
 
@@ -90,6 +92,12 @@ func (a *Agent) evtlogLoop(ctx context.Context) {
 		cp.Channels = map[string]uint64{}
 	}
 
+	// 错峰：首 tick 推迟 20s（与 USN 轮询 10s、清单 30s 相位错开）
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(20 * time.Second):
+	}
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	first := true
@@ -168,9 +176,15 @@ func (a *Agent) dispatchEvtEvents(channel string, events []winapi.EvtEvent) {
 		case channel == "System" && ev.EventID == 7045:
 			a.emitEvtServiceInstall(ev)
 		case channel == "System" && ev.EventID == 104:
-			a.emitEvtLogCleared(ev)
+			a.emitEvtLogCleared(ev, channel)
+		case channel == "Security" && ev.EventID == 1102:
+			// Security 通道清空（T1070.001）：与 104 同语义不同通道，
+			// 前提是"审核策略变更"审计开启
+			a.emitEvtLogCleared(ev, channel)
 		case channel == "Security" && ev.EventID == 4625:
 			a.evtBrutePush(ev)
+		case channel == "Security" && ev.EventID == 4698:
+			a.emitEvtSchTask(ev)
 		case channel == "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational" && ev.EventID == 1149:
 			a.emitEvtRDPIn(ev)
 		}
@@ -247,24 +261,63 @@ func (a *Agent) emitEvtServiceInstall(ev winapi.EvtEvent) {
 // ---------------------------------------------------------------- 104
 
 // emitEvtLogCleared：事件日志被清（反取证 T1070.001）。微软 Appendix L
-// 列为必查项；正常软件极少清 System 通道。
-func (a *Agent) emitEvtLogCleared(ev winapi.EvtEvent) {
+// 列为必查项；正常软件极少清 System 通道。104=System 通道、1102=Security
+// 通道（1102 需"审核策略变更"审计开启，未开启则事件缺失）。
+func (a *Agent) emitEvtLogCleared(ev winapi.EvtEvent, channel string) {
 	a.emitAlert(model.AlertEnvelope{
-		Fingerprint: fmt.Sprintf("evt:104:%d", ev.TimeCreated.Unix()),
+		Fingerprint: fmt.Sprintf("evt:%d:%s:%d", ev.EventID, channel, ev.TimeCreated.Unix()),
 		Title:       "事件日志：日志被清空（反取证信号）",
-		Summary:     "System 事件日志被清除。日志清空是攻击者抹除痕迹的经典动作（T1070.001），微软官方监控清单必查项；结合此前告警的时间线排查清空前的活动。",
-		Verdict:     model.VerdictSuspicious,
-		Severity:    model.SeverityHigh,
-		Score:       60,
-		ProcUser:    "SYSTEM/EVTLOG",
-		RuleIDs:     []string{"EVT-LOGCLR"},
-		MITRE:       []string{"T1070.001"},
+		Summary: fmt.Sprintf("%s 通道事件日志被清除。日志清空是攻击者抹除痕迹的经典动作（T1070.001），微软官方监控清单必查项；结合此前告警的时间线排查清空前的活动。",
+			channel),
+		Verdict:  model.VerdictSuspicious,
+		Severity: model.SeverityHigh,
+		Score:    60,
+		ProcUser: "SYSTEM/EVTLOG",
+		RuleIDs:  []string{"EVT-LOGCLR"},
+		MITRE:    []string{"T1070.001"},
 		Evidence: model.Evidence{
 			Signals: []model.Signal{{
 				Layer: "evtlog", ID: "EVT-LOGCLR", Name: "日志清空事件",
-				Score: 60, Note: "System 通道日志被清除", MITRE: "T1070.001",
+				Score: 60, Note: channel + " 通道日志被清除", MITRE: "T1070.001",
 			}},
-			Notes: []string{fmt.Sprintf("record_id=%d", ev.RecordID)},
+			Notes: []string{fmt.Sprintf("record_id=%d channel=%s", ev.RecordID, channel)},
+		},
+		OccurredAt: ev.TimeCreated,
+	})
+}
+
+// emitEvtSchTask：计划任务创建（T1053.005）。inventory 的 tasks 节 30s
+// 差量已有覆盖，事件日志的价值是 OS 权威 + 账户/即时光（与 persist/EVT-
+// SVCINST 同款互补口径）。
+func (a *Agent) emitEvtSchTask(ev winapi.EvtEvent) {
+	taskName := evtData(ev.Data, []string{"taskname"}, 0)
+	acct := evtData(ev.Data, []string{"subjectusername"}, 0)
+	if taskName == "" {
+		return
+	}
+	summary := fmt.Sprintf("计划任务 %q 由 %s 创建（事件日志权威证据，T1053.005）。与资产清单的计划任务变更互为佐证。",
+		taskName, acct)
+	a.emitAlert(model.AlertEnvelope{
+		Fingerprint: fmt.Sprintf("evt:4698:%s:%d", strings.ToLower(taskName), ev.TimeCreated.Unix()/60),
+		Title:       "事件日志：计划任务创建 " + taskName,
+		Summary:     summary,
+		Verdict:     model.VerdictSuspicious,
+		Severity:    model.SeverityMedium,
+		Score:       45,
+		ProcessName: taskName,
+		ProcUser:    "SYSTEM/EVTLOG",
+		RuleIDs:     []string{"EVT-SCHTASK"},
+		MITRE:       []string{"T1053.005"},
+		Evidence: model.Evidence{
+			Signals: []model.Signal{{
+				Layer: "evtlog", ID: "EVT-SCHTASK", Name: "计划任务创建",
+				Score: 45, Note: summary, MITRE: "T1053.005",
+			}},
+			Notes: []string{
+				"task=" + taskName,
+				"account=" + acct,
+				fmt.Sprintf("record_id=%d", ev.RecordID),
+			},
 		},
 		OccurredAt: ev.TimeCreated,
 	})

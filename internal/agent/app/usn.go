@@ -152,6 +152,12 @@ func (a *Agent) usnPollLoop(ctx context.Context) {
 	delay := interval
 	failStreak := 0
 	lagStreak := 0
+	// 错峰：与 E1/清单循环同周期，首 tick 错开 10s 避免同相位 CPU 叠峰
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(10 * time.Second):
+	}
 	for {
 		timer := time.NewTimer(delay)
 		select {

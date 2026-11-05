@@ -615,6 +615,15 @@ func (d *Defense) rateFinding(when time.Time) Finding {
 	top := topDirs(dirCount, 3)
 
 	summary := fmt.Sprintf("60 秒窗口内加权删除/改名计数 %d（阈值 %d）", w, d.threshold)
+	// 目录集中度：单目录集中爆发（Top1 占比 ≥0.6 且总量 ≥2×阈值）是
+	// 加密器"逐文件处理同一目标目录"的形态，升级 high——分散目录多为
+	// 用户整理/备份类行为，维持观察级。这是诱饵关联之外的第二升级路径。
+	escalate := false
+	if len(top) > 0 && top[0].count*10 >= w*6 && w >= 2*d.threshold {
+		escalate = true
+		summary += fmt.Sprintf("；单目录集中占比 %.0f%%，符合同目录集中加密形态",
+			float64(top[0].count)/float64(w)*100)
+	}
 	if len(top) > 0 {
 		parts := make([]string, len(top))
 		for i, td := range top {
@@ -641,12 +650,18 @@ func (d *Defense) rateFinding(when time.Time) Finding {
 	// 触碰诱饵"的高置信组合。
 	summary += "。注意：浏览器缓存清理/编译/解压类正常批量操作也会呈现此形态，请结合目录判断；" +
 		"若同时有诱饵文件被触碰会升级为 critical"
+	sev, score := model.SeverityMedium, 45
+	title := "批量删除/改名行为（观察级，疑似勒索加密）"
+	if escalate {
+		sev, score = model.SeverityHigh, 60
+		title = "批量删除/改名行为（同目录集中爆发，疑似勒索加密）"
+	}
 	return Finding{
 		RuleID:   RuleRansom,
-		Severity: model.SeverityMedium,
-		Score:    45,
+		Severity: sev,
+		Score:    score,
 		Verdict:  model.VerdictSuspicious,
-		Title:    "批量删除/改名行为（观察级，疑似勒索加密）",
+		Title:    title,
 		Summary:  summary,
 		MITRE:    []string{"T1486"}, // Impact: Data Encrypted for Impact
 		Notes:    notes,

@@ -48,37 +48,45 @@ type memWatchCandidate struct {
 //   - 只选引擎有信号的进程（Score>0：白名单外、可写目录、外联、血缘
 //     异常……任何一个检测层的信号都算——内存巡检是"对可疑者的深查"，
 //     不做全量盲扫）；
-//   - 按分数降序、同级按最新优先：预算内永远先扫最可疑的；
+//   - 分层：落地即执行关联（10min 窗口内）的进程优先——刚落地的 PE
+//     最该深查；其余按分数降序、同级最新优先；
 //   - 探针自身进程排除。
-func selectMemCandidates(rows []state.ProcRow, selfPID uint32, budget int) []memWatchCandidate {
-	var cands []memWatchCandidate
+func selectMemCandidates(rows []state.ProcRow, selfPID uint32, budget int, landed map[uint32]time.Time) []memWatchCandidate {
+	var tier1, tier2 []memWatchCandidate
 	for _, r := range rows {
 		if r.PID == 0 || r.PID == selfPID || r.Score <= 0 {
 			continue
 		}
-		cands = append(cands, memWatchCandidate{
+		c := memWatchCandidate{
 			PID: r.PID, Name: r.Name, Path: r.Path,
 			StartTime: r.FirstSeen, Score: r.Score,
-		})
-	}
-	sort.Slice(cands, func(i, j int) bool {
-		if cands[i].Score != cands[j].Score {
-			return cands[i].Score > cands[j].Score
 		}
-		return cands[i].StartTime.After(cands[j].StartTime)
-	})
-	if len(cands) > budget {
-		cands = cands[:budget]
+		if lt, ok := landed[r.PID]; ok && time.Since(lt) <= 10*time.Minute {
+			tier1 = append(tier1, c)
+			continue
+		}
+		tier2 = append(tier2, c)
 	}
-	return cands
+	sort.Slice(tier1, func(i, j int) bool { return tier1[i].Score > tier1[j].Score })
+	sort.Slice(tier2, func(i, j int) bool {
+		if tier2[i].Score != tier2[j].Score {
+			return tier2[i].Score > tier2[j].Score
+		}
+		return tier2[i].StartTime.After(tier2[j].StartTime)
+	})
+	out := append(tier1, tier2...)
+	if len(out) > budget {
+		out = out[:budget]
+	}
+	return out
 }
 
 // memHit 是单进程扫描后的聚合结论。
 type memHit struct {
-	Suspicious int   // 私有可执行 ≥4KB 区域数
-	MZConfirmed int  // 其中 PE 头确认为 MZ 的（ReadProcessMemory 失败的不计）
-	TotalBytes uint64 // MZ 确认区域的体积和
-	Truncated  bool
+	Suspicious  int    // 私有可执行 ≥4KB 区域数
+	MZConfirmed int    // 其中 PE 头确认为 MZ 的（ReadProcessMemory 失败的不计）
+	TotalBytes  uint64 // MZ 确认区域的体积和
+	Truncated   bool
 }
 
 // scoreMemHit 把扫描结果折算成告警定级。返回 nil 表示不值得告警。
@@ -124,8 +132,20 @@ func (a *Agent) memwatchLoop(ctx context.Context) {
 // memwatchOnce 执行一轮选样+扫描+告警。单 goroutine 调用，无锁设计。
 func (a *Agent) memwatchOnce() {
 	rows := a.store.Procs(2000)
+	// 落地优先名单：10 分钟内被"落地即执行"关联过的进程
+	a.memLandedMu.Lock()
+	landed := make(map[uint32]time.Time, len(a.memLanded))
+	for pid, at := range a.memLanded {
+		if time.Since(at) <= 10*time.Minute {
+			landed[pid] = at
+		} else {
+			delete(a.memLanded, pid)
+		}
+	}
+	a.memLandedMu.Unlock()
+
 	scanned, hits := 0, 0
-	for _, c := range selectMemCandidates(rows, uint32(os.Getpid()), memWatchBudget) {
+	for _, c := range selectMemCandidates(rows, uint32(os.Getpid()), memWatchBudget, landed) {
 		res, err := winapi.ScanMemory(c.PID)
 		if err != nil {
 			// 受保护/已退出是正常调查结论，静默跳过（有计数）
@@ -200,7 +220,7 @@ func (a *Agent) emitMemFinding(c memWatchCandidate, f memFinding, meta enrich.Me
 		Evidence: model.Evidence{
 			Process: model.ProcEvidence{
 				PID: c.PID, Name: c.Name, Path: c.Path,
-				StartTime: c.StartTime,
+				StartTime:  c.StartTime,
 				HashSHA256: meta.Hash, Signer: meta.Signer,
 				Signed: meta.Signed, SignatureOK: meta.SignatureOK,
 			},

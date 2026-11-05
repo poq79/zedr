@@ -33,7 +33,7 @@ var systemProcNames = map[string]bool{
 
 // trustKey 是 trusted 抽查结果的缓存键（PID 复用靠启动时间区分）。
 type trustKey struct {
-	pid  uint32
+	pid   uint32
 	start int64
 }
 
@@ -152,12 +152,13 @@ func (a *Agent) emitNetFinding(f netwatch.Finding, snap *collect.Snapshot) {
 	// 运行身份：行为告警的证据面与进程告警对齐（AI 研判与运营视图都
 	// 依赖"谁在跑"）；进程已退出时解析失败留空，不冒充 SYSTEM。
 	procUser, _ := winapi.ProcessUser(f.Ident.PID)
+	sessionID, _ := winapi.SessionID(f.Ident.PID)
 
 	evidence := model.Evidence{
 		Process: model.ProcEvidence{
 			PID: f.Ident.PID, PPID: f.Ident.PPID, Name: f.Ident.Name, Path: path,
-			User:      procUser,
-			StartTime: f.Ident.StartTime,
+			User: procUser, SessionID: sessionID,
+			StartTime:  f.Ident.StartTime,
 			HashSHA256: meta.Hash, Signer: meta.Signer,
 			Signed: meta.Signed, SignatureOK: meta.SignatureOK,
 		},

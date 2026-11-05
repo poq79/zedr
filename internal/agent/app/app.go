@@ -72,6 +72,10 @@ type Agent struct {
 	// memwatch 计数（memwatchLoop 单 goroutine 写，scan 回调读）
 	memScans atomic.Int64
 	memHits  atomic.Int64
+	// memLanded 记录"落地即执行关联"的进程（scan goroutine 写，
+	// memwatchLoop 读加锁）——刚落地的未签名 PE 优先进内存巡检队列
+	memLandedMu sync.Mutex
+	memLanded   map[uint32]time.Time
 	// usb 在位可移动卷数（usbwatchLoop 单 goroutine 写）
 	usbVolumes atomic.Int64
 
@@ -705,11 +709,22 @@ func (a *Agent) scan(deep bool) int {
 				CmdLine: pi.CmdLine, User: pi.User, SessionID: pi.SessionID,
 				Elevated: pi.Elevated, IsWow64: pi.IsWow64, StartTime: pi.StartTime,
 			},
-			Ancestry:    ancestry,
-			ParentAlive: parentAlive,
-			Connections: conns,
-			Modules:     modules,
-			LandedAt:    a.landedAt(pi.Path),
+			Ancestry:      ancestry,
+			ParentAlive:   parentAlive,
+			Connections:   conns,
+			Modules:       modules,
+			LandedAt:      a.landedAt(pi.Path),
+			LandedFromWeb: a.landedFromWeb(pi.Path),
+		}
+
+		// 内存巡检的优先选样来源：落地即执行关联的进程（10 分钟窗口）
+		if !in.LandedAt.IsZero() {
+			a.memLandedMu.Lock()
+			if a.memLanded == nil {
+				a.memLanded = map[uint32]time.Time{}
+			}
+			a.memLanded[pi.PID] = time.Now()
+			a.memLandedMu.Unlock()
 		}
 
 		res := a.eng.Analyze(in)
@@ -870,6 +885,20 @@ func (a *Agent) landedAt(path string) time.Time {
 		return d.When
 	}
 	return time.Time{}
+}
+
+// landedFromWeb 判断落地文件是否带 Mark of the Web（Zone.Identifier，
+// ZoneID=3 互联网来源）。只有"确有落地关联"的进程才会走到这里，
+// 每个新进程最多付一次 ADS 读取成本；读取失败按无 MotW 处理（宁缺毋滥）。
+func (a *Agent) landedFromWeb(path string) bool {
+	if path == "" {
+		return false
+	}
+	zi, err := winapi.ReadZoneIdentifier(path)
+	if err != nil || zi == nil {
+		return false
+	}
+	return zi.ZoneID == 3
 }
 
 // ---------------------------------------------------------------- 持久化监控

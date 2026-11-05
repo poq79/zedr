@@ -41,6 +41,10 @@ type Input struct {
 	// 零值表示未观测到落地——可能是监控启动前就存在的文件，也可能来自
 	// 未被监控的目录，两种情况都不应据此扣分或加分。
 	LandedAt time.Time
+	// LandedFromWeb 表示落地文件带 Mark of the Web（Zone.Identifier，
+	// ZoneID=3/互联网来源）——浏览器/IM 下载的经典痕迹。只对 LandedAt
+	// 非零的进程有意义。
+	LandedFromWeb bool
 }
 
 // Result 是融合后的判定结果。
@@ -65,17 +69,17 @@ type Result struct {
 
 // Config 是引擎参数。
 type Config struct {
-	WarmupUntil time.Time // 冷启动静默期：此前只上报恶意级告警
-	MaliciousAt int       // 恶意阈值
-	SuspiciousAt int      // 可疑阈值
+	WarmupUntil  time.Time // 冷启动静默期：此前只上报恶意级告警
+	MaliciousAt  int       // 恶意阈值
+	SuspiciousAt int       // 可疑阈值
 }
 
 // Stats 是引擎累计计数（用于本地 UI 与心跳上报）。
 type Stats struct {
-	Scanned     int64 `json:"scanned"`
-	Fired       int64 `json:"fired"`
-	Suppressed  int64 `json:"suppressed"`
-	Whitelisted int64 `json:"whitelisted"`
+	Scanned      int64 `json:"scanned"`
+	Fired        int64 `json:"fired"`
+	Suppressed   int64 `json:"suppressed"`
+	Whitelisted  int64 `json:"whitelisted"`
 	AvgLatencyMs int64 `json:"avg_latency_ms"`
 }
 
@@ -93,13 +97,13 @@ type Engine struct {
 	// 与 rules 同锁保护：两者都是"服务端可热替换的检测数据"。
 	iocs map[string]string
 
-	statMu     sync.Mutex
-	scanned    int64
-	fired      int64
-	suppressed int64
+	statMu      sync.Mutex
+	scanned     int64
+	fired       int64
+	suppressed  int64
 	whitelisted int64
-	latSum     int64
-	latN       int64
+	latSum      int64
+	latN        int64
 
 	// 本地去重：同一指纹在窗口内只上报一次
 	recent map[string]time.Time
@@ -494,21 +498,21 @@ func (e *Engine) ruleLayer(in Input, meta enrich.Meta, signals *[]model.Signal) 
 
 	p := in.Proc
 	target := &rules.Target{
-		Name:       p.Name,
-		Path:       p.Path,
-		CmdLine:    p.CmdLine,
-		User:       p.User,
-		ParentName: parentName(in),
-		ParentPath: parentPath(in),
-		Ancestors:  ancestorNames(in.Ancestry),
-		Signed:     meta.Signed,
-		SignatureOK: meta.SignatureOK,
-		Signer:     meta.Signer,
-		Elevated:   p.Elevated,
-		InSystem:   meta.InSystem,
-		DirWritable: meta.DirWritable,
-		SessionID:  p.SessionID,
-		NetConnCount: len(in.Connections),
+		Name:            p.Name,
+		Path:            p.Path,
+		CmdLine:         p.CmdLine,
+		User:            p.User,
+		ParentName:      parentName(in),
+		ParentPath:      parentPath(in),
+		Ancestors:       ancestorNames(in.Ancestry),
+		Signed:          meta.Signed,
+		SignatureOK:     meta.SignatureOK,
+		Signer:          meta.Signer,
+		Elevated:        p.Elevated,
+		InSystem:        meta.InSystem,
+		DirWritable:     meta.DirWritable,
+		SessionID:       p.SessionID,
+		NetConnCount:    len(in.Connections),
 		HasPublicRemote: hasPublicRemote(in.Connections),
 	}
 	for _, c := range in.Connections {
@@ -625,6 +629,14 @@ func (e *Engine) dropLayer(p ProcessInfo, meta enrich.Meta, in Input, signals *[
 	if risky && score >= 32 && age < 90*time.Second {
 		score += 8
 		reason += "，且落地后立即执行"
+	}
+
+	// MotW（Mark of the Web）：落地文件带 Zone.Identifier 且 ZoneID=3
+	//（互联网来源）——浏览器/IM 下载的经典痕迹，把"落地"升级为
+	// "从互联网来的落地"（T1105 下载 + 溯源证据）。
+	if in.LandedFromWeb {
+		score += 8
+		reason += "，且文件带互联网来源标记（MotW）"
 	}
 
 	*signals = append(*signals, model.Signal{
