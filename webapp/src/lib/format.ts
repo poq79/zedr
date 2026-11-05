@@ -27,6 +27,11 @@ export function fmtBytes(n?: number): string {
 
 export const SEV_LABEL: Record<string, string> = { critical: '严重', high: '高危', medium: '中危', low: '低危', info: '提示' };
 export const STATUS_LABEL: Record<string, string> = { open: '待处置', acknowledged: '已确认', resolved: '已解决', false_positive: '误报' };
-export const VERDICT_LABEL: Record<string, string> = { malicious: '恶意', suspicious: '可疑', safe: '安全' };
+// 判定枚举与调查/研判引擎一致（malicious/suspicious/inconclusive/benign，
+// 另保留旧字段 safe）；缺项会直接露英文枚举，新增判定值必须在这里补映射。
+export const VERDICT_LABEL: Record<string, string> = {
+  malicious: '恶意', suspicious: '可疑', safe: '安全',
+  benign: '倾向误报', inconclusive: '证据不足',
+};
 export const LAYER_LABEL: Record<string, string> = { static: '静态指纹', keyword: '关键词', rule: '行为规则', lineage: '血缘图', behavior: '行为', netwatch: '网络行为', evtlog: '事件日志', filedef: '文件防御', inventory: '资产清单', persist: '持久化守护' };
 export const ROLE_LABEL: Record<string, string> = { admin: '管理员', analyst: '分析师', viewer: '只读' };

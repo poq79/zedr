@@ -18,7 +18,7 @@ interface TriageResp {
 
 const TRIAGE_VERDICT: Record<string, [string, string]> = {
   malicious: ['恶意', 'critical'], suspicious: ['可疑', 'medium'],
-  benign: ['无害', 'resolved'], inconclusive: ['证据不足', 'info'],
+  benign: ['倾向误报', 'resolved'], inconclusive: ['证据不足', 'info'],
 };
 
 export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {

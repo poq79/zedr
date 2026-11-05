@@ -747,14 +747,15 @@ export function AISettingsPage({ user }: { user: { role: string } }) {
   );
 }
 
-/* ---------------- AI 值班队列（方向 C） ---------------- */
+/* ---------------- AI 值班队列（方向 C）——值班工作台 ---------------- */
 interface OpsItem {
   id: string; alert_id: string; title: string; hostname: string; severity: string;
   score: number; verdict: string; confidence: number; summary: string;
   findings?: { text: string; citations?: string[] }[];
   actions?: { type: string; target?: string; detail?: string }[];
   engine: string; created_at: string; status: string;
-  reviewed_by?: string; reviewed_at?: string;
+  reviewed_by?: string; reviewed_at?: string; review_reason?: string;
+  occurrences?: number; last_alert_id?: string; last_seen_at?: string;
 }
 
 // 判定芯片：中文 + 语义色。历史条目里存有旧枚举串（"benign-需人工确认"），
@@ -771,78 +772,216 @@ function verdictMeta(v: string) {
   return { label: v, tone: 'neutral' };
 }
 
+// 结案理由码（业界 closure reason codes：TP 与 BTP 分开——把"真实但
+// 预期"记成"误报"会误导后续调优方向）。与服务端 OpsReviewReasons 对齐。
+const OPS_REASONS: [string, string][] = [
+  ['false_positive', '误报（规则/阈值打错对象）'],
+  ['known_benign', '真实但良性（运维/软件自启等）'],
+  ['duplicate', '重复告警'],
+  ['test_exercise', '测试或攻防演练'],
+  ['true_positive', '真阳性，转入人工处置'],
+  ['other', '其他'],
+];
+const REASON_LABEL: Record<string, string> = Object.fromEntries(OPS_REASONS);
+
 function OpsQueueCard() {
   const toast = useToast();
+  const confirm = useConfirm();
   const [items, setItems] = useState<OpsItem[] | null>(null);
   const [busy, setBusy] = useState('');
+  const [tab, setTab] = useState<'pending' | 'processed' | 'all'>('pending');
+  const [vFilter, setVFilter] = useState<string>('all');
+  const [reason, setReason] = useState('false_positive');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [allowTips, setAllowTips] = useState<Record<string, { type: string; value: string }>>({});
+
   const load = useCallback(async () => {
     try { setItems(await api.get<OpsItem[]>('/api/v1/ai/ops/queue')); } catch { setItems([]); }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  const patchItem = (fresh: OpsItem) =>
+    setItems((prev) => (prev || []).map((x) => (x.id === fresh.id ? fresh : x)));
+
   const review = async (it: OpsItem, action: 'approve' | 'dismiss') => {
     setBusy(it.id);
     try {
-      await api.post(`/api/v1/ai/ops/${encodeURIComponent(it.id)}/review`, { action });
-      toast(action === 'approve' ? '已认可建议（处置仍需人工执行）' : '已忽略该建议');
-      load();
+      const rr = await api.post<{ item: OpsItem; allowlist_suggestion?: { type: string; value: string } }>(
+        `/api/v1/ai/ops/${encodeURIComponent(it.id)}/review`, { action, reason: action === 'dismiss' ? reason : '' });
+      patchItem(rr.item);
+      setSelected((prev) => { const n = new Set(prev); n.delete(it.id); return n; });
+      toast(action === 'approve' ? '已认可建议（处置仍需人工执行）' : `已忽略（${REASON_LABEL[reason] || reason}）`);
+      if (rr.allowlist_suggestion) {
+        setAllowTips((prev) => ({ ...prev, [it.id]: rr.allowlist_suggestion! }));
+      }
     } catch (e) { toast((e as Error).message, 'err'); }
     finally { setBusy(''); }
   };
-  // 重新评估：调查规则改进后旧条目靠它跟上（判定/摘要/证据全部刷新）
+
+  const bulk = async (action: 'approve' | 'dismiss') => {
+    const ids = Array.from(selected);
+    if (!ids.length) return;
+    const ok = await confirm({
+      title: action === 'dismiss' ? `批量忽略 ${ids.length} 条建议？` : `批量认可 ${ids.length} 条建议？`,
+      message: `结案理由：${REASON_LABEL[reason] || reason}。${action === 'approve' ? '认可只记录决定，处置仍需人工执行。' : '忽略后这些条目移入已处理。'}`,
+      okText: '确认批量',
+    });
+    if (!ok) return;
+    setBusy('bulk');
+    try {
+      const rr = await api.post<{ updated: OpsItem[]; skipped: number; allowlist_suggestions?: { type: string; value: string }[] }>(
+        '/api/v1/ai/ops/bulk-review', { ids, action, reason: action === 'dismiss' ? reason : '' });
+      setItems((prev) => (prev || []).map((x) => rr.updated.find((u) => u.id === x.id) || x));
+      setSelected(new Set());
+      toast(`已批量处理 ${rr.updated.length} 条${rr.skipped ? `，跳过 ${rr.skipped} 条已处理` : ''}`);
+      if (rr.allowlist_suggestions?.length) {
+        toast(`有 ${rr.allowlist_suggestions.length} 条误报建议可加白降噪，展开条目查看`, 'warn');
+      }
+    } catch (e) { toast((e as Error).message, 'err'); }
+    finally { setBusy(''); }
+  };
+
+  // 一键加白（降噪闭环的最后一环）：走既有加白端点，服务端自动回收
+  // 未处置告警并审计。只在此处、由人显式点击，AI 永不代执行。
+  const addToAllowlist = async (it: OpsItem) => {
+    const tip = allowTips[it.id];
+    if (!tip) return;
+    setBusy(it.id);
+    try {
+      const rr = await api.post<{ recycled_alerts: number }>('/api/v1/allowlist', {
+        type: tip.type, value: tip.value,
+        note: `值班误报反馈（${it.title}）`,
+      });
+      toast(`已加白 ${tip.type}，自动回收未处置告警 ${rr.recycled_alerts} 条`);
+      setAllowTips((prev) => { const n = { ...prev }; delete n[it.id]; return n; });
+    } catch (e) { toast((e as Error).message, 'err'); }
+    finally { setBusy(''); }
+  };
+
   const reeval = async (it: OpsItem) => {
     setBusy(it.id);
     try {
       const fresh = await api.post<OpsItem>(`/api/v1/ai/ops/${encodeURIComponent(it.id)}/reevaluate`, {});
-      setItems((prev) => (prev || []).map((x) => (x.id === it.id ? fresh : x)));
+      patchItem(fresh);
       toast(`已按当前调查逻辑重评：${verdictMeta(fresh.verdict).label}（置信 ${Math.round((fresh.confidence || 0) * 100)}%）`);
     } catch (e) { toast((e as Error).message, 'err'); }
     finally { setBusy(''); }
   };
 
-  const pending = (items || []).filter((x) => x.status === 'pending');
+  const all = items || [];
+  const pending = all.filter((x) => x.status === 'pending');
+  const shown = all.filter((x) =>
+    tab === 'pending' ? x.status === 'pending' : tab === 'processed' ? x.status !== 'pending' : true,
+  ).filter((x) => vFilter === 'all' || x.verdict === vFilter)
+   .slice(0, 20);
+  const nBenign = pending.filter((x) => x.verdict === 'benign').length;
+  const nInconclusive = pending.filter((x) => x.verdict === 'inconclusive').length;
+  const selPending = Array.from(selected).filter((id) => pending.some((x) => x.id === id));
+
   return (
     <Card className="mb-4 px-2 pb-3 pt-3.5">
       <div className="mb-2 flex items-center justify-between px-2">
         <div>
           <CardTitle>AI 值班队列</CardTitle>
-          <p className="mt-0.5 text-[11px] text-faint">critical 告警自动触发确定性调查并入队；审批只记录决定，绝不自动执行处置</p>
+          <p className="mt-0.5 text-[11px] text-faint">
+            critical 告警自动触发确定性调查；同主机同类爆发聚合为一条代表条目；审批只记录决定，绝不自动执行处置
+          </p>
         </div>
-        {items && <Badge tone={pending.length ? 'medium' : 'neutral'}>{pending.length} 待审</Badge>}
+        <Badge tone={pending.length ? 'medium' : 'neutral'}>{pending.length} 待审</Badge>
       </div>
-      {!items ? <SkeletonRows rows={2} /> : !items.length ? (
-        <div className="px-2 pb-1 text-[12px] text-faint">暂无建议——critical 告警出现时会自动入队。</div>
+
+      {/* 统计行：值班先看盘子再看条目 */}
+      {!!all.length && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 px-2 text-[11px] text-faint">
+          <span>待审 {pending.length}</span>
+          <span>·</span><span>倾向误报 {nBenign}</span>
+          <span>·</span><span>证据不足 {nInconclusive}</span>
+          <span>·</span><span>已处理 {all.length - pending.length}</span>
+        </div>
+      )}
+
+      <div className="mb-2 flex flex-wrap items-center gap-2 px-2">
+        <div className="flex items-center gap-1 rounded-md border border-border-soft bg-card p-0.5" role="group" aria-label="队列筛选">
+          {([['pending', '待审'], ['processed', '已处理'], ['all', '全部']] as const).map(([v, label]) => (
+            <button key={v} type="button" onClick={() => setTab(v)} aria-pressed={tab === v}
+              className={`cursor-pointer rounded-[5px] px-2.5 py-1 text-[11.5px] transition-colors ${tab === v ? 'bg-secondary font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>{label}</button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 rounded-md border border-border-soft bg-card p-0.5" role="group" aria-label="判定筛选">
+          <button type="button" onClick={() => setVFilter('all')} aria-pressed={vFilter === 'all'}
+            className={`cursor-pointer rounded-[5px] px-2.5 py-1 text-[11.5px] transition-colors ${vFilter === 'all' ? 'bg-secondary font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>全部判定</button>
+          {Object.entries(VERDICT_META).map(([v, m]) => (
+            <button key={v} type="button" onClick={() => setVFilter(v)} aria-pressed={vFilter === v}
+              className={`cursor-pointer rounded-[5px] px-2.5 py-1 text-[11.5px] transition-colors ${vFilter === v ? 'bg-secondary font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>{m.label}</button>
+          ))}
+        </div>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Select value={reason} onChange={(e) => setReason(e.target.value)} aria-label="结案理由" className="h-7 text-[11px]">
+            {OPS_REASONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+          </Select>
+        </div>
+      </div>
+
+      {/* 批量操作条：爆发场景逐条点审批不现实 */}
+      {selPending.length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-border-soft bg-brand-soft px-3 py-1.5 text-[12px]">
+          <b>已选 {selPending.length} 条</b>
+          <span className="text-faint">结案理由：{REASON_LABEL[reason] || reason}</span>
+          <Button size="sm" variant="ghost" disabled={busy === 'bulk'} onClick={() => bulk('dismiss')}>批量忽略</Button>
+          <Button size="sm" variant="ghost" disabled={busy === 'bulk'} onClick={() => bulk('approve')}>批量认可</Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>取消选择</Button>
+        </div>
+      )}
+
+      {!items ? <SkeletonRows rows={2} /> : !shown.length ? (
+        <div className="px-2 pb-1 text-[12px] text-faint">
+          {tab === 'pending' && !pending.length ? '队列已清空——critical 告警出现时会自动入队。' : '当前筛选下没有条目。'}
+        </div>
       ) : (
         <div className="grid gap-1.5 px-2">
-          {items.slice(0, 10).map((it) => {
+          {shown.map((it) => {
             const vm = verdictMeta(it.verdict);
             const open = expanded === it.id;
+            const isPending = it.status === 'pending';
+            const burst = it.occurrences ? it.occurrences + 1 : 1;
             return (
               <div key={it.id} className="rounded-md border border-border-soft bg-card px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                  {isPending && (
+                    <input type="checkbox" className="row-sel accent-[var(--primary)]" aria-label={`选择 ${it.title}`}
+                      checked={selected.has(it.id)} onChange={(e) => {
+                        setSelected((prev) => { const n = new Set(prev); if (e.target.checked) n.add(it.id); else n.delete(it.id); return n; });
+                      }} />
+                  )}
                   <Badge tone={it.severity}>{SEV_LABEL[it.severity] || it.severity}</Badge>
                   <b className="min-w-0 flex-1 truncate" title={it.title}>{it.title}</b>
+                  {burst > 1 && <Badge tone="medium" title={`同类告警在此条目入队后又触发 ${it.occurrences} 次；打开原告警看最新一条`}>爆发 ×{burst}</Badge>}
                   <span className="text-faint">{it.hostname} · {it.score} 分</span>
                   <Badge tone={vm.tone} title={`调查判定：${it.verdict} · 置信 ${Math.round((it.confidence || 0) * 100)}%`}>
                     {vm.label} {Math.round((it.confidence || 0) * 100)}%
                   </Badge>
-                  <Badge tone={it.status === 'pending' ? 'medium' : it.status === 'approved' ? 'resolved' : 'neutral'}>
-                    {it.status === 'pending' ? '待审' : it.status === 'approved' ? '已认可' : '已忽略'}
+                  <Badge tone={isPending ? 'medium' : it.status === 'approved' ? 'resolved' : 'neutral'}>
+                    {isPending ? '待审' : it.status === 'approved' ? '已认可' : '已忽略'}
                   </Badge>
                 </div>
                 <div className="mt-1 text-[11.5px] leading-[1.6] text-muted-foreground">{it.summary}</div>
+                {!isPending && it.review_reason && (
+                  <div className="mt-0.5 text-[11px] text-faint">
+                    结案理由：{REASON_LABEL[it.review_reason] || it.review_reason}
+                    {it.reviewed_by && <> · {it.reviewed_by} · {relTime(it.reviewed_at)}</>}
+                  </div>
+                )}
 
-                {/* 查看详情：调查证据（findings 带引用）+ 建议动作理由 + 原告警入口。
-                    没有这一层，审批就是闭眼签字。 */}
                 <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                   <Button size="sm" variant="ghost" onClick={() => setExpanded(open ? null : it.id)} aria-expanded={open}>
                     <ChevronDown className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
                     {open ? '收起详情' : '查看详情'}
                   </Button>
-                  <Link to={`/alerts?open=${encodeURIComponent(it.alert_id)}`} className="inline-flex h-7 items-center rounded-[7px] border border-border px-2 text-[11.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
-                    打开原告警
+                  <Link to={`/alerts?open=${encodeURIComponent(it.last_alert_id || it.alert_id)}`} className="inline-flex h-7 items-center rounded-[7px] border border-border px-2 text-[11.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+                    打开原告警{burst > 1 ? '（最新）' : ''}
                   </Link>
-                  {it.status === 'pending' && (
+                  {isPending && (
                     <Button size="sm" variant="ghost" disabled={busy === it.id} onClick={() => reeval(it)} title="调查规则改进后，用当前逻辑重评这条建议">
                       重新评估
                     </Button>
@@ -876,14 +1015,24 @@ function OpsQueueCard() {
                         </div>
                       </>
                     )}
-                    <div className="mt-2 text-[10.5px] text-faint">入队于 {relTime(it.created_at)} · 来源 {it.engine === 'heuristic' ? '确定性调查（零模型调用）' : it.engine}</div>
+                    {allowTips[it.id] && isPending && (
+                      <div className="mt-2.5 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[11.5px]">
+                        你标记了误报/确认良性。若同类告警确实不需要再告警，可把
+                        <span className="mx-1 font-mono text-[10.5px]">{allowTips[it.id].type}:{allowTips[it.id].value.length > 24 ? allowTips[it.id].value.slice(0, 24) + '…' : allowTips[it.id].value}</span>
+                        加入白名单——服务端会自动回收未处置的同类告警（可在白名单页撤销）。
+                        <Button size="sm" variant="ghost" className="ml-1.5" disabled={busy === it.id} onClick={() => addToAllowlist(it)}>一键加白</Button>
+                      </div>
+                    )}
+                    <div className="mt-2 text-[10.5px] text-faint">
+                      入队于 {relTime(it.created_at)}{it.last_seen_at && <> · 爆发最近一次 {relTime(it.last_seen_at)}</>} · 来源 {it.engine === 'heuristic' ? '确定性调查（零模型调用）' : it.engine}
+                    </div>
                   </div>
                 )}
 
-                {it.status === 'pending' && (
+                {isPending && (
                   <div className="mt-1.5 flex gap-1.5">
                     <Button size="sm" variant="primary" disabled={busy === it.id} onClick={() => review(it, 'approve')}>认可建议</Button>
-                    <Button size="sm" variant="ghost" disabled={busy === it.id} onClick={() => review(it, 'dismiss')}>忽略</Button>
+                    <Button size="sm" variant="ghost" disabled={busy === it.id} onClick={() => review(it, 'dismiss')} title={`按当前结案理由：${REASON_LABEL[reason] || reason}`}>忽略</Button>
                   </div>
                 )}
               </div>
@@ -894,3 +1043,4 @@ function OpsQueueCard() {
     </Card>
   );
 }
+
