@@ -11,6 +11,7 @@ import (
 	"zedr/internal/ai"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/idgen"
+	"zedr/internal/server/domain"
 )
 
 // ---------------- B：网页内 AI 助手（2026-11 方向 B） ----------------
@@ -122,6 +123,37 @@ type OpsItem struct {
 	Status     string      `json:"status"` // pending / approved / dismissed
 	ReviewedBy string      `json:"reviewed_by,omitempty"`
 	ReviewedAt *time.Time  `json:"reviewed_at,omitempty"`
+	// ReviewReason 是审批时的结案理由码（业界 closure reason codes）：
+	// true_positive / known_benign / false_positive / duplicate /
+	// test_exercise / other。空表示旧条目或未选。
+	ReviewReason string `json:"review_reason,omitempty"`
+	// Occurrences/LastAlertID/LastSeenAt 是爆发聚合记账：同主机同标题
+	// 的 critical 爆发只留一条代表条目，计数与最新告警 ID 随爆发更新
+	// （告警风暴时队列不再被同一条规则刷屏）。
+	Occurrences int        `json:"occurrences,omitempty"`
+	LastAlertID string     `json:"last_alert_id,omitempty"`
+	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
+}
+
+// OpsReviewReasons 是合法的结案理由码全集与值班界面的中文文案。
+// 口径对齐业界 closure reason codes：真阳性要区分"已处置"与"确认良性"
+// （运维操作/软件自启在很多产品里叫 benign true positive）——两者是
+// 不同的降噪信号，混在一起会让后续调优失去依据。
+var OpsReviewReasons = map[string]string{
+	"true_positive":  "真阳性：确认攻击，转入人工处置",
+	"known_benign":   "真实行为但确认良性（运维/软件自启等）",
+	"false_positive": "误报：规则/阈值打错对象",
+	"duplicate":      "重复告警（同类爆发的一条）",
+	"test_exercise":  "测试或攻防演练产生",
+	"other":          "其他（备注说明）",
+}
+
+func validReviewReason(r string) bool {
+	if r == "" {
+		return true
+	}
+	_, ok := OpsReviewReasons[r]
+	return ok
 }
 
 var opsQueueMu sync.Mutex
@@ -132,6 +164,12 @@ var opsQueueMu sync.Mutex
 func (s *AIService) AutoOps(ctx context.Context, alertID string) {
 	a, err := s.repos.Alerts.ByID(ctx, alertID)
 	if err != nil || a == nil {
+		return
+	}
+	// 爆发聚合优先：同主机同标题已有待审条目时，只更新计数与最新
+	// 告警指针，不再重跑调查——告警风暴时队列保持 1 条代表 + ×N 计数，
+	// 也不再为每条重复告警付 4 次查询的调查成本。
+	if s.tryAggregateOps(ctx, a) {
 		return
 	}
 	inv, err := s.Investigate(ctx, alertID)
@@ -150,6 +188,39 @@ func (s *AIService) AutoOps(ctx context.Context, alertID string) {
 	if err := s.enqueueOps(ctx, item); err != nil && s.log != nil {
 		s.log.WarnContext(ctx, "ai_ops_enqueue_failed", "alert_id", alertID, "err", err)
 	}
+}
+
+// tryAggregateOps 把一条 critical 告警聚合进已有的同 (主机,标题) 待审
+// 条目。返回 true 表示已聚合（不需要新建条目）。
+//
+// 聚合是"代表条目"模型：调查结论属于首次调查的那条告警（同标题同
+// 主机下结论一致），计数与 LastAlertID 指向最新触发——值班的人点
+// "打开原告警"看到的是最新的那条，×N 计数告诉他这是一次爆发。
+func (s *AIService) tryAggregateOps(ctx context.Context, a *domain.Alert) bool {
+	opsQueueMu.Lock()
+	defer opsQueueMu.Unlock()
+	list, err := s.loadOpsQueue(ctx)
+	if err != nil {
+		return false
+	}
+	now := time.Now()
+	for i := range list {
+		it := &list[i]
+		if it.Status != "pending" || it.Hostname != a.Hostname || it.Title != a.Title {
+			continue
+		}
+		it.Occurrences++
+		it.LastAlertID = a.ID
+		it.LastSeenAt = &now
+		if a.Score > it.Score {
+			it.Score = a.Score
+		}
+		if err := s.saveOpsQueue(ctx, list); err != nil && s.log != nil {
+			s.log.WarnContext(ctx, "ai_ops_aggregate_failed", "alert_id", a.ID, "err", err)
+		}
+		return true
+	}
+	return false
 }
 
 // fillOpsFromInvestigation 把调查报告的内容装进队列条目。
@@ -260,11 +331,31 @@ func (s *AIService) ListOpsQueue(ctx context.Context) ([]OpsItem, error) {
 	return list, nil
 }
 
-// ReviewOps 审批一条建议：approved（认可建议，执行仍需人工走指令）/ dismissed（忽略）。
-// 本函数只改队列状态，绝不触发任何处置动作。
-func (s *AIService) ReviewOps(ctx context.Context, id, action, by string) (*OpsItem, error) {
+// AllowlistSuggestionFor 根据告警生成加白建议（hash 优先，其次镜像路径）。
+// 只读——真正的加白必须由人显式点按钮走既有 POST /allowlist（带加白
+// 回收与审计），AI/队列永远不代执行降噪动作。
+func (s *AIService) AllowlistSuggestionFor(ctx context.Context, alertID string) (string, string, bool) {
+	a, err := s.repos.Alerts.ByID(ctx, alertID)
+	if err != nil || a == nil {
+		return "", "", false
+	}
+	if len(a.HashSHA256) == 64 {
+		return "hash", a.HashSHA256, true
+	}
+	if a.ImagePath != "" {
+		return "path", a.ImagePath, true
+	}
+	return "", "", false
+}
+
+// ReviewOps 审批一条建议：approved（认可建议，执行仍需人工走指令）/
+// dismissed（忽略，可附结案理由）。本函数只改队列状态，绝不触发任何处置。
+func (s *AIService) ReviewOps(ctx context.Context, id, action, by, reason string) (*OpsItem, error) {
 	if action != "approve" && action != "dismiss" {
 		return nil, apperr.Invalid("action 只能是 approve 或 dismiss")
+	}
+	if !validReviewReason(reason) {
+		return nil, apperr.Invalid("结案理由码非法")
 	}
 	opsQueueMu.Lock()
 	defer opsQueueMu.Unlock()
@@ -287,6 +378,7 @@ func (s *AIService) ReviewOps(ctx context.Context, id, action, by string) (*OpsI
 		}
 		list[i].ReviewedBy = by
 		list[i].ReviewedAt = &now
+		list[i].ReviewReason = reason
 		if err := s.saveOpsQueue(ctx, list); err != nil {
 			return nil, err
 		}
@@ -294,4 +386,57 @@ func (s *AIService) ReviewOps(ctx context.Context, id, action, by string) (*OpsI
 		return &out, nil
 	}
 	return nil, apperr.NotFound("建议")
+}
+
+// BulkReviewOps 批量审批：告警爆发场景下逐条点审批不现实。
+// 只处理 pending 条目，返回成功列表与跳过数（已处理的跳过不算错误）。
+// 同样绝不触发任何处置动作。
+func (s *AIService) BulkReviewOps(ctx context.Context, ids []string, action, by, reason string) ([]OpsItem, int, error) {
+	if action != "approve" && action != "dismiss" {
+		return nil, 0, apperr.Invalid("action 只能是 approve 或 dismiss")
+	}
+	if !validReviewReason(reason) {
+		return nil, 0, apperr.Invalid("结案理由码非法")
+	}
+	if len(ids) == 0 {
+		return nil, 0, apperr.Invalid("未选择任何建议")
+	}
+	if len(ids) > 100 {
+		return nil, 0, apperr.Invalid("单次批量上限 100 条")
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	opsQueueMu.Lock()
+	defer opsQueueMu.Unlock()
+	list, err := s.loadOpsQueue(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var updated []OpsItem
+	skipped := 0
+	now := time.Now()
+	for i := range list {
+		if !want[list[i].ID] || list[i].Status != "pending" {
+			continue
+		}
+		if action == "approve" {
+			list[i].Status = "approved"
+		} else {
+			list[i].Status = "dismissed"
+		}
+		list[i].ReviewedBy = by
+		list[i].ReviewedAt = &now
+		list[i].ReviewReason = reason
+		out := list[i]
+		updated = append(updated, out)
+	}
+	skipped = len(ids) - len(updated)
+	if len(updated) > 0 {
+		if err := s.saveOpsQueue(ctx, list); err != nil {
+			return nil, 0, err
+		}
+	}
+	return updated, skipped, nil
 }
