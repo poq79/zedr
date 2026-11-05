@@ -113,6 +113,13 @@ type RuntimeInfo struct {
 	MemWatchScans int64 `json:"memwatch_scans"`
 	MemWatchHits  int64 `json:"memwatch_hits"`
 
+	// 攻击链关联引擎（CHAIN-*）：Enabled=false 表示开关关闭或引擎未装配；
+	// Active 是当前 pending 的链数（正常个位数，持续高位说明有行为在
+	// 反复触发链首）；Fired 是累计完成的链数。
+	ChainEnabled bool  `json:"chain_enabled"`
+	ChainActive  int   `json:"chain_active"`
+	ChainFired   int64 `json:"chain_fired"`
+
 	// 下发数据的落地情况：IOC 表与资产清单是否真的在本探针生效。
 	// 没有这两项，"服务端下发了"和"终端在用"之间隔着一次静默失败
 	// （验签拒绝/版本回退都发生在终端侧），排障时只能翻日志。

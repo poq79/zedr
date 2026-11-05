@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"zedr/internal/agent/chain"
 	"zedr/internal/agent/winapi"
 	"zedr/internal/model"
 )
@@ -252,6 +253,19 @@ func (a *Agent) emitEvtServiceInstall(ev winapi.EvtEvent) {
 		summary += "；服务二进制无数字签名"
 	}
 
+	// 攻击链馈送：新服务安装作为 PERSIST-RUN 链首（7045 比 persist 的
+	// 5min 轮询快，秒级进链）；自安装产物排除。
+	if a.chainE != nil {
+		if p := winapi.PersistCommandPath(binPath); p != "" && chainNotSelf(p) {
+			a.chainE.Feed(chain.Stage{
+				Kind: chain.KindSvcInst, When: ev.TimeCreated,
+				ItemPath: p, ItemKind: "service", ItemName: svcName,
+				MITRE: "T1543.003", RefRuleID: "EVT-SVCINST", RefScore: score,
+				Note: "安装账户 " + acct,
+			})
+		}
+	}
+
 	a.emitAlert(model.AlertEnvelope{
 		Fingerprint: fmt.Sprintf("evt:7045:%s:%s:%d", strings.ToLower(svcName), meta.Hash, ev.TimeCreated.Unix()/60),
 		Title:       "事件日志：新服务安装 " + svcName,
@@ -443,6 +457,21 @@ func (a *Agent) evtBrutePush(ev winapi.EvtEvent) {
 	summary := fmt.Sprintf("%s 内 %d 次登录失败（阈值 %d），形态：%s。目标账户样例：%s；来源 Top：%s。密集失败是密码攻击（T1110）的直接形态，互联网暴露机器尤其注意。",
 		evtBruteWindow, len(a.brute.window), evtBruteThreshold, morph,
 		strings.Join(userList, ", "), strings.Join(ips, ", "))
+
+	// 攻击链馈送：暴破波作为 BRUTE-SUCCESS 链首。When 用最新失败样本的
+	// 事件时间（行为时刻口径，与后续 4624 的事件时间同源对齐——若用
+	// 消费时刻，30s 轮询滞后会让链内时间倒挂）。
+	if a.chainE != nil {
+		src := ""
+		if len(ips) > 0 {
+			src = ips[0]
+		}
+		a.chainE.Feed(chain.Stage{
+			Kind: chain.KindBrute, When: newest,
+			FailCount: len(a.brute.window), SrcIP: src,
+			RefRuleID: "EVT-BRUTE", RefScore: 60, Note: summary,
+		})
+	}
 	a.emitAlert(model.AlertEnvelope{
 		Fingerprint: fmt.Sprintf("evt:4625:%d", time.Now().Truncate(15*time.Minute).Unix()),
 		Title:       fmt.Sprintf("事件日志：登录失败暴发（%s，%d 次/分钟）", morph, len(a.brute.window)),

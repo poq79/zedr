@@ -117,6 +117,11 @@ type Config struct {
 	MemWatch         bool
 	UsbWatch         bool
 	MemWatchInterval time.Duration
+	// ChainEnabled 控制攻击链关联引擎（CHAIN-* 告警族）：把进程创建/
+	// 外联/登录事件/持久化项/内存巡检/网络行为多源信号按"实体+时间窗"
+	// 串成确定性链（EQL sequence 语义的端侧化，见 DETECTION §3.8）。
+	// 只消费既有信号、零新增采集面，纯内存状态机有界；白名单实体不参与链。
+	ChainEnabled bool
 }
 
 // LoadConfig 读取并校验配置。
@@ -166,6 +171,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.MemWatch = l.Bool("HG_AGENT_MEMWATCH", true)
 	c.MemWatchInterval = l.Duration("HG_AGENT_MEMWATCH_INTERVAL", 5*time.Minute)
 	c.UsbWatch = l.Bool("HG_AGENT_USBWATCH", true)
+	c.ChainEnabled = l.Bool("HG_AGENT_CHAIN", true)
 
 	// 校验
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")

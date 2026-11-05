@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"zedr/internal/agent/chain"
 	"zedr/internal/agent/collect"
 	"zedr/internal/agent/enrich"
 	"zedr/internal/agent/netwatch"
@@ -138,6 +139,21 @@ func (a *Agent) emitNetFinding(f netwatch.Finding, snap *collect.Snapshot) {
 	if hit, _ := a.alw.Match(meta.Hash, path, meta.Signer, "", f.Ident.Name, ""); hit {
 		a.log.Debug("netwatch_whitelisted", "pid", f.Ident.PID, "rule", f.RuleID)
 		return
+	}
+
+	// 攻击链馈送：NW 命中作为链的外联证据（DROP-EXEC-C2 / INJECT-OUT
+	// 的第二环）。对端样例从同轮快照补齐。
+	if a.chainE != nil {
+		ip, port := chainSamplePeer(snap.Conns[f.Ident.PID])
+		a.chainE.Feed(chain.Stage{
+			Kind: chain.KindNet, When: time.Now(),
+			PID: f.Ident.PID, StartTime: f.Ident.StartTime,
+			Name: f.Ident.Name, Path: path,
+			Hash: meta.Hash, Signer: meta.Signer, Signed: meta.Signed,
+			PeerIP: ip, PeerPort: uint32(port),
+			RefRuleID: f.RuleID, RefScore: f.Score,
+			MITRE: chainFirstMITRE(f.MITRE), Note: f.Summary,
+		})
 	}
 
 	// "系统进程名 + 非系统目录镜像"是伪装强线索：阈值被放大过（可能压住

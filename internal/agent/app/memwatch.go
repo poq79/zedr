@@ -24,6 +24,7 @@ import (
 	"sort"
 	"time"
 
+	"zedr/internal/agent/chain"
 	"zedr/internal/agent/enrich"
 	"zedr/internal/agent/state"
 	"zedr/internal/agent/winapi"
@@ -195,6 +196,17 @@ func (a *Agent) memwatchOnce() {
 
 // emitMemFinding 组装 T1055 证据告警。
 func (a *Agent) emitMemFinding(c memWatchCandidate, f memFinding, meta enrich.Meta) {
+	// 攻击链馈送：MEM-1055 作为注入链首（INJECT-OUT）。白名单/签名
+	// 护栏已在 memwatchOnce 过滤，这里无条件喂。
+	if a.chainE != nil {
+		a.chainE.Feed(chain.Stage{
+			Kind: chain.KindMem, When: time.Now(),
+			PID: c.PID, Name: c.Name, Path: c.Path, CmdLine: c.CmdLine,
+			Hash: meta.Hash, Signer: meta.Signer, Signed: meta.Signed,
+			RefRuleID: "MEM-1055", RefScore: f.Score,
+		})
+	}
+
 	size := fmt.Sprintf("%.1fMB", float64(f.Hit.TotalBytes)/(1<<20))
 	summary := fmt.Sprintf(
 		"进程 %s(PID %d) 的地址空间发现 %d 个私有可执行区域（%d 个带 PE 头，合计 %s）。"+

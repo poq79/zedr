@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 
+	"zedr/internal/agent/chain"
 	"zedr/internal/agent/winapi"
 	"zedr/internal/model"
 )
@@ -86,6 +87,16 @@ func (a *Agent) evtLogonWatch(ev winapi.EvtEvent) {
 			},
 			OccurredAt: ev.TimeCreated,
 		})
+
+		// 攻击链馈送：暴破成功序列作为 BRUTE-SUCCESS 第二环（事件时间
+		// 口径与链首暴破波对齐）。
+		if a.chainE != nil {
+			a.chainE.Feed(chain.Stage{
+				Kind: chain.KindLogonOK, When: ev.TimeCreated,
+				LoginUser: user, SrcIP: srcIP, LogonType: logonType,
+				FailCount: n, RefRuleID: "EVT-BRUTE-SUCCESS", RefScore: 85,
+			})
+		}
 	}
 
 	// ② 时段基线：交互/RDP 登录落在从未见过的小时 → 观察级

@@ -17,6 +17,7 @@ import (
 
 	"zedr/internal/agent/allow"
 	"zedr/internal/agent/baseline"
+	"zedr/internal/agent/chain"
 	"zedr/internal/agent/collect"
 	"zedr/internal/agent/detect"
 	"zedr/internal/agent/enrich"
@@ -87,6 +88,9 @@ type Agent struct {
 	// 网络行为检测（NW 规则族）：消费每轮连接表快照做滑动窗口聚合，
 	// 无独立线程与系统调用；nil = 开关关闭
 	nw *netwatch.Watch
+	// 攻击链关联引擎（CHAIN-* 规则族）：消费各检测源已产出的信号，
+	// 按"实体+时间窗"串确定性链；nil = 开关关闭
+	chainE *chain.Engine
 	// trustCache 是"系统进程名抽查"的结论缓存（见 procTrusted）
 	trustMu    sync.Mutex
 	trustCache map[trustKey]trustEntry
@@ -234,6 +238,14 @@ func New(version string) (*Agent, error) {
 			nc.LateralPorts = cfg.NetLateralPortList
 		}
 		a.nw = netwatch.New(nc, uint32(os.Getpid()))
+	}
+	// 攻击链关联引擎：纯内存状态机，构造成本为零；OnFinding 回调走
+	// emitAlert 统一出口（回调在引擎锁外触发，无锁序问题）。
+	if cfg.ChainEnabled {
+		a.chainE = chain.New(chain.Options{
+			OnFinding: a.emitChainFinding,
+			Allow:     alw,
+		})
 	}
 	// IOC 表先从落盘缓存恢复（重启空窗补位），服务端可达后再被整包覆盖
 	a.loadIOCsCache()
@@ -686,6 +698,10 @@ func (a *Agent) scan(deep bool) int {
 		a.netObserve(snap)
 	}
 
+	// 攻击链外联阶段：同样只消费本轮连接表（chainObserveConns 内部
+	// 自判 nil），为"落地→外联""注入→外联"类链提供闭合证据。
+	a.chainObserveConns(snap)
+
 	// 模块枚举是整轮扫描里最贵的操作（每个进程一次快照）。
 	// 给每轮一个预算：正常情况远用不满，但遇到"大量进程同时从可写目录启动"
 	// （安装器、解包、恶意批量释放）时不会把一轮扫描拖到分钟级。
@@ -744,6 +760,11 @@ func (a *Agent) scan(deep bool) int {
 		}
 
 		a.store.UpsertProc(pi, res, len(conns), len(modules))
+
+		// 攻击链馈送：进程创建阶段。被抑制的结果也要喂——链消费的是
+		// "实体 + 时序"事实（含 DROP-001 判定），below_threshold 的弱
+		// 信号在链语境下是关键环节；白名单豁免在 chainFeedProc 内排除。
+		a.chainFeedProc(pi, res)
 
 		// 只有真正需要上报的结果才产生告警；低于阈值/被抑制的仍保留评分供 UI 展示
 		if res != nil && res.Alert {
@@ -816,6 +837,12 @@ func (a *Agent) scan(deep bool) int {
 		ri.MemWatchScans = a.memScans.Load()
 		ri.MemWatchHits = a.memHits.Load()
 		ri.UsbVolumes = int(a.usbVolumes.Load())
+		if a.chainE != nil {
+			cs := a.chainE.Stats()
+			ri.ChainEnabled = true
+			ri.ChainActive = cs.Active
+			ri.ChainFired = cs.Fired
+		}
 	})
 
 	return len(newProcs)
@@ -987,6 +1014,18 @@ func (a *Agent) emitPersistFinding(f persist.Finding) int {
 	if hit, _ := a.alw.Match(f.Hash, f.Path, f.Signer, "", f.Item.Name, f.Item.Command); hit {
 		a.log.Debug("persist_whitelisted", "key", f.Item.Key)
 		return 0
+	}
+
+	// 攻击链馈送：PERSIST-RUN 的链首。放在低分闸之前——链消费的是
+	// "新增了指向 X 的持久化项"这一事实，分数阈值是告警策略不是链策略；
+	// 探针自安装产物在 chainNotSelf 排除（否则每次安装/升级都自产链告警）。
+	if a.chainE != nil && f.Path != "" && chainNotSelf(f.Path) {
+		a.chainE.Feed(chain.Stage{
+			Kind: chain.KindPersist, When: time.Now(),
+			ItemPath: f.Path, ItemKind: f.Item.Type, ItemName: f.Item.Name,
+			Hash: f.Hash, Signer: f.Signer, Signed: f.Signed,
+			MITRE: chainFirstMITRE(f.MITRE), RefRuleID: "P-001", RefScore: f.Score,
+		})
 	}
 
 	// 低于阈值的变更只记录，不告警——否则"某个软件升级改了自启动参数"
