@@ -9,7 +9,8 @@ cd "$(dirname "$0")/.."
 
 # 版本号单一事实源：发版只改这里（可用环境变量 VERSION 覆盖做本地实验）。
 # 历史教训：默认值长期停在 0.1.0，/metrics 版本分布与运维台账全部失真。
-VERSION="${VERSION:-0.9.9}"
+# （2026-11-05 教训续：0.9.10 发布时这里仍停在 0.9.9——发版流程必须含此行。）
+VERSION="${VERSION:-0.9.11}"
 mkdir -p bin
 
 # ---- 前端（React 19 + Vite + Tailwind v4）----
@@ -45,6 +46,24 @@ build desktop    zedr-ui.exe
 build diag       zedr-diag.exe
 build resetadmin resetadmin.exe
 
+# ---- 部署包（"接入新主机"引导的下载物，HG_SERVER_DEPLOY_PACKAGE 指向它）----
+# zip：探针 + 桌面托盘 + 官方安装/卸载脚本 + 包内说明。
+# Compress-Archive 而非 tar：目标机解压用 PowerShell Expand-Archive 即可，
+# 且 zip 保留的路径结构对 install-agent.ps1 的 $PSScriptRoot 定位友好。
+DEPLOY_ZIP="bin/zedr-deploy-v${VERSION}.zip"
+if command -v powershell.exe >/dev/null 2>&1; then
+  echo ">> packaging deploy bundle -> ${DEPLOY_ZIP}"
+  rm -f "${DEPLOY_ZIP}"
+  powershell.exe -NoProfile -Command "Compress-Archive -Force \
+    -Path 'bin/zedr-agent.exe','bin/zedr-ui.exe', \
+           'scripts/deploy/install-agent.ps1','scripts/deploy/uninstall-agent.ps1', \
+           'scripts/deploy/README-DEPLOY.md' \
+    -DestinationPath '${DEPLOY_ZIP}'"
+  # Compress-Archive 平铺打包（无目录层级），解压即脚本所在目录，符合预期。
+else
+  echo ">> powershell.exe 不可用，跳过部署包打包（服务端 deploy 端点将不可用）" >&2
+fi
+
 echo
 echo "构建完成（版本 ${VERSION}）："
-ls -lh bin/*.exe
+ls -lh bin/*.exe bin/*.zip 2>/dev/null || ls -lh bin/*.exe
