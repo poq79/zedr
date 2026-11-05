@@ -317,6 +317,8 @@ func (s *AIService) Investigate(ctx context.Context, alertID string) (*Investiga
 
 	s.log.InfoContext(ctx, "alert_investigated", "alert_id", alertID,
 		"suggestion", inv.VerdictSuggestion, "confidence", inv.Confidence, "steps", len(inv.Steps))
+	// 判定台账：确定性五步的结论同样进质量对账（source=heuristic）
+	s.recordTriage(ctx, alertID, triageSourceHeuristic, inv.VerdictSuggestion, inv.Confidence, "heuristic")
 	return inv, nil
 }
 

@@ -212,6 +212,7 @@ func Router(d Deps) http.Handler {
 	// 网页内 AI 助手（方向 B）与 AI 值班队列（方向 C）
 	mux.Handle("POST /api/v1/ai/chat", viewer(adminH.aiChat))
 	mux.Handle("GET /api/v1/ai/ops/queue", viewer(adminH.aiOpsQueue))
+	mux.Handle("GET /api/v1/ai/quality/report", viewer(adminH.aiQualityReport))
 	mux.Handle("POST /api/v1/ai/ops/bulk-review", writer(adminH.aiOpsBulkReview))
 	mux.Handle("POST /api/v1/ai/ops/{id}/review", writer(adminH.aiOpsReview))
 	mux.Handle("POST /api/v1/ai/ops/{id}/reevaluate", writer(adminH.aiOpsReevaluate))

@@ -468,3 +468,16 @@ type AIPrompt struct {
 	UpdatedAt *time.Time        `json:"updated_at,omitempty"`
 	Versions  []AIPromptVersion `json:"versions"`
 }
+
+// AITriageLog 是 AI/确定性调查对一条告警的结论快照（按 alert_id+source
+// 只留最新）。与 alerts.verdict（探针引擎五层判定）是两套判定：前者是
+// "AI 怎么看"，后者是"检测引擎怎么说"；研判质量对账用的是前者与
+// 分析师处置结论的比对。
+type AITriageLog struct {
+	AlertID    string    `json:"alert_id"`
+	Source     string    `json:"source"` // ai | heuristic
+	Verdict    string    `json:"verdict"`
+	Confidence float64   `json:"confidence"`
+	Engine     string    `json:"engine"`
+	CreatedAt  time.Time `json:"created_at"`
+}

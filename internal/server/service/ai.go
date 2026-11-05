@@ -47,6 +47,10 @@ func (s *AIService) Triage(ctx context.Context, alertID string) (*ai.TriageResul
 	}
 	res := s.eng.Triage(ctx, in)
 
+	// 判定台账：研判质量对账的数据来源。写失败不阻断研判——
+	// 质量运营是旁路观测，不能让它变成主链路的故障点。
+	s.recordTriage(ctx, a.ID, triageSourceAI, res.Verdict, res.Confidence, res.Engine)
+
 	s.log.InfoContext(ctx, "ai_triage",
 		"alert_id", alertID, "verdict", res.Verdict, "confidence", res.Confidence,
 		"engine", res.Engine, "grounded", res.Grounded, "ignored_injection", res.UntrustedIgnored,

@@ -33,6 +33,7 @@ type Store struct {
 		inventory inventoryRepo
 		incidents incidentRepo
 		aicfg     aiConfigRepo
+		aitriage  aiTriageRepo
 	}
 
 var _ = (*Store)(nil)
@@ -87,6 +88,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 		s.inventory = inventoryRepo{s}
 		s.incidents = incidentRepo{s}
 		s.aicfg = aiConfigRepo{s}
+		s.aitriage = aiTriageRepo{s}
 
 	repos := repository.Repos{
 		Users:     &s.users,
@@ -102,6 +104,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 		Inventory: &s.inventory,
 		Incidents: &s.incidents,
 		AIConfig:  &s.aicfg,
+		ATriage:   &s.aitriage,
 	}
 	return s, repos, nil
 }
@@ -368,6 +371,26 @@ CREATE TABLE IF NOT EXISTS ai_skills (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+`,
+	},
+	{
+		name: "008_ai_triage_log",
+		sql: `
+-- AI 判定台账：每次研判/调查对一条告警的结论快照（按 alert_id+source
+-- UPSERT，只留最新）。这是"研判质量运营闭环"的数据基础——AI 说有问题
+-- 还是没问题，最终要和分析师的处置结论对账，一致率/误报/漏报才有出处。
+-- 刻意不塞进 alerts 表：AI 结论有自己的生命周期（重评会覆盖），
+-- 和探针上报的引擎判定（verdict 字段）是两回事，混在一行会互相覆盖。
+CREATE TABLE IF NOT EXISTS ai_triage_log (
+  alert_id   TEXT NOT NULL,
+  source     TEXT NOT NULL,           -- ai(模型研判/agentic) | heuristic(确定性五步)
+  verdict    TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0,
+  engine     TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  UNIQUE (alert_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_triage_alert ON ai_triage_log(alert_id, created_at DESC);
 `,
 	},
 }

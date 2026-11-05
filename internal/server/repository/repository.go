@@ -26,6 +26,16 @@ type Repos struct {
 	Inventory InventoryRepo
 	Incidents IncidentRepo
 	AIConfig  AIConfigRepo
+	ATriage   AITriageRepo
+}
+
+// AITriageRepo AI 判定台账：AI/确定性调查结论的按告警快照。
+// 研判质量对账（AI 结论 × 分析师处置）的数据来源。
+type AITriageRepo interface {
+	// Upsert 写入/覆盖某告警某来源的最新结论。
+	Upsert(ctx context.Context, log *domain.AITriageLog) error
+	// List 按时间倒序取最近 n 条台账（服务层自行按 alert 去重）。
+	List(ctx context.Context, limit int) ([]domain.AITriageLog, error)
 }
 
 // AIConfigRepo AI 配置中心数据访问：模型槽位配置（settings KV）、
@@ -171,6 +181,9 @@ type CommandRepo interface {
 	MarkDelivered(ctx context.Context, ids []string, at time.Time) error
 	Complete(ctx context.Context, id, status, result string, at time.Time) error
 	ListRecent(ctx context.Context, limit int) ([]domain.AgentCommand, error)
+	// ListByAgentType 按终端+类型分页查询（检测演练报告从 type=drill 的
+	// 指令回执里投影，复用同一张表，不建新表）；返回该过滤条件下的总数。
+	ListByAgentType(ctx context.Context, agentID, typ string, offset, limit int) ([]domain.AgentCommand, int, error)
 }
 
 // InventoryRepo 主机资产清单数据访问。

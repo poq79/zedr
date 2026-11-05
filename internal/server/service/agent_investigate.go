@@ -305,6 +305,12 @@ func (s *AIService) AgentInvestigate(ctx context.Context, alertID string) (*ai.A
 		}
 	}
 
+	// 判定台账：Agentic 结论（模型自主调查）进质量对账；降级走兜底时
+	// Investigate 内部已写过 heuristic 台账，这里只在模型真出结论时覆盖
+	if !rep.Degraded {
+		s.recordTriage(ctx, alertID, triageSourceAI, rep.Verdict, rep.Confidence, rep.Engine)
+	}
+
 	agentCacheMu.Lock()
 	agentCache[alertID] = agentCacheEntry{rep: rep, at: time.Now()}
 	agentCacheMu.Unlock()

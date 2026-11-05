@@ -88,6 +88,18 @@ func (h *adminHandler) aiOpsQueue(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, list)
 }
 
+// aiQualityReport 返回研判质量对账（AI 结论 × 分析师处置）。
+// 这是 AI 能力迭代的方向盘：没有一致率/误报/漏报数据，调提示词
+// 和阈值都是盲调。
+func (h *adminHandler) aiQualityReport(w http.ResponseWriter, r *http.Request) {
+	rep, err := h.deps.Services.AI.QualityReport(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, rep)
+}
+
 // aiOpsReview 审批一条值班建议（只改队列状态，不触发任何处置）。
 // 结案理由可选；理由为误报/确认良性且告警可加白时，回传加白建议
 // （只建议不执行——真正的加白由人显式调 POST /allowlist）。
