@@ -55,8 +55,10 @@ type evtChannelDef struct {
 // 子类——未开启的机器上对应事件缺失（诚实边界，见 DETECTION §3.6.3）。
 var evtChannels = []evtChannelDef{
 	{"System", "*[System[(EventID=7045) or (EventID=104)]]"},
-	{"Security", "*[System[(EventID=4625) or (EventID=4698) or (EventID=1102)]]"},
+	{"Security", "*[System[(EventID=4624) or (EventID=4625) or (EventID=4698) or (EventID=1102) " +
+		"or (EventID=4720) or (EventID=4726) or (EventID=4728) or (EventID=4732) or (EventID=4719)]]"},
 	{"Microsoft-Windows-TerminalServices-LocalSessionManager/Operational", "*[System[(EventID=1149)]]"},
+	{"Microsoft-Windows-PowerShell/Operational", "*[System[(EventID=4104)]]"},
 }
 
 type evtCursor struct {
@@ -181,10 +183,20 @@ func (a *Agent) dispatchEvtEvents(channel string, events []winapi.EvtEvent) {
 			// Security 通道清空（T1070.001）：与 104 同语义不同通道，
 			// 前提是"审核策略变更"审计开启
 			a.emitEvtLogCleared(ev, channel)
+		case channel == "Security" && ev.EventID == 4624:
+			a.evtLogonWatch(ev)
 		case channel == "Security" && ev.EventID == 4625:
 			a.evtBrutePush(ev)
 		case channel == "Security" && ev.EventID == 4698:
 			a.emitEvtSchTask(ev)
+		case channel == "Security" && ev.EventID == 4720, channel == "Security" && ev.EventID == 4726:
+			a.emitEvtAccountChange(ev)
+		case channel == "Security" && ev.EventID == 4728, channel == "Security" && ev.EventID == 4732:
+			a.emitEvtGroupChange(ev)
+		case channel == "Security" && ev.EventID == 4719:
+			a.emitEvtAuditPolicy(ev)
+		case channel == "Microsoft-Windows-PowerShell/Operational" && ev.EventID == 4104:
+			a.emitEvtScriptBlock(ev)
 		case channel == "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational" && ev.EventID == 1149:
 			a.emitEvtRDPIn(ev)
 		}
@@ -324,6 +336,20 @@ func (a *Agent) emitEvtSchTask(ev winapi.EvtEvent) {
 }
 
 // ---------------------------------------------------------------- 4625
+
+// recentFailCount 返回聚合窗口内指定账户的登录失败次数（暴破成功
+// 序列判定的数据源；调用方持锁约束与 evtBrutePush 相同——单 goroutine）。
+func (a *Agent) recentFailCount(user string) int {
+	a.brute.mu.Lock()
+	defer a.brute.mu.Unlock()
+	n := 0
+	for _, r := range a.brute.window {
+		if r.user == user {
+			n++
+		}
+	}
+	return n
+}
 
 // evtBrutePush 聚合登录失败：单条是常态噪声（输错密码），窗口内密集
 // 失败才是暴破（T1110）。超阈值发聚合告警（计数+样本 Top），冷却

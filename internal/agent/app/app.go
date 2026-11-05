@@ -69,6 +69,11 @@ type Agent struct {
 	evtChannels atomic.Int64
 	// brute 是事件日志 4625 的滑动窗口聚合器（evtlogLoop 单 goroutine）
 	brute evtBruteAgg
+	// logonHours/logonSamples 是交互/RDP 登录的时段基线（内存态，
+	// evtlogLoop 单 goroutine；重启重学为诚实边界）
+	logonMu      sync.Mutex
+	logonHours   map[uint8]bool
+	logonSamples int
 	// memwatch 计数（memwatchLoop 单 goroutine 写，scan 回调读）
 	memScans atomic.Int64
 	memHits  atomic.Int64
