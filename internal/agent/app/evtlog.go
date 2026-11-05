@@ -127,17 +127,26 @@ func (a *Agent) evtlogLoop(ctx context.Context) {
 				continue
 			}
 			alive++
-			// 游标悬空检测：空批且检查点已低于通道最旧记录 = 日志被清/滚动。
-			// 不处理的话 RecordID 从头重新计数，所有新事件都 < sinceID 被
-			// 过滤——通道永久失明，而"日志被清"恰是 104 要抓的场景。
-			// 重置为最旧记录之前一格（被清掉的旧事件如实接受）。
+			// 游标悬空检测（空批时）：两种场景都会让通道永久失明——
+			//   ① 日志滚动：最旧匹配前进超过游标（oldest > since+1）；
+			//   ② 日志被清/重建：RecordId 归零重计，新事件全部 < since
+			//     （实测：Security 日志清空后新事件 742824 < 旧游标 742839，
+			//     而"日志被清"恰是 104/1102 要抓的场景）。
+			// 判定：用"最早匹配 RecordID E0"校验游标位置，两者明显脱节
+			// 即重置基线到 E0-1（被清掉的旧事件如实接受）。
 			if len(events) == 0 && since > 0 {
-				if oldest, oerr := winapi.EvtChannelOldestRecordID(ch.name); oerr == nil &&
-					oldest > 0 && oldest > since+1 {
-					a.log.Warn("evtlog_cursor_reset", "channel", ch.name,
-						"old_cursor", since, "new_baseline", oldest-1)
-					cp.Channels[ch.name] = oldest - 1
-					changed = true
+				if probe, _, perr := winapi.EvtReadBatch(ch.name, ch.xpath, 0, 1); perr == nil {
+					e0 := uint64(0)
+					if len(probe) > 0 {
+						e0 = probe[0].RecordID
+					}
+					if e0 > 0 && (e0 > since+1 || e0+1000 < since) {
+						a.log.Warn("evtlog_cursor_reset", "channel", ch.name,
+							"old_cursor", since, "new_baseline", e0-1,
+							"hint", "通道日志被清空或滚动，游标重置")
+						cp.Channels[ch.name] = e0 - 1
+						changed = true
+					}
 				}
 				continue
 			}
