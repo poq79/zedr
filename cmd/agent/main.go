@@ -10,19 +10,22 @@
 package main
 
 import (
-	"path/filepath"
-	"strings"
-	"encoding/json"
-	"net/http"
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
@@ -31,6 +34,29 @@ import (
 )
 
 const serviceName = "ZEDRAgent"
+
+// 退出码约定（运维平台/脚本按码分流，不解析 stderr 文案）：
+// 0 成功；1 通用失败；2 权限不足（未以管理员运行）；3 服务状态冲突。
+const (
+	exitOK         = 0
+	exitGeneral    = 1
+	exitPermission = 2
+	exitConflict   = 3
+	exitConfig     = 4
+)
+
+// exitCodeOf 把服务操作错误归类为稳定退出码。
+func exitCodeOf(err error) int {
+	switch {
+	case errors.Is(err, windows.ERROR_ACCESS_DENIED):
+		return exitPermission
+	case errors.Is(err, windows.ERROR_SERVICE_EXISTS) ||
+		errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE):
+		return exitConflict
+	default:
+		return exitGeneral
+	}
+}
 
 // version 由构建脚本通过 -ldflags -X main.version 注入。
 var version = "dev"
@@ -43,6 +69,13 @@ func main() {
 		flagPurge     = flag.Bool("purge", false, "配合 -uninstall：同时删除数据目录（基线/队列/本地令牌）")
 		flagVersion   = flag.Bool("version", false, "打印版本")
 		flagStatus    = flag.Bool("status", false, "查看本机探针运行状态（服务器/SSH 场景无需打开界面）")
+		flagJSON      = flag.Bool("json", false, "配合 -status：输出机器可读 JSON（脚本/运维平台判断接入状态）")
+		// 接入参数（配合 -install）：写入 exe 同目录 .env 后再装服务。
+		// 服务模式 cwd 是 System32，环境变量无法随身携带，配置落盘是
+		// 静默部署的关键——运维平台一条命令装完即接入。
+		flagURL   = flag.String("url", "", "配合 -install：总控服务端地址（写入 .env 的 HG_AGENT_SERVER_URL）")
+		flagToken = flag.String("token", "", "配合 -install：注册预共享令牌（写入 .env 的 HG_AGENT_ENROLL_TOKEN）")
+		flagTags  = flag.String("tags", "", "配合 -install：逗号分隔主机标签（写入 .env 的 HG_AGENT_TAGS）")
 	)
 	flag.Parse()
 
@@ -51,10 +84,14 @@ func main() {
 		return
 	}
 
+	if !*flagInstall && (*flagURL != "" || *flagToken != "" || *flagTags != "") {
+		fmt.Fprintln(os.Stderr, "提示: -url/-token/-tags 仅在 -install 时生效，本次已忽略")
+	}
+
 	// -status：服务器与 SSH 场景的"看一眼"。桌面 UI 在 Server Core/无
 	// WebView2 的机器上没有意义，而运维排查恰恰最常发生在那里。
 	if *flagStatus {
-		if err := printStatus(); err != nil {
+		if err := printStatus(*flagJSON); err != nil {
 			fmt.Fprintf(os.Stderr, "获取状态失败: %v\n（提示：探针必须在本机运行，本地接口 127.0.0.1:8843）\n", err)
 			os.Exit(1)
 		}
@@ -72,16 +109,32 @@ func main() {
 
 	switch {
 	case *flagInstall:
+		// 接入参数先落盘再装服务：-install 的所有提示与检查都基于
+		// 落盘后的有效配置，保证"装完是什么样，提示就是什么"。
+		if err := persistInstallConfig(*flagURL, *flagToken, *flagTags); err != nil {
+			fmt.Fprintf(os.Stderr, "写入接入配置失败: %v\n", err)
+			os.Exit(exitConfig)
+		}
+		// 同步注入当前进程：LoadDotEnv 在 switch 之前已执行，落盘的新值
+		// 不注入的话，下面的安装期提示会读到旧值。flag 语义上就是刚下
+		// 达的配置，优先于既有环境（与服务端"系统环境变量优先于 .env"
+		// 的差异已由 persistInstallConfig 内的冲突提示说明）。
+		if *flagURL != "" {
+			_ = os.Setenv("HG_AGENT_SERVER_URL", *flagURL)
+		}
+		if *flagToken != "" {
+			_ = os.Setenv("HG_AGENT_ENROLL_TOKEN", *flagToken)
+		}
 		if err := installService(); err != nil {
 			fmt.Fprintf(os.Stderr, "安装服务失败: %v\n", err)
-			os.Exit(1)
+			os.Exit(exitCodeOf(err))
 		}
-		fmt.Printf("服务 %s 已安装并设为自动启动\n", serviceName)
+		printInstallSummary(effectiveEnroll())
 		return
 	case *flagUninstall:
 		if err := uninstallService(); err != nil {
 			fmt.Fprintf(os.Stderr, "卸载服务失败: %v\n", err)
-			os.Exit(1)
+			os.Exit(exitCodeOf(err))
 		}
 		fmt.Printf("服务 %s 已卸载\n", serviceName)
 		if *flagPurge {
@@ -203,17 +256,20 @@ func installService() error {
 	}
 	defer m.Disconnect()
 
+	// 幂等重装：服务已存在时先卸载再装。Delete 是"标记删除"，
+	// 旧服务句柄（含 SCM 内部）未释放前 CreateService 会报
+	// ERROR_SERVICE_MARKED_FOR_DELETE，所以删除后短促重试。
 	if s, err := m.OpenService(serviceName); err == nil {
+		fmt.Printf("检测到已有服务 %s，先卸载旧服务再重装\n", serviceName)
+		_, _ = s.Control(svc.Stop)
+		_ = s.Delete()
 		s.Close()
-		return fmt.Errorf("服务已存在，请先执行 -uninstall")
+		if err := waitServiceGone(m); err != nil {
+			return fmt.Errorf("旧服务卸载未完成: %w", err)
+		}
 	}
 
-	s, err := m.CreateService(serviceName, exe, mgr.Config{
-		DisplayName:  "Z-EDR 主机安全探针",
-		Description:  "采集进程与血缘信息，执行多引擎恶意进程检测并上报总控服务端。",
-		StartType:    mgr.StartAutomatic,
-		ErrorControl: mgr.ErrorNormal,
-	}, "-service")
+	s, err := createServiceWithRetry(m, exe)
 	if err != nil {
 		return err
 	}
@@ -241,6 +297,140 @@ func installService() error {
 	return s.Start()
 }
 
+// createServiceWithRetry 创建服务；对"标记删除尚未完成"做最多 5 秒重试
+// （幂等重装路径的前一条 Delete 生效需要时间），其余错误立即返回。
+func createServiceWithRetry(m *mgr.Mgr, exe string) (*mgr.Service, error) {
+	var lastErr error
+	for i := 0; i < 10; i++ {
+		s, err := m.CreateService(serviceName, exe, mgr.Config{
+			DisplayName:  "Z-EDR 主机安全探针",
+			Description:  "采集进程与血缘信息，执行多引擎恶意进程检测并上报总控服务端。",
+			StartType:    mgr.StartAutomatic,
+			ErrorControl: mgr.ErrorNormal,
+		}, "-service")
+		if err == nil {
+			return s, nil
+		}
+		lastErr = err
+		if !errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+			return nil, err
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+// waitServiceGone 等待服务从 SCM 消失（标记删除完成），最多 5 秒。
+func waitServiceGone(m *mgr.Mgr) error {
+	for i := 0; i < 10; i++ {
+		s, err := m.OpenService(serviceName)
+		if err != nil {
+			return nil // 打不开 = 已消失
+		}
+		s.Close()
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("服务 %s 未在 5 秒内完成卸载", serviceName)
+}
+
+// persistInstallConfig 把 -url/-token/-tags 写入 exe 同目录 .env（服务模式的
+// 唯一配置来源，见 LoadDotEnv）。键级合并：只改提供的键，不动 .env 里的
+// 其他配置；空值跳过（保持现状）。此后 LoadDotEnv 把它们注入本进程环境，
+// effectiveEnroll 与服务运行读到的是同一份。
+func persistInstallConfig(url, token, tags string) error {
+	if url == "" && token == "" && tags == "" {
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	envPath := filepath.Join(filepath.Dir(exe), ".env")
+
+	updates := map[string]string{}
+	if url != "" {
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			return fmt.Errorf("-url 必须以 http:// 或 https:// 开头: %q", url)
+		}
+		updates["HG_AGENT_SERVER_URL"] = url
+	}
+	if token != "" {
+		updates["HG_AGENT_ENROLL_TOKEN"] = token
+	}
+	if tags != "" {
+		updates["HG_AGENT_TAGS"] = tags
+	}
+
+	lines := []string{}
+	if raw, err := os.ReadFile(envPath); err == nil {
+		lines = strings.Split(string(raw), "\n")
+	}
+	for i, ln := range lines {
+		trimmed := strings.TrimSpace(ln)
+		for k, v := range updates {
+			if strings.HasPrefix(trimmed, k+"=") {
+				lines[i] = k + "=" + v
+				delete(updates, k)
+				break
+			}
+		}
+	}
+	for k, v := range updates {
+		lines = append(lines, k+"="+v)
+	}
+	// 系统环境变量优先于 .env（LoadDotEnv 不覆盖既有环境变量）：若目标机
+	// 已设了同名系统变量，写进 .env 的值对服务进程不生效——必须在这里
+	// 说破，否则是又一个"配置写了却没生效"的静默坑。
+	written := map[string]string{
+		"HG_AGENT_SERVER_URL":   url,
+		"HG_AGENT_ENROLL_TOKEN": token,
+		"HG_AGENT_TAGS":         tags,
+	}
+	for k, v := range written {
+		if v == "" {
+			continue
+		}
+		if old := os.Getenv(k); old != "" && old != v {
+			fmt.Fprintf(os.Stderr,
+				"警告: 系统环境变量 %s 已存在且与本次写入值不同；服务进程以系统环境变量为准，\n"+
+					"  如需用新值请先删除系统变量或改用系统变量配置（setx /M %s ...）。\n", k, k)
+		}
+	}
+	// 0600：文件里有注册凭据，收紧到管理员/本机可读。
+	return os.WriteFile(envPath, []byte(strings.TrimRight(strings.Join(lines, "\n"), "\n")+"\n"), 0o600)
+}
+
+// effectiveEnroll 返回落盘后的有效接入配置（flag > .env/系统环境 > 默认），
+// 与服务进程实际读到的值一致——安装期警告的依据。
+func effectiveEnroll() (url, token string) {
+	url = os.Getenv("HG_AGENT_SERVER_URL")
+	token = os.Getenv("HG_AGENT_ENROLL_TOKEN")
+	if url == "" {
+		url = "http://127.0.0.1:8080" // 与 agentapp.LoadConfig 默认值一致
+	}
+	return url, token
+}
+
+// printInstallSummary 安装成功的"下一步"引导：修掉"服务装好了但不知道
+// 为什么没上线"的首次安装卡点（本地模式是合法用法，用警告不阻断）。
+func printInstallSummary(url, token string) {
+	fmt.Printf("服务 %s 已安装并设为自动启动（延迟启动 + 崩溃自动恢复）\n", serviceName)
+	switch {
+	case token == "":
+		fmt.Fprintf(os.Stderr,
+			"\n⚠ 当前未配置注册令牌，探针将以【纯本地模式】运行：本机检测照常，但不会上报总控，管理台不会出现本机。\n"+
+				"  如需接入总控：重跑 -install 并带 -url <服务端地址> -token <注册令牌>，\n"+
+				"  令牌在管理台「主机终端 → 接入新主机」页或服务端 .env 的 HG_SERVER_ENROLL_TOKEN。\n")
+	case strings.Contains(url, "127.0.0.1") || strings.Contains(url, "localhost"):
+		fmt.Fprintf(os.Stderr,
+			"\n⚠ 服务端地址是 %s（本机回环）。跨机部署时目标机器连不上这个地址，\n"+
+				"  表现为服务在跑但永远不上线；请用总控所在机器的可达地址重跑 -install -url ...\n", url)
+	default:
+		fmt.Printf("接入总控: %s（装完约 30 秒内应出现在管理台「主机终端」页）\n", url)
+		fmt.Println("验证: zedr-agent.exe -status（脚本用 -status -json）")
+	}
+}
+
 func uninstallService() error {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -258,7 +448,6 @@ func uninstallService() error {
 	return s.Delete()
 }
 
-
 // agentDataDir 返回探针数据目录（与运行时 cfg.Path 的来源一致）。
 func agentDataDir() string {
 	if v := os.Getenv("HG_AGENT_DATA_DIR"); v != "" {
@@ -270,18 +459,63 @@ func agentDataDir() string {
 	return ""
 }
 
-
-// printStatus 输出人话版本机状态（不依赖任何前端）。
-func printStatus() error {
-	tok := ""
-	if raw, err := os.ReadFile(filepath.Join(agentDataDir(), "local.token")); err == nil {
-		tok = strings.TrimSpace(string(raw))
+// localTokenCandidates 返回本地 API 令牌的可能落点，按可能性排序。
+// 为什么是列表：探针以不同身份运行时数据目录不同——前台/登录用户运行在
+// 当前用户 %LOCALAPPDATA%；LocalSystem 服务运行在 systemprofile 的
+// AppData\Local（服务环境 LOCALAPPDATA 存在但指向 systemprofile）；
+// 极老版本或无 LOCALAPPDATA 的环境落在 ProgramData。运维用 -status 查
+// 服务状态时（脚本是服务部署的标准验证路径），当前用户目录里没有服务
+// 进程的令牌——只查一个目录会得到 401 误报"探针异常"。
+func localTokenCandidates() []string {
+	var dirs []string
+	if v := os.Getenv("HG_AGENT_DATA_DIR"); v != "" {
+		dirs = append(dirs, v)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:8843/api/local/status", nil)
-	req.Header.Set("X-ZEDR-Token", tok)
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
+	if v := os.Getenv("LOCALAPPDATA"); v != "" {
+		dirs = append(dirs, filepath.Join(v, "zedr"))
+	}
+	dirs = append(dirs,
+		`C:\Windows\System32\config\systemprofile\AppData\Local\zedr`,
+		`C:\ProgramData\zedr`,
+	)
+	return dirs
+}
+
+// fetchLocalStatus 依次尝试各候选令牌读取本地状态；全部失败返回 nil。
+func fetchLocalStatus() *http.Response {
+	for _, dir := range localTokenCandidates() {
+		tok := ""
+		if raw, err := os.ReadFile(filepath.Join(dir, "local.token")); err == nil {
+			tok = strings.TrimSpace(string(raw))
+		} else {
+			continue
+		}
+		req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:8843/api/local/status", nil)
+		req.Header.Set("X-ZEDR-Token", tok)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			// 接口不可达：换令牌也没用，直接结束（探针没在跑）。
+			return nil
+		}
+		if res.StatusCode == 200 {
+			return res
+		}
+		res.Body.Close()
+		if res.StatusCode != 401 {
+			// 非 401（如 5xx）：不是令牌问题，重试无意义。
+			return res
+		}
+		// 401：令牌不匹配，试下一个候选目录。
+	}
+	return nil
+}
+
+// printStatus 输出版机状态（不依赖任何前端）。json=true 时输出机器可读
+// JSON（脚本/运维平台按 online 字段闭环判断"装完是否上线"），否则人话。
+func printStatus(asJSON bool) error {
+	res := fetchLocalStatus()
+	if res == nil {
+		return fmt.Errorf("本地接口 127.0.0.1:8843 不可达（探针未运行？）")
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
@@ -290,22 +524,22 @@ func printStatus() error {
 
 	var wrap struct {
 		Data struct {
-			AgentVersion  string `json:"agent_version"`
-			ProcCount     int    `json:"proc_count"`
-			CPUPercent    float64 `json:"cpu_percent"`
-			MemMB         float64 `json:"mem_mb"`
-			RuleCount     int    `json:"rule_count"`
-			IOCCount      int    `json:"ioc_count"`
-			InventorySections int `json:"inventory_sections"`
-			BaselineSize  int    `json:"baseline_size"`
-			FileWatch     bool   `json:"file_watch"`
-			PersistCount  int    `json:"persist_count"`
-			UptimeSec     int64  `json:"uptime_sec"`
-			ScanInterval  string `json:"scan_interval"`
-			Online        bool   `json:"online"`
-			Stats         struct {
-				Scanned   int64 `json:"scanned"`
-				Fired     int64 `json:"fired"`
+			AgentVersion      string  `json:"agent_version"`
+			ProcCount         int     `json:"proc_count"`
+			CPUPercent        float64 `json:"cpu_percent"`
+			MemMB             float64 `json:"mem_mb"`
+			RuleCount         int     `json:"rule_count"`
+			IOCCount          int     `json:"ioc_count"`
+			InventorySections int     `json:"inventory_sections"`
+			BaselineSize      int     `json:"baseline_size"`
+			FileWatch         bool    `json:"file_watch"`
+			PersistCount      int     `json:"persist_count"`
+			UptimeSec         int64   `json:"uptime_sec"`
+			ScanInterval      string  `json:"scan_interval"`
+			Online            bool    `json:"online"`
+			Stats             struct {
+				Scanned    int64 `json:"scanned"`
+				Fired      int64 `json:"fired"`
 				Suppressed int64 `json:"suppressed"`
 			} `json:"stats"`
 		} `json:"data"`
@@ -314,6 +548,24 @@ func printStatus() error {
 		return err
 	}
 	d := wrap.Data
+
+	if asJSON {
+		// 只保留脚本关心的字段，不透传本地接口的完整结构（口径稳定，
+		// 加字段不破坏既有消费方）。
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"online":        d.Online,
+			"agent_version": d.AgentVersion,
+			"proc_count":    d.ProcCount,
+			"cpu_percent":   d.CPUPercent,
+			"mem_mb":        d.MemMB,
+			"rule_count":    d.RuleCount,
+			"uptime_sec":    d.UptimeSec,
+			"scan_interval": d.ScanInterval,
+			"scanned":       d.Stats.Scanned,
+			"fired":         d.Stats.Fired,
+			"suppressed":    d.Stats.Suppressed,
+		})
+	}
 
 	online := "未连接总控"
 	if d.Online {
