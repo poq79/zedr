@@ -513,6 +513,26 @@ func enumerateIFEO() ([]PersistItem, error) {
 }
 
 // PersistCommandPath 从命令行中解析出可执行文件路径。
+// TaskCommandPath 由计划任务注册名定位其执行命令（4698 事件入链用）。
+//
+// 4698 事件的 Data 只有任务名，不带命令——而任务定义落盘在
+// System32\Tasks 目录树（注册名 \folder\task ↔ 同名无扩展文件），与
+// persist 枚举同款解析即可拿到 Command。拿不到（权限/路径怪异/非 Exec
+// 动作）返回空，调用方按"没有路径就不入链"降级，由 persist 周期扫描
+// 兜底同一语义。
+func TaskCommandPath(taskName string) string {
+	name := strings.Trim(strings.TrimSpace(taskName), `"`)
+	name = strings.TrimPrefix(name, `\`)
+	if name == "" || strings.Contains(name, "..") {
+		// 任务名来自事件日志，正常不含 ".."；防目录穿越是防御性收口
+		return ""
+	}
+	path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Tasks",
+		filepath.FromSlash(name))
+	def := parseTaskXML(path)
+	return def.Command
+}
+
 //
 // 自启动项的命令行格式五花八门：带引号、带参数、以环境变量开头、
 // 只有裸程序名（依赖 PATH）。这里尽量还原出磁盘路径，供信誉判定使用。

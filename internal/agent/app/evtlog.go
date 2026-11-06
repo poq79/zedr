@@ -336,8 +336,28 @@ func (a *Agent) emitEvtSchTask(ev winapi.EvtEvent) {
 	}
 	summary := fmt.Sprintf("计划任务 %q 由 %s 创建（事件日志权威证据，T1053.005）。与资产清单的计划任务变更互为佐证。",
 		taskName, acct)
+	fp := fmt.Sprintf("evt:4698:%s:%d", strings.ToLower(taskName), ev.TimeCreated.Unix()/60)
+
+	// 攻击链馈送：计划任务创建作为 PERSIST-RUN 链首。4698 事件本身不带
+	// 命令路径——按任务名读 Tasks 目录的定义 XML 提取（与 persist 枚举
+	// 同款解析），让任务链从 5min persist 轮询提速到事件速度；只收绝对
+	// 路径（裸程序名如 cmd.exe 对不上进程镜像路径，只会制造死链首）；
+	// 拿不到路径诚实不入链，persist 周期扫描兜底同一语义。
+	if a.chainE != nil {
+		if cmdPath := winapi.PersistCommandPath(winapi.TaskCommandPath(taskName)); cmdPath != "" &&
+			(strings.Contains(cmdPath, ":") || strings.HasPrefix(cmdPath, `\\`)) &&
+			chainNotSelf(cmdPath) {
+			a.chainE.Feed(chain.Stage{
+				Kind: chain.KindPersist, When: ev.TimeCreated,
+				ItemPath: cmdPath, ItemKind: "scheduled_task", ItemName: taskName,
+				MITRE: "T1053.005", RefRuleID: "EVT-SCHTASK", RefScore: 45,
+				RefFingerprint: fp,
+			})
+		}
+	}
+
 	a.emitAlert(model.AlertEnvelope{
-		Fingerprint: fmt.Sprintf("evt:4698:%s:%d", strings.ToLower(taskName), ev.TimeCreated.Unix()/60),
+		Fingerprint: fp,
 		Title:       "事件日志：计划任务创建 " + taskName,
 		Summary:     summary,
 		Verdict:     model.VerdictSuspicious,
