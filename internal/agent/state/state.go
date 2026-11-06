@@ -125,6 +125,11 @@ type RuntimeInfo struct {
 	// （验签拒绝/版本回退都发生在终端侧），排障时只能翻日志。
 	IOCCount          int `json:"ioc_count"`
 	InventorySections int `json:"inventory_sections"`
+
+	// 观察模式命中计数（规则 ID → 本次运行期累计，重启清零）。
+	// 仅当当前规则包里存在 observe 规则时非 nil——nil 与空 map 是
+	// 两个不同语义（无观察规则 vs 有观察规则但还没命中）。
+	RuleObserved map[string]int64 `json:"rule_observed,omitempty"`
 }
 
 // Store 是线程安全的内存视图。

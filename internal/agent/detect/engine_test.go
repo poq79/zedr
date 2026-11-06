@@ -241,3 +241,53 @@ func TestSeverityAndFusion(t *testing.T) {
 		t.Fatalf("命中 critical 规则后应抬升，实际 %s", got)
 	}
 }
+
+// TestObserveRuleCountsButDoesNotAlert 观察模式核心语义：
+// 命中只进计数（随心跳快照上报），不参与打分/告警；转正后同一规则
+// 立即恢复完整检测力。
+func TestObserveRuleCountsButDoesNotAlert(t *testing.T) {
+	observeRule := func(mode string) model.RuleDTO {
+		return model.RuleDTO{
+			ID: "HG-C-obs1", Name: "观察中的自定义规则", Severity: model.SeverityCritical,
+			Score: 90, Enabled: true, Mode: mode, Version: 1,
+			Definition: `{"all":[{"field":"process.name","op":"in","value":["observed-proc.exe"]}]}`,
+		}
+	}
+	proc := ProcessInfo{PID: 400, Name: "observed-proc.exe", Path: `C:\Users\public\observed-proc.exe`}
+
+	// 观察模式：命中计数，不告警
+	e := newTestEngine(t)
+	if _, bad := e.SetRules([]model.RuleDTO{observeRule("observe")}); len(bad) != 0 {
+		t.Fatalf("规则编译失败: %v", bad)
+	}
+	res := e.Analyze(Input{Proc: proc})
+	if res == nil {
+		t.Fatal("引擎应恒返回结果")
+	}
+	if res.Alert {
+		t.Fatalf("观察模式不应产生告警，实际 score=%d", res.Score)
+	}
+	snap, ok := e.ObserveSnapshot()
+	if !ok {
+		t.Fatal("存在观察规则时快照必须可上报")
+	}
+	if snap["HG-C-obs1"] != 1 {
+		t.Fatalf("观察计数应为 1，实际 %d", snap["HG-C-obs1"])
+	}
+
+	// 从未见过观察规则的引擎：不应触发上报（服务端不动已存数据）
+	e2 := newTestEngine(t)
+	if _, ok := e2.ObserveSnapshot(); ok {
+		t.Fatal("无观察规则且无历史计数时不应上报快照")
+	}
+
+	// 转正后：同一规则恢复告警能力（用独立引擎避免去重窗口干扰）
+	e3 := newTestEngine(t)
+	if _, bad := e3.SetRules([]model.RuleDTO{observeRule("")}); len(bad) != 0 {
+		t.Fatalf("规则编译失败: %v", bad)
+	}
+	res3 := e3.Analyze(Input{Proc: proc})
+	if !res3.Alert {
+		t.Fatalf("转正后应正常告警，实际 score=%d verdict=%s", res3.Score, res3.Verdict)
+	}
+}

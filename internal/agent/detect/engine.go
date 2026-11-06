@@ -105,6 +105,11 @@ type Engine struct {
 	latSum      int64
 	latN        int64
 
+	// observeMu 保护观察模式命中计数。独立于 statMu：观察计数走的是
+	// 心跳快照上报路径，与引擎统计的读写频率不同，分开锁避免互相拖累。
+	observeMu   sync.Mutex
+	observeHits map[string]int64
+
 	// 本地去重：同一指纹在窗口内只上报一次
 	recent map[string]time.Time
 }
@@ -116,6 +121,9 @@ type compiledRule struct {
 	Score    int
 	MITRE    []string
 	Def      *rules.Definition
+	// Observe=true 时规则照常求值但不参与打分/告警，只累计命中次数——
+	// 新规则上线前的试运行口径（服务端看计数决定是否转正）。
+	Observe bool
 }
 
 // New 构造引擎。
@@ -127,12 +135,13 @@ func New(enr *enrich.Enricher, base *baseline.Model, alw *allow.List, cfg Config
 		cfg.SuspiciousAt = 38
 	}
 	return &Engine{
-		enr:    enr,
-		base:   base,
-		allow:  alw,
-		kw:     newKeywordMatcher(),
-		cfg:    cfg,
-		recent: make(map[string]time.Time, 512),
+		enr:         enr,
+		base:        base,
+		allow:       alw,
+		kw:          newKeywordMatcher(),
+		cfg:         cfg,
+		recent:      make(map[string]time.Time, 512),
+		observeHits: make(map[string]int64, 16),
 	}
 }
 
@@ -200,6 +209,7 @@ func (e *Engine) SetRules(list []model.RuleDTO) (ok int, bad []string) {
 		compiled = append(compiled, compiledRule{
 			ID: r.ID, Name: r.Name, Severity: r.Severity, Score: r.Score,
 			MITRE: r.MITRE, Def: def,
+			Observe: r.Mode == "observe",
 		})
 		ok++
 	}
@@ -214,6 +224,54 @@ func (e *Engine) RuleCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return len(e.rules)
+}
+
+// ObserveStats 返回观察模式命中计数快照（副本；调用方可安全持有）。
+func (e *Engine) ObserveStats() map[string]int64 {
+	e.observeMu.Lock()
+	defer e.observeMu.Unlock()
+	out := make(map[string]int64, len(e.observeHits))
+	for id, n := range e.observeHits {
+		out[id] = n
+	}
+	return out
+}
+
+// ObserveSnapshot 返回 (观察计数快照, 是否应上报)。
+//
+// 两种情况都要求上报（整包替换语义）：
+//  1. 当前规则包里有 observe 规则——哪怕还没命中，也要发空/零值 map，
+//     让服务端把该终端的计数行刷成真实值；
+//  2. 本次运行期产生过观察命中但规则已转正/移除——不发的话服务端
+//     残留旧计数，跨终端汇总虚高。
+// 都不满足（本次运行从未见过观察规则）返回 false，服务端不动已存数据。
+func (e *Engine) ObserveSnapshot() (map[string]int64, bool) {
+	e.mu.RLock()
+	hasObserve := false
+	for _, r := range e.rules {
+		if r.Observe {
+			hasObserve = true
+			break
+		}
+	}
+	e.mu.RUnlock()
+
+	e.observeMu.Lock()
+	hits := e.observeHits
+	e.observeMu.Unlock()
+
+	if hasObserve {
+		out := make(map[string]int64, len(hits))
+		for id, n := range hits {
+			out[id] = n
+		}
+		return out, true
+	}
+	if len(hits) > 0 {
+		// 运行期曾有观察规则、现已全部转正：发空 map 触发服务端清理残留行
+		return map[string]int64{}, true
+	}
+	return nil, false
 }
 
 // Stats 返回累计统计。
@@ -532,6 +590,15 @@ func (e *Engine) ruleLayer(in Input, meta enrich.Meta, signals *[]model.Signal) 
 	for _, r := range compiled {
 		ok, matched := r.Def.Match(target)
 		if !ok {
+			continue
+		}
+		// 观察模式：命中只进计数，不进打分/信号/告警面——计数随心跳
+		// 快照上报，服务端据此评估"这条规则如果生效会响多少"。
+		// 白名单预判在本层之前，已被加白的进程不计数（与告警口径一致）。
+		if r.Observe {
+			e.observeMu.Lock()
+			e.observeHits[r.ID]++
+			e.observeMu.Unlock()
 			continue
 		}
 		hits = append(hits, model.RuleHit{

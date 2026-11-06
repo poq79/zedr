@@ -845,6 +845,9 @@ func (a *Agent) scan(deep bool) int {
 			ri.ChainActive = cs.Active
 			ri.ChainFired = cs.Fired
 		}
+		if obs, ok := a.eng.ObserveSnapshot(); ok {
+			ri.RuleObserved = obs
+		}
 	})
 
 	return len(newProcs)
@@ -1105,6 +1108,10 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 				},
 				Samples:      ri.Stats.Scanned,
 				QueueDropped: a.up.Dropped(),
+			}
+			// 观察模式计数随心跳上报（整包替换语义，见 ObserveSnapshot）。
+			if obs, ok := a.eng.ObserveSnapshot(); ok {
+				req.RuleObserved = obs
 			}
 			hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			resp, err := a.up.Heartbeat(hctx, req)
