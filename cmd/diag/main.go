@@ -42,6 +42,8 @@ func main() {
 	etw2Attach := flag.String("etw2attach", "", "消费者 attach 到已存在会话（决定性判别实验；配合 logman）")
 	memTest := flag.Bool("memtest", false, "内存威胁巡检自测：在本进程内分配一块含 PE 头的私有可执行内存"+
 		"（ VirtualAlloc RWX + 写入 2 字节 MZ，不注入任何进程），供 MEM-1055 检测链路端到端验证；配合 -hold")
+	memTestOut := flag.String("memtestout", "", "注入链自测：先分配 MZ 私有可执行内存（同 -memtest），"+
+		"随后做受控外联 host:端口数（同 -netburst）——两者同 PID 构成 CHAIN-INJECT-OUT 的两阶段样本；配合 -hold")
 	chainTest := flag.Bool("chaintest", false, "攻击链关联自测：把自身复制到 %TEMP%\\hg-chaintest-* 后从该目录"+
 		"重新执行（子进程=落地未签名程序 → -netburst 外联，构成 CHAIN-DROP-EXEC-C2 的两阶段样本），"+
 		"父进程等待子进程退出后清理；全程零外部下载、零真实恶意内容")
@@ -184,6 +186,8 @@ func main() {
 		netBurst(*netburst, *hold)
 	} else if *memTest {
 		memTestSelf(*hold)
+	} else if *memTestOut != "" {
+		memTestOutSelf(*memTestOut, *hold)
 	} else if *hold > 0 {
 		fmt.Printf("按 -hold 参数保持存活 %s（供检测链路验证使用）\n", *hold)
 		time.Sleep(*hold)
@@ -283,14 +287,48 @@ func memTestSelf(hold time.Duration) {
 	if hold <= 0 {
 		hold = 40 * time.Second
 	}
+	buf, allocSize, err := allocMZSelf()
+	if err != nil {
+		fmt.Printf("!! MZ 样本内存分配失败: %v\n", err)
+		return
+	}
+	defer windows.VirtualFree(buf, 0, windows.MEM_RELEASE)
+
+	fmt.Printf("\n--- 内存巡检自测样本已就位 ---\n")
+	fmt.Printf("本进程 PID=%d，私有可执行区域 base=0x%x size=%dKB 起始=MZ\n",
+		os.Getpid(), buf, allocSize/1024)
+	fmt.Printf("保持 %s 供巡检周期（默认 5m）捕获；可用 HG_AGENT_MEMWATCH_INTERVAL=1m 加速验证\n", hold)
+	time.Sleep(hold)
+}
+
+// memTestOutSelf 是注入链（CHAIN-INJECT-OUT）的端到端自测样本：
+// 同一进程内先就位 MZ 私有可执行内存（MEM-1055 链首），随后做受控
+// 外联（同 PID 的连接表证据，链的第二环）。两个信号都来自既有检测
+// 面的常规形态，组合只是把它们放进同一个 PID——这正是"注入后上线"
+// 的检测语义，不注入任何其他进程。
+func memTestOutSelf(spec string, hold time.Duration) {
+	buf, allocSize, err := allocMZSelf()
+	if err != nil {
+		fmt.Printf("!! MZ 样本内存分配失败: %v\n", err)
+		return
+	}
+	defer windows.VirtualFree(buf, 0, windows.MEM_RELEASE)
+	fmt.Printf("\n--- 注入链自测样本已就位 ---\n")
+	fmt.Printf("本进程 PID=%d，MZ 私有可执行区域 base=0x%x size=%dKB；随后受控外联 %s\n",
+		os.Getpid(), buf, allocSize/1024, spec)
+	fmt.Printf("链闭合依赖内存巡检周期（默认 5m）捕获到 MEM-1055；可用 HG_AGENT_MEMWATCH_INTERVAL=1m 加速验证\n")
+	netBurst(spec, hold)
+}
+
+// allocMZSelf 分配并写入 MZ 样本内存（memTestSelf/memTestOutSelf 共用）。
+// 返回基址与分配大小；调用方负责 VirtualFree。
+func allocMZSelf() (uintptr, int, error) {
 	const allocSize = 64 << 10
 	buf, err := windows.VirtualAlloc(0, allocSize,
 		windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_EXECUTE_READWRITE)
 	if err != nil {
-		fmt.Printf("!! VirtualAlloc 失败: %v\n", err)
-		return
+		return 0, 0, err
 	}
-	defer windows.VirtualFree(buf, 0, windows.MEM_RELEASE)
 	// 写 PE 头标志：只写 2 字节，无任何可执行逻辑。
 	// 经 WriteProcessMemory（本进程伪句柄）写入——buf 保持 uintptr 直传，
 	// 避免 uintptr→unsafe.Pointer 的 vet misuse 告警。
@@ -299,15 +337,10 @@ func memTestSelf(hold time.Duration) {
 	var written uintptr
 	if err := windows.WriteProcessMemory(windows.CurrentProcess(), buf,
 		&mz[0], 2, &written); err != nil {
-		fmt.Printf("!! WriteProcessMemory 失败: %v\n", err)
-		return
+		_ = windows.VirtualFree(buf, 0, windows.MEM_RELEASE)
+		return 0, 0, err
 	}
-
-	fmt.Printf("\n--- 内存巡检自测样本已就位 ---\n")
-	fmt.Printf("本进程 PID=%d，私有可执行区域 base=0x%x size=%dKB 起始=MZ\n",
-		os.Getpid(), buf, allocSize/1024)
-	fmt.Printf("保持 %s 供巡检周期（默认 5m）捕获；可用 HG_AGENT_MEMWATCH_INTERVAL=1m 加速验证\n", hold)
-	time.Sleep(hold)
+	return buf, allocSize, nil
 }
 
 // netBurst 受控模拟端口扫描行为：对目标 host 发起 count 个 SYN 连接尝试
