@@ -158,6 +158,26 @@ def _chain_enabled():
         return False
 
 
+def _run_key_persist():
+    """写 HKLM Run 键指向自造样本（zedr-diag 副本，可写目录未签名），
+    随后执行该样本：regwatch 秒级触发定向重扫 → P-001 → PERSIST-RUN 链首，
+    执行环节由进程创建阶段闭合（CHAIN-PERSIST-RUN）。
+    选 HKLM 而非 HKCU：生产探针以 SYSTEM 运行，HKCU 是 SYSTEM 自己的
+    hive 而非交互用户的——HKLM 对 SYSTEM/admin 两种运行态都成立，且
+    本就被 regwatch 守护（DETECTION §3.6.2b）。收尾删键（可逆）。"""
+    exe = copy_as("hg_s19_persist.exe")
+    try:
+        subprocess.run(["reg", "add", r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                        "/v", "HgS19E2E", "/t", "REG_SZ", "/d", exe, "/f"],
+                       capture_output=True, text=True)
+        time.sleep(12)  # regwatch 3s 防抖 + 定向重扫 + 链首入位
+        subprocess.run([exe, "-hold", "3s"], capture_output=True)
+        time.sleep(18)  # 等扫描周期（2s 级）闭合链
+    finally:
+        subprocess.run(["reg", "delete", r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                        "/v", "HgS19E2E", "/f"], capture_output=True, text=True)
+
+
 # ----------------------------------------------------------------- 场景定义
 SCENARIOS = [
     dict(id="S01", name="伪装系统进程（temp 下的 svchost.exe）",
@@ -256,6 +276,15 @@ SCENARIOS = [
          skip_if=lambda: not _chain_enabled(),
          skip_reason="探针未启用攻击链引擎（需换装含 chain 的探针且 HG_AGENT_CHAIN=true）",
          probe=None, expect=["CHAIN-DROP-EXEC-C2"]),
+
+    # ---- S19：攻击链第二式——持久化项被执行（PERSIST-RUN，regwatch 事件
+    # 速度入链）。HKLM Run 键写入（regwatch 秒级 → P-001 → 链首）+ 执行
+    # 该样本（进程创建闭合）。需管理员（S15/S16 同款前提）。
+    dict(id="S19", name="攻击链：新增持久化项被执行（CHAIN-PERSIST-RUN）",
+         run=lambda: _run_key_persist(),
+         skip_if=lambda: not _chain_enabled(),
+         skip_reason="探针未启用攻击链引擎（需换装含 chain 的探针且 HG_AGENT_CHAIN=true）",
+         probe=None, expect=["CHAIN-PERSIST-RUN"]),
 ]
 
 def _admin_group_change():
