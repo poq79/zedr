@@ -15,7 +15,8 @@ import { AttackMatrixPage } from './pages/AttackMatrix';
 import { HuntPage } from './pages/Hunt';
 import { HostDetailPage } from './pages/HostDetail';
 import { IntelPage } from './pages/Intel';
-import { IncidentsPage, ReportPage, HostsPage, RulesPage, AllowlistPage, AuditPage, UsersPage } from './pages/Misc';
+import { RulesCenterPage } from './pages/RulesCenter';
+import { IncidentsPage, ReportPage, HostsPage, AllowlistPage, AuditPage, UsersPage } from './pages/Misc';
 import { AISettingsPage } from './pages/AISettings';
 
 function AppInner() {
@@ -150,7 +151,7 @@ function AppInner() {
                 <Route path="/report" element={<ReportPage key={`r${refreshTick}`} />} />
                 <Route path="/hosts" element={<HostsPage key={`h${refreshTick}`} />} />
                 <Route path="/hosts/:id" element={<HostDetailPage key="host-detail" user={user} />} />
-                <Route path="/rules" element={<RulesPage key={`ru${refreshTick}`} user={user} />} />
+                <Route path="/rules" element={<RulesCenterPage key={`ru${refreshTick}`} user={user} />} />
                 <Route path="/allowlist" element={<AllowlistPage key={`w${refreshTick}`} user={user} />} />
                 <Route path="/audit" element={<AuditPage key={`l${refreshTick}`} />} />
                 <Route path="/users" element={<UsersPage key={`u${refreshTick}`} self={user} />} />

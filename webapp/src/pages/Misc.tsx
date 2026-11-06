@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Download, Eye, EyeOff, KeyRound, Monitor, Plus, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import { api } from '../lib/api';
-import type { Host, AllowEntry, AuditRow, User as UserRow, Severity, Role, IntegrityReport, Incident, Burst } from '../lib/types';
+import type { Host, AllowEntry, AuditRow, User as UserRow, Role, IntegrityReport, Incident, Burst } from '../lib/types';
 import { SEV_LABEL, relTime, fmtTime } from '../lib/format';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useToast, useConfirm } from '../components/ui/overlays';
@@ -243,134 +243,30 @@ export function HostsPage() {
   );
 }
 
-/* ================= 检测规则 ================= */
 
-interface Rule { id: string; name: string; description?: string; severity: Severity; score: number; mitre?: string[]; builtin?: boolean; enabled: boolean }
+/* ================= 白名单（例外与降噪） =================
+   检测规则页已升级为「规则中心」整页（pages/RulesCenter.tsx）；
+   白名单是它的姊妹能力：规则管"什么该响"，这里管"什么确认安全"。 */
 
-export function RulesPage({ user }: { user: { role: Role } }) {
-  const err = useError();
-  const toast = useToast();
-  const canWrite = user.role !== 'viewer';
-  const [rules, setRules] = useState<Rule[] | null>(null);
-  const [editorOpen, setEditorOpen] = useState(false);
-
-  const load = useCallback(async () => {
-    try { setRules((await api.get<{ items: Rule[] }>('/api/v1/rules')).items || []); }
-    catch (e) { err.capture(e); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-  if (err.rendered) return err.rendered;
-
-  const toggle = async (r: Rule) => {
-    try {
-      await api.post(`/api/v1/rules/${encodeURIComponent(r.id)}/toggle`, { enabled: !r.enabled });
-      toast(r.enabled ? '已禁用该规则' : '已启用该规则');
-      load();
-    } catch (e) { toast((e as Error).message, 'err'); }
-  };
-
-  return (
-    <div>
-      <div className="mb-3.5 flex items-center gap-2.5">
-        <span className="text-xs text-faint">共 {rules?.length ?? 0} 条规则 · 内置规则可禁用但不可删除</span>
-        <div className="flex-1" />
-        {canWrite && <Button size="sm" variant="primary" onClick={() => setEditorOpen((v) => !v)}><Plus size={13} /> 新建规则</Button>}
-      </div>
-
-      {!rules ? <Card className="px-2 pb-2"><SkeletonRows rows={6} /></Card> : (
-        <Card className="overflow-x-auto px-2 py-3.5">
-          <table className="w-full text-[13px]">
-            <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
-              {['规则 ID', '名称', '严重度', '分值', 'ATT&CK', '来源', '状态', '操作'].map((h) => <th key={h} className="px-3.5 py-2.5 font-semibold">{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {rules.map((r) => (
-                <tr key={r.id} className="border-b border-border-soft last:border-b-0 hover:bg-secondary">
-                  <td className="px-3.5 py-2.5 font-mono text-xs">{r.id}</td>
-                  <td className="px-3.5 py-2.5"><div className="font-medium">{r.name}</div><div className="mt-0.5 max-w-[520px] text-xs text-faint">{r.description}</div></td>
-                  <td className="px-3.5 py-2.5"><Badge tone={r.severity}>{SEV_LABEL[r.severity]}</Badge></td>
-                  <td className="px-3.5 py-2.5 font-bold">{r.score}</td>
-                  <td className="px-3.5 py-2.5 font-mono text-xs text-faint">{(r.mitre || []).join(', ') || '-'}</td>
-                  <td className="px-3.5 py-2.5 text-xs text-faint">{r.builtin ? '内置' : '自定义'}</td>
-                  <td className="px-3.5 py-2.5">{r.enabled ? <Badge tone="resolved">启用</Badge> : <Badge tone="info">禁用</Badge>}</td>
-                  <td className="px-3.5 py-2.5">{canWrite && <Button size="sm" variant="ghost" onClick={() => toggle(r)}>{r.enabled ? '禁用' : '启用'}</Button>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
-
-      {canWrite && <RuleEditor open={editorOpen} onClose={() => setEditorOpen(false)} onSaved={() => { setEditorOpen(false); load(); }} />}
-    </div>
-  );
-}
-
-function RuleEditor({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
-  const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  if (!open) return null;
-
-  const save = async () => {
-    const g = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).value;
-    const def = g('rDef').trim();
-    try { JSON.parse(def); } catch { return toast('规则定义不是合法 JSON', 'err'); }
-    setBusy(true);
-    try {
-      await api.post('/api/v1/rules', {
-        id: g('rId').trim(), name: g('rName').trim(), severity: g('rSeverity'),
-        score: Number(g('rScore')) || 30,
-        mitre: g('rMitre').split(',').map((s) => s.trim()).filter(Boolean),
-        definition: JSON.parse(def),
-      });
-      toast('规则已保存并下发');
-      onSaved();
-    } catch (e) { toast((e as Error).message, 'err'); } finally { setBusy(false); }
-  };
-
-  return (
-    <Card className="mt-3.5 p-4">
-      <CardTitle className="mb-3">新建 / 更新规则</CardTitle>
-      <div className="mb-3 grid gap-3 sm:grid-cols-2">
-        <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">规则 ID（留空自动生成）</span><Input id="rId" className="w-full" placeholder="HG-C-xxxx" /></label>
-        <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">名称</span><Input id="rName" className="w-full" placeholder="例如：可疑的登录脚本执行" /></label>
-      </div>
-      <div className="mb-3 grid gap-3 sm:grid-cols-3">
-        <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">严重度</span>
-          <Select id="rSeverity" className="w-full">{Object.entries(SEV_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select>
-        </label>
-        <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">分值（1-100）</span><Input id="rScore" type="number" defaultValue={30} min={1} max={100} className="w-full" /></label>
-        <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">ATT&amp;CK（逗号分隔）</span><Input id="rMitre" className="w-full" placeholder="T1059.001" /></label>
-      </div>
-      <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">规则定义（JSON：all / any / none）</span>
-        <textarea id="rDef" rows={10} className="w-full rounded-[7px] border border-input bg-card p-3 font-mono text-xs leading-[1.6] text-foreground outline-none focus:border-primary" defaultValue={`{
-  "all": [
-    { "field": "process.name", "op": "in", "value": ["powershell.exe"] }
-  ],
-  "any": [
-    { "field": "process.cmdline", "op": "icontains", "value": "invoke-" }
-  ]
-}`} />
-      </label>
-      <div className="mt-3 flex gap-2">
-        <Button variant="primary" onClick={save} disabled={busy}>保存并下发</Button>
-        <Button variant="ghost" onClick={onClose}>取消</Button>
-      </div>
-    </Card>
-  );
-}
-
-/* ================= 白名单 ================= */
+/** 五种加白类型：类型语义直接写进选项与提示——加白最大的风险是
+    条目太宽把真攻击也洗白了，提示里把"怎么写才窄"讲清楚。 */
+const ALLOW_TYPES: { value: string; label: string; hint: string; placeholder: string }[] = [
+  { value: 'hash', label: '文件哈希 SHA256', hint: '单个文件的精确匹配，最窄最安全。适用于"这个文件确认安全"。', placeholder: '64 位十六进制 SHA256，如 7f3a91c0…' },
+  { value: 'path', label: '路径', hint: '镜像路径匹配：指向文件为精确匹配，以 \\ 结尾则匹配整个目录。目录越深越窄越安全。', placeholder: 'C:\\Tools\\procmon.exe 或 C:\\Tools\\Sysinternals\\' },
+  { value: 'signer', label: '签名主体', hint: '按可信签名者匹配——一条加白覆盖该厂商全部签名文件，适合标准化软件资产。', placeholder: '签名主体名，如 Contoso Ltd' },
+  { value: 'pair', label: '父子进程对', hint: '格式 parent.exe>child.exe：只放行特定启动组合，比整条命令行加白窄得多。', placeholder: 'deployment-agent.exe>cmd.exe' },
+  { value: 'cmdline', label: '命令行片段', hint: '包含匹配（不区分大小写）。务必写得尽量窄——命令行是最容易被攻击者复用的维度。', placeholder: '如 --backup-mode' },
+];
 
 export function AllowlistPage({ user }: { user: { role: Role } }) {
   const err = useError();
   const toast = useToast();
   const confirm = useConfirm();
   const canWrite = user.role !== 'viewer';
+  const isAdmin = user.role === 'admin';
   const [items, setItems] = useState<AllowEntry[] | null>(null);
   const [form, setForm] = useState({ type: 'hash', value: '', note: '' });
+  const typeMeta = ALLOW_TYPES.find((t) => t.value === form.type) || ALLOW_TYPES[0];
 
   const load = useCallback(async () => {
     try { setItems((await api.get<{ items: AllowEntry[] }>('/api/v1/allowlist')).items || []); }
@@ -385,7 +281,7 @@ export function AllowlistPage({ user }: { user: { role: Role } }) {
     if (!form.value.trim()) return toast('请填写加白内容', 'warn');
     try {
       await api.post('/api/v1/allowlist', { type: form.type, value: form.value.trim(), note: form.note.trim() });
-      toast('已加入白名单');
+      toast('已加入白名单（匹配的历史未处置告警已一并回收）');
       setForm({ type: form.type, value: '', note: '' });
       load();
     } catch (e) { toast((e as Error).message, 'err'); }
@@ -405,25 +301,56 @@ export function AllowlistPage({ user }: { user: { role: Role } }) {
     } catch (ex) { toast((ex as Error).message, 'err'); }
   };
 
+  /* 导出/导入（adminOnly）：白名单是误报治理资产，重建环境时
+     "导出→导入"直通，格式与导出文件对称 */
+  const exportList = async () => {
+    try {
+      const blob = await api.download('/api/v1/allowlist/export');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'zedr-allowlist.json'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast((e as Error).message, 'err'); }
+  };
+
+  const importList = async (file: File) => {
+    let entries: { type: string; value: string; note?: string }[] = [];
+    try {
+      const data = JSON.parse(await file.text());
+      if (Array.isArray(data?.entries)) entries = data.entries;
+      else if (Array.isArray(data?.items)) entries = data.items;
+      else if (Array.isArray(data)) entries = data;
+    } catch {
+      return toast('文件不是合法 JSON（应使用本页导出的格式）', 'err');
+    }
+    if (!entries.length) return toast('文件里没有可导入的条目', 'warn');
+    try {
+      const res = await api.post<{ added: number; skipped: number; failed: number }>('/api/v1/allowlist/import', { entries });
+      toast(`导入完成：新增 ${res.added} · 已存在跳过 ${res.skipped} · 失败 ${res.failed}`);
+      load();
+    } catch (e) { toast((e as Error).message, 'err'); }
+  };
+
   return (
     <div className="space-y-3.5">
       {canWrite && (
         <Card className="p-4">
           <CardTitle className="mb-3">新增白名单</CardTitle>
-          <div className="grid items-end gap-2.5 sm:grid-cols-[130px_1fr_1fr_auto]">
+          <div className="grid items-end gap-2.5 sm:grid-cols-[170px_1fr_1fr_auto]">
             <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">类型</span>
               <Select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} className="w-full">
-                <option value="hash">哈希</option><option value="path">路径</option>
+                {ALLOW_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </Select>
             </label>
-            <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">内容（SHA256 或路径）</span>
-              <Input value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} className="w-full font-mono text-xs" placeholder="7f3a91c0…" />
+            <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">内容</span>
+              <Input value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} className="w-full font-mono text-xs" placeholder={typeMeta.placeholder} />
             </label>
             <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">备注</span>
               <Input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} className="w-full" placeholder="为什么加白（会进入审计）" />
             </label>
             <Button variant="primary" onClick={add}><Plus size={13} /> 添加</Button>
           </div>
+          <div className="mt-2.5 text-[11.5px] text-faint">{typeMeta.hint}</div>
         </Card>
       )}
 
@@ -432,6 +359,18 @@ export function AllowlistPage({ user }: { user: { role: Role } }) {
           sub="加白名单能让确认安全的对象不再告警。可在告警详情里一键添加，或在这里手动新增。" /></Card>
       ) : (
         <Card className="overflow-x-auto px-2 py-3.5">
+          <div className="mb-2 flex items-center px-3.5">
+            <span className="text-[11px] tracking-[.06em] uppercase text-faint">共 {items.length} 条 · 加白即回收历史未处置告警</span>
+            <div className="flex-1" />
+            {isAdmin && (
+              <label className="cursor-pointer">
+                <input type="file" accept="application/json" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) importList(f); e.target.value = ''; }} />
+                <Button size="sm" variant="ghost">导入</Button>
+              </label>
+            )}
+            {isAdmin && <Button size="sm" variant="ghost" onClick={exportList}>导出</Button>}
+          </div>
           <table className="w-full text-[13px]">
             <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
               {['类型', '内容', '备注', '添加人', '时间', '操作'].map((h) => <th key={h} className="px-3.5 py-2.5 font-semibold">{h}</th>)}
@@ -439,7 +378,9 @@ export function AllowlistPage({ user }: { user: { role: Role } }) {
             <tbody>
               {items.map((e) => (
                 <tr key={e.id} className="border-b border-border-soft last:border-b-0 hover:bg-secondary">
-                  <td className="px-3.5 py-2.5"><Badge tone="info">{e.type}</Badge></td>
+                  <td className="px-3.5 py-2.5">
+                    <Badge tone="info">{ALLOW_TYPES.find((t) => t.value === e.type)?.label || e.type}</Badge>
+                  </td>
                   <td className="max-w-[420px] px-3.5 py-2.5 font-mono text-xs break-all">{e.value}</td>
                   <td className="px-3.5 py-2.5 text-xs">{e.note || <span className="text-faint">-</span>}</td>
                   <td className="px-3.5 py-2.5 text-xs text-faint">{e.created_by || '-'}</td>
@@ -462,7 +403,7 @@ const AUDIT_LABEL: Record<string, string> = {
   'alert.status': '告警处置', 'alert.bulk_status': '批量处置', 'alert.triage': 'AI 研判',
   'ai.hunt': 'AI 狩猎', 'host.delete': '删除主机', 'host.command': '下发指令',
   'ioc.add': '添加 IOC', 'ioc.delete': '删除 IOC',
-  'rule.upsert': '规则变更', 'rule.toggle': '规则启停', 'rule.delete': '删除规则',
+  'rule.upsert': '规则变更', 'rule.toggle': '规则启停', 'rule.mode': '规则模式切换', 'rule.delete': '删除规则',
   'allowlist.add': '添加白名单', 'allowlist.delete': '删除白名单',
   'auth.login': '登录', 'auth.logout': '退出登录', 'auth.change_password': '修改密码',
   'user.create': '创建账号',

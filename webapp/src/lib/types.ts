@@ -43,7 +43,30 @@ export interface Host {
   open_alerts?: number; last_seen_at: string; clock_skew_ms?: number;
 }
 
-export interface AllowEntry { id: number; type: string; value: string; note?: string; created_at?: string; created_by?: string }
+export interface AllowEntry { id: number; type: string; value: string; note?: string; created_at?: string; created_by?: string; hits?: number }
+
+export interface Rule {
+  id: string; name: string; description: string;
+  severity: Severity; score: number; mitre?: string[];
+  enabled: boolean; builtin: boolean;
+  mode?: '' | 'active' | 'observe';
+  definition: string; version: number; updated_at: string;
+  observed_hits?: number;
+}
+
+export interface RuleCondition { field: string; op: string; value: unknown }
+
+export interface RuleFieldDoc { field: string; kind: string; desc: string; group: string; example?: string }
+
+export interface RuleOpDoc { op: string; desc: string; kinds?: string[] }
+
+export interface RuleTemplate {
+  id: string; name: string; description: string;
+  severity: Severity; score: number; mitre?: string[];
+  definition: { all?: RuleCondition[]; any?: RuleCondition[]; none?: RuleCondition[] };
+}
+
+export interface RuleSchema { fields: RuleFieldDoc[]; ops: RuleOpDoc[]; templates: RuleTemplate[] }
 
 export interface AuditRow { id: number; at: string; actor: string; action: string; detail?: string; request_id?: string }
 

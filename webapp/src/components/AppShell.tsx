@@ -22,7 +22,7 @@ export const ROUTES = [
   { to: '/attack', label: '攻击矩阵', icon: Crosshair },
   { to: '/report', label: '报表', icon: BarChart3 },
   { to: '/hosts', label: '主机终端', icon: Monitor },
-  { to: '/rules', label: '检测规则', icon: ShieldCheck },
+  { to: '/rules', label: '规则中心', icon: ShieldCheck },
   { to: '/intel', label: '威胁情报', icon: Fingerprint },
   { to: '/allowlist', label: '白名单', icon: ShieldBan },
   { to: '/audit', label: '审计日志', icon: ScrollText, adminOnly: true },
@@ -40,7 +40,7 @@ const NAV_GROUPS: Array<{ label: string; tos: string[] }> = [
 
 const TITLES: Record<string, string> = {
   overview: '概览', alerts: '告警中心', hunt: 'AI 狩猎', incidents: '事件（攻击链聚类）', attack: 'ATT&CK 矩阵',
-  report: '运营周报', hosts: '主机终端', rules: '检测规则', intel: '威胁情报',
+  report: '运营周报', hosts: '主机终端', rules: '规则中心', intel: '威胁情报',
   allowlist: '白名单与降噪', audit: '审计日志', users: '账号管理', ai: 'AI 平台',
 };
 
@@ -53,9 +53,9 @@ const SUBTITLES: Record<string, string> = {
   attack: '命中与覆盖两个维度 · 点击格子按技术编号下钻',
   report: 'MTTR / 误报率 / 运营周报',
   hosts: '已接入探针的主机与进程视图',
-  rules: '检测规则集中管理与签名下发',
+  rules: '模板写规则 · 观察模式试运行 · 签名下发',
   intel: 'SHA256 指标 · 随签名包热下发到终端',
-  allowlist: '加白降噪 · 误报回收',
+  allowlist: '加白降噪 · 误报回收 · 五类匹配维度',
   audit: '全部管理操作留痕',
   users: '账号 · 角色 · 密码策略',
   ai: '模型接入 · 提示词 · 技能包 · 成本上限',
