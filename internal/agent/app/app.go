@@ -534,6 +534,8 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 		entries = append(entries, allow.Entry{Type: e.Type, Value: e.Value, Source: "server"})
 	}
 	a.alw.ReplaceServer(entries)
+	// 加白即回收（链侧）：见 purgeChainsOnAllowlist 注释
+	a.purgeChainsOnAllowlist()
 
 	a.store.SetRuntime(func(ri *state.RuntimeInfo) {
 		ri.RuleCount = ok
@@ -1728,10 +1730,14 @@ func (a *Agent) Rescan() {
 
 // AllowHash 把文件哈希加入本地白名单。
 func (a *Agent) AllowHash(hash, note string) error {
-	if len(hash) != 64 {
-		return fmt.Errorf("哈希必须是 64 位十六进制")
+	if strings.TrimSpace(hash) == "" {
+		return fmt.Errorf("哈希不能为空")
 	}
-	return a.alw.AddLocal(allow.TypeHash, hash, note)
+	if err := a.alw.AddLocal(allow.TypeHash, hash, note); err != nil {
+		return err
+	}
+	a.purgeChainsOnAllowlist()
+	return nil
 }
 
 // AllowPath 把路径加入本地白名单。
@@ -1739,7 +1745,23 @@ func (a *Agent) AllowPath(path, note string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("路径不能为空")
 	}
-	return a.alw.AddLocal(allow.TypePath, path, note)
+	if err := a.alw.AddLocal(allow.TypePath, path, note); err != nil {
+		return err
+	}
+	a.purgeChainsOnAllowlist()
+	return nil
+}
+
+// purgeChainsOnAllowlist 是加白即回收的链侧动作（本地加白入口共用；
+// 服务端下发白名单在 syncRules 里单独接线）。失败静默——回收是
+// 降噪动作，不该让加白操作本身失败。
+func (a *Agent) purgeChainsOnAllowlist() {
+	if a.chainE == nil {
+		return
+	}
+	if n := a.chainE.PurgeAllowlisted(); n > 0 {
+		a.log.Info("chain_purged_on_allowlist", "machines", n)
+	}
 }
 
 // Allowlist 返回本地白名单。

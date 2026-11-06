@@ -366,6 +366,35 @@ func (e *Engine) allowlisted(s Stage) bool {
 	return false
 }
 
+// PurgeAllowlisted 在白名单更新后回收"含被信任实体"的进行中链。
+//
+// 与服务端 AddAllowlist 的"加白即回收"语义对齐：白名单在 Feed 时只拦
+// 新阶段，已经收集进 pending 链的阶段不受影响——不回收的话，"运维刚
+// 加白、下一秒链告警照样发出"的滞后误报就成了流程破洞。加白生效的
+// 瞬间，任何环节命中白名单的未完成链整体作废。返回回收的链数。
+func (e *Engine) PurgeAllowlisted() int {
+	if e == nil || e.opts.Allow == nil {
+		return 0
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	removed := 0
+	for id, m := range e.machines {
+		purge := false
+		for _, s := range m.stages {
+			if e.allowlisted(s) {
+				purge = true
+				break
+			}
+		}
+		if purge {
+			delete(e.machines, id)
+			removed++
+		}
+	}
+	return removed
+}
+
 // ruleKey 拼规则级 map key（\x00 分隔避免规则名与 key 混淆）。
 func ruleKey(ruleID, key string) string {
 	return ruleID + "\x00" + key

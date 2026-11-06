@@ -529,3 +529,40 @@ func BenchmarkFeedHot(b *testing.B) {
 			PeerIP: "203.0.113.9", PeerPort: 443, When: base.Add(time.Minute)})
 	}
 }
+
+// TestPurgeAllowlisted 验证"加白即回收"链侧语义：白名单更新后，任何
+// 环节命中白名单的进行中链整体作废（与服务端 AddAllowlist 回收语义对齐）。
+func TestPurgeAllowlisted(t *testing.T) {
+	alw := allow.New("")
+	e, fs, _ := newTestEngine(alw)
+	// 先在白名单为空时起链（proc 环节已收集进 machine）
+	e.Feed(Stage{Kind: KindProc, PID: 42, StartTime: time.Unix(1000, 0),
+		Path: `C:\Users\pub\Downloads\tool.exe`, Dropped: true, Signed: false,
+		When: time.Unix(1100, 0)})
+	if e.Stats().Active != 1 {
+		t.Fatalf("链首应处于 pending")
+	}
+	// 运维随后加白该镜像：未完成的链必须立即作废
+	if err := alw.AddLocal(allow.TypePath, `c:\users\pub\downloads\tool.exe`, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.PurgeAllowlisted(); n != 1 {
+		t.Fatalf("应回收 1 条链，实际 %d", n)
+	}
+	if e.Stats().Active != 0 {
+		t.Fatalf("回收后不应有活跃链")
+	}
+	// 被回收的链不再闭合：外联阶段来了也只当无主信号丢弃
+	e.Feed(Stage{Kind: KindConn, PID: 42, StartTime: time.Unix(1000, 0),
+		PeerIP: "203.0.113.9", When: time.Unix(1160, 0)})
+	if findingsCount(fs) != 0 {
+		t.Fatalf("已回收的链不应再产出告警")
+	}
+	// 新起的链首会被 Feed 时的白名单检查直接拦下（双保险）
+	e.Feed(Stage{Kind: KindProc, PID: 43, StartTime: time.Unix(1000, 0),
+		Path: `C:\Users\pub\Downloads\tool.exe`, Dropped: true, Signed: false,
+		When: time.Unix(1200, 0)})
+	if e.Stats().Active != 0 {
+		t.Fatalf("白名单实体不应再起链")
+	}
+}
