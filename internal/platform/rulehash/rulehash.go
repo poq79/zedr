@@ -18,23 +18,53 @@ import (
 	"zedr/internal/model"
 )
 
-// signingPayload 是参与签名的规范化内容。
+// signingPayload 构造 v1 口径的规范化签名内容：不含 RuleDTO.Mode。
 //
-// 刻意不直接序列化 RuleBundle：Signature 字段本身要排除，否则无法自洽。
-// 只取确定性的字段，并显式带上长度与时间戳，避免"删掉几条规则后
-// 拼接结果恰好相同"这类碰撞。
+// 双签名兼容说明（规则观察模式引入 Mode 字段时的混合舰队问题）：
+// 验签是对"解码后结构体重序列化"的字节算 HMAC，老探针的 RuleDTO
+// 结构体没有 Mode 字段，收到新包时会把 mode 反序列化丢弃，再重序列化
+// 得到的是不含 mode 的字节——如果 v1 直接对含 mode 的字节签名，
+// 老探针必然验签失败、整包拒绝应用、回退内置规则。因此 v1 口径
+// 显式清零 Mode 后序列化：老探针（天然丢字段）与新探针（清零后序列化）
+// 得到的字节完全一致，签名互通。mode 的防篡改由 v2 口径承接。
 func signingPayload(b *model.RuleBundle) ([]byte, error) {
+	rules, err := json.Marshal(stripRuleModes(b.Rules))
+	if err != nil {
+		return nil, fmt.Errorf("规则序列化失败: %w", err)
+	}
+	return assemblePayload("v1", b, rules)
+}
+
+// signingPayloadV2 构造 v2 口径：包含 Mode。mode 决定规则是否告警，
+// 属于"能让人闭眼"的字段，必须纳入签名——老探针验不了 v2，但老探针
+// 本来就不认识 mode 字段（反序列化即丢弃），mode 对它们不存在，
+// 因此老探针没有"被改 mode 致盲"的攻击面。
+func signingPayloadV2(b *model.RuleBundle) ([]byte, error) {
 	rules, err := json.Marshal(b.Rules)
 	if err != nil {
 		return nil, fmt.Errorf("规则序列化失败: %w", err)
 	}
+	return assemblePayload("v2", b, rules)
+}
+
+// stripRuleModes 返回清零 Mode 的规则切片副本（不改动调用方的切片）。
+func stripRuleModes(list []model.RuleDTO) []model.RuleDTO {
+	out := make([]model.RuleDTO, len(list))
+	copy(out, list)
+	for i := range out {
+		out[i].Mode = ""
+	}
+	return out
+}
+
+func assemblePayload(version string, b *model.RuleBundle, rules []byte) ([]byte, error) {
 	allow, err := json.Marshal(b.Allowlist)
 	if err != nil {
 		return nil, fmt.Errorf("白名单序列化失败: %w", err)
 	}
 
-	head := fmt.Sprintf("v1|%d|%d|%d|%d|",
-		b.Version, b.GeneratedAt.UnixNano(), len(b.Rules), len(b.Allowlist))
+	head := fmt.Sprintf("%s|%d|%d|%d|%d|",
+		version, b.Version, b.GeneratedAt.UnixNano(), len(b.Rules), len(b.Allowlist))
 
 	out := make([]byte, 0, len(head)+len(rules)+len(allow)+1)
 	out = append(out, head...)
@@ -44,22 +74,33 @@ func signingPayload(b *model.RuleBundle) ([]byte, error) {
 	return out, nil
 }
 
-// Sign 计算并写入签名。
+// Sign 计算并写入双口径签名：Signature（v1，老探针唯一依据）+
+// SignatureV2（v2，含 mode，新探针优先）。
 func Sign(b *model.RuleBundle, key []byte) error {
 	if len(key) == 0 {
 		return fmt.Errorf("规则签名密钥为空")
 	}
-	payload, err := signingPayload(b)
+	v1, err := signingPayload(b)
+	if err != nil {
+		return err
+	}
+	v2, err := signingPayloadV2(b)
 	if err != nil {
 		return err
 	}
 	mac := hmac.New(sha256.New, key)
-	mac.Write(payload)
+	mac.Write(v1)
 	b.Signature = hex.EncodeToString(mac.Sum(nil))
+	mac.Reset()
+	mac.Write(v2)
+	b.SignatureV2 = hex.EncodeToString(mac.Sum(nil))
 	return nil
 }
 
 // Verify 校验签名，返回错误说明失败原因。
+//
+// 包里同时有 v2 时优先验 v2、再验 v1（新探针两口径都必须过，篡改任意
+// 一个覆盖面都会被发现）；只有 v1 的包（老服务端下发）按 v1 校验。
 func Verify(b *model.RuleBundle, key []byte) error {
 	if b.Signature == "" {
 		return fmt.Errorf("规则包未签名")
@@ -67,7 +108,19 @@ func Verify(b *model.RuleBundle, key []byte) error {
 	if len(key) == 0 {
 		return fmt.Errorf("未配置规则签名密钥，无法校验")
 	}
-	payload, err := signingPayload(b)
+	if err := verifyPayload(b, key, b.Signature, signingPayload); err != nil {
+		return err
+	}
+	if b.SignatureV2 != "" {
+		if err := verifyPayload(b, key, b.SignatureV2, signingPayloadV2); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func verifyPayload(b *model.RuleBundle, key []byte, sigHex string, payloadFn func(*model.RuleBundle) ([]byte, error)) error {
+	payload, err := payloadFn(b)
 	if err != nil {
 		return err
 	}
@@ -75,7 +128,7 @@ func Verify(b *model.RuleBundle, key []byte) error {
 	mac.Write(payload)
 	want := mac.Sum(nil)
 
-	got, err := hex.DecodeString(b.Signature)
+	got, err := hex.DecodeString(sigHex)
 	if err != nil {
 		return fmt.Errorf("规则签名格式非法")
 	}

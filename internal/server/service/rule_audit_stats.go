@@ -66,8 +66,10 @@ func (s *RuleService) SeedBuiltins(ctx context.Context) (int, error) {
 			UpdatedAt:   time.Now(),
 		}
 		if existing != nil {
-			// 保留运营层面的启用/禁用决定
+			// 保留运营层面的启用/禁用与观察模式决定（内置规则被切到
+			// 观察后，不应随升级被悄悄拉回告警模式）
 			r.Enabled = existing.Enabled
+			r.Mode = existing.Mode
 		}
 		if err := s.repos.Rules.Upsert(ctx, r); err != nil {
 			return 0, err
@@ -100,6 +102,11 @@ func (s *RuleService) Upsert(ctx context.Context, in *domain.Rule, by string) (*
 	if in.Score <= 0 || in.Score > 100 {
 		return nil, apperr.Invalid("分值必须在 1-100 之间")
 	}
+	mode, err := normalizeRuleMode(in.Mode)
+	if err != nil {
+		return nil, err
+	}
+	in.Mode = mode
 	// 干跑校验：解析失败直接拒绝，避免下发到终端后解析报错
 	if _, err := rules.Compile(in.Definition); err != nil {
 		return nil, apperr.Invalid("规则定义非法: %v", err)
@@ -183,7 +190,7 @@ func (s *RuleService) Bundle(ctx context.Context, sinceVersion int) (*model.Rule
 	for _, r := range enabled {
 		bundle.Rules = append(bundle.Rules, model.RuleDTO{
 			ID: r.ID, Name: r.Name, Description: r.Description, Severity: r.Severity,
-			MITRE: r.MITRE, Score: r.Score, Enabled: r.Enabled,
+			MITRE: r.MITRE, Score: r.Score, Enabled: r.Enabled, Mode: r.Mode,
 			Definition: r.Definition, Version: r.Version,
 		})
 	}

@@ -230,6 +230,11 @@ type HeartbeatRequest struct {
 	// 它是"数据完整性"的一部分：管理经理需要知道每台终端
 	// 有多少告警没能送达——丢得多的终端等于检测存在黑洞。
 	QueueDropped int64 `json:"queue_dropped,omitempty"`
+	// RuleObserved 是观察模式规则的累计命中计数（规则 ID → 次数，探针
+	// 本次运行期口径，重启清零）。nil=老探针/无观察规则（服务端不动
+	// 已存数据）；非 nil（含空 map）=整包替换语义，服务端据此清理该
+	// 终端已失效的计数行，避免"规则转正后旧计数残留"虚高汇总。
+	RuleObserved map[string]int64 `json:"rule_observed,omitempty"`
 }
 
 // DetectorStats 是本地检测器计数，便于观察去噪效果。
@@ -303,6 +308,11 @@ type RuleDTO struct {
 	Enabled     bool     `json:"enabled"`
 	Definition  string   `json:"definition"`
 	Version     int      `json:"version"`
+	// Mode 是规则的执行模式：""/"active" 正常告警；"observe" 观察模式
+	// （探针照常求值但只计数、不参与打分与告警）。老探针反序列化时
+	// 忽略此字段，规则仍按正常模式运行——混合舰队安全（见 rulehash
+	// 的 v1/v2 双签名说明）。
+	Mode string `json:"mode,omitempty"`
 }
 
 // AllowDTO 是下发到终端的白名单项。
@@ -317,9 +327,13 @@ type RuleBundle struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	Rules       []RuleDTO `json:"rules"`
 	Allowlist   []AllowDTO `json:"allowlist"`
-	// Signature 是整包内容的 HMAC-SHA256（hex）。
-	// 终端验签通过才应用，防止下发链路被篡改导致检测被悄悄关掉。
+	// Signature 是整包内容的 HMAC-SHA256（hex），v1 口径：不含 RuleDTO.Mode。
+	// 保留给老探针——老结构体没有 Mode 字段，重序列化时天然丢弃该字段，
+	// 与这里的 v1 口径逐字节一致（见 rulehash 双签名说明）。
 	Signature string `json:"signature,omitempty"`
+	// SignatureV2 是 v2 口径签名：包含 Mode。Mode 决定规则是否告警，
+	// 是"能让人闭眼"的字段，必须纳入签名防篡改；新探针优先验 v2。
+	SignatureV2 string `json:"signature_v2,omitempty"`
 
 	// AgentPolicy 是随规则包下发的运行策略（nil = 不干预终端本地配置）。
 	// 规则签名覆盖整包，策略也被同一签名保护——不能被篡改成关闭采集。

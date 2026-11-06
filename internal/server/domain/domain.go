@@ -151,10 +151,16 @@ type Rule struct {
 	MITRE       []string  `json:"mitre"`
 	Score       int       `json:"score"`
 	Enabled     bool      `json:"enabled"`
-	Builtin     bool      `json:"builtin"`
-	Definition  string    `json:"definition"`
-	Version     int       `json:"version"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	// Mode 是执行模式：""/"active" 正常告警；"observe" 观察模式——
+	// 探针照常求值但只计数不告警。空值按 active 处理（老数据兼容）。
+	Mode       string    `json:"mode"`
+	Builtin    bool      `json:"builtin"`
+	Definition string    `json:"definition"`
+	Version    int       `json:"version"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	// ObservedHits 是规则列表接口附加的汇总观察命中数（全终端当前
+	// 运行期口径之和），不落 rules 表；0 时 JSON 省略。
+	ObservedHits int64 `json:"observed_hits,omitempty"`
 }
 
 // AllowlistEntry 是降噪白名单。

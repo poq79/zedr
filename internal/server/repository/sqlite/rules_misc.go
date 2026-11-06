@@ -14,7 +14,7 @@ import (
 
 type ruleRepo struct{ s *Store }
 
-const ruleCols = `id, name, description, severity, mitre, score, enabled, builtin, definition, version, updated_at`
+const ruleCols = `id, name, description, severity, mitre, score, enabled, mode, builtin, definition, version, updated_at`
 
 func scanRule(sc interface{ Scan(...any) error }) (*domain.Rule, error) {
 	var (
@@ -22,10 +22,11 @@ func scanRule(sc interface{ Scan(...any) error }) (*domain.Rule, error) {
 		severity string
 		mitre    string
 		enabled  int
+		mode     string
 		builtin  int
 		updated  int64
 	)
-	err := sc.Scan(&r.ID, &r.Name, &r.Description, &severity, &mitre, &r.Score, &enabled, &builtin,
+	err := sc.Scan(&r.ID, &r.Name, &r.Description, &severity, &mitre, &r.Score, &enabled, &mode, &builtin,
 		&r.Definition, &r.Version, &updated)
 	if err != nil {
 		return nil, err
@@ -33,6 +34,11 @@ func scanRule(sc interface{ Scan(...any) error }) (*domain.Rule, error) {
 	r.Severity = domain.Severity(severity)
 	r.MITRE = splitCSV(mitre)
 	r.Enabled = enabled != 0
+	// 空值归一为 active：migration 之前的行与显式置空都按正常模式处理
+	if mode == "" {
+		mode = "active"
+	}
+	r.Mode = mode
 	r.Builtin = builtin != 0
 	r.UpdatedAt = fromMillis(updated)
 	return &r, nil
@@ -77,14 +83,17 @@ func (r *ruleRepo) ByID(ctx context.Context, id string) (*domain.Rule, error) {
 }
 
 func (r *ruleRepo) Upsert(ctx context.Context, rr *domain.Rule) error {
+	if rr.Mode == "" {
+		rr.Mode = "active"
+	}
 	_, err := r.s.db.ExecContext(ctx,
-		`INSERT INTO rules(`+ruleCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO rules(`+ruleCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name=excluded.name, description=excluded.description, severity=excluded.severity,
-		   mitre=excluded.mitre, score=excluded.score, enabled=excluded.enabled,
+		   mitre=excluded.mitre, score=excluded.score, enabled=excluded.enabled, mode=excluded.mode,
 		   definition=excluded.definition, version=excluded.version, updated_at=excluded.updated_at`,
 		rr.ID, rr.Name, rr.Description, string(rr.Severity), joinCSV(rr.MITRE), rr.Score,
-		boolInt(rr.Enabled), boolInt(rr.Builtin), rr.Definition, rr.Version, millis(rr.UpdatedAt))
+		boolInt(rr.Enabled), rr.Mode, boolInt(rr.Builtin), rr.Definition, rr.Version, millis(rr.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("保存规则失败: %w", err)
 	}

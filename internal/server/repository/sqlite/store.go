@@ -25,6 +25,7 @@ type Store struct {
 	agents    agentRepo
 	alerts    alertRepo
 	rules     ruleRepo
+	robserve  ruleObserveRepo
 	allowlist allowlistRepo
 	iocs      iocRepo
 	audit     auditRepo
@@ -80,6 +81,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 	s.agents = agentRepo{s}
 	s.alerts = alertRepo{s}
 	s.rules = ruleRepo{s}
+	s.robserve = ruleObserveRepo{s}
 	s.allowlist = allowlistRepo{s}
 	s.iocs = iocRepo{s}
 	s.audit = auditRepo{s}
@@ -96,6 +98,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 		Agents:    &s.agents,
 		Alerts:    &s.alerts,
 		Rules:     &s.rules,
+		RuleObserve: &s.robserve,
 		Allowlist: &s.allowlist,
 		IOCs:      &s.iocs,
 		Audit:     &s.audit,
@@ -378,7 +381,7 @@ CREATE TABLE IF NOT EXISTS ai_skills (
 		sql: `
 -- AI 判定台账：每次研判/调查对一条告警的结论快照（按 alert_id+source
 -- UPSERT，只留最新）。这是"研判质量运营闭环"的数据基础——AI 说有问题
--- 还是没问题，最终要和分析师的处置结论对账，一致率/误报/漏报才有出处。
+-- 还是没有问题，最终要和分析师的处置结论对账，一致率/误报/漏报才有出处。
 -- 刻意不塞进 alerts 表：AI 结论有自己的生命周期（重评会覆盖），
 -- 和探针上报的引擎判定（verdict 字段）是两回事，混在一行会互相覆盖。
 CREATE TABLE IF NOT EXISTS ai_triage_log (
@@ -391,6 +394,27 @@ CREATE TABLE IF NOT EXISTS ai_triage_log (
   UNIQUE (alert_id, source)
 );
 CREATE INDEX IF NOT EXISTS idx_ai_triage_alert ON ai_triage_log(alert_id, created_at DESC);
+`,
+	},
+	{
+		name: "009_rule_ops",
+		sql: `
+-- 规则运营：观察模式 + 观察命中台账。
+-- rules.mode：active（正常告警，历史数据默认值）| observe（探针照常
+-- 求值但只计数不告警）——新规则先观察再转正，是上线安全阀。
+-- rule_observations：探针按心跳上报的观察命中计数（agent_id+rule_id
+-- 主键，REPLACE 快照语义）。规则转正/删除后旧计数行随整包替换语义
+-- 自动清理，跨终端 SUM 即"这条规则如果生效会在现网打多少分"。
+ALTER TABLE rules ADD COLUMN mode TEXT NOT NULL DEFAULT 'active';
+
+CREATE TABLE IF NOT EXISTS rule_observations (
+  agent_id   TEXT NOT NULL,
+  rule_id    TEXT NOT NULL,
+  hits       INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, rule_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rule_obs_rule ON rule_observations(rule_id);
 `,
 	},
 }

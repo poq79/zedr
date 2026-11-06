@@ -53,6 +53,11 @@ func (h *agentHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
+	// 观察命中快照旁挂在心跳上：非 nil（含空 map）即整包替换该终端的
+	// 计数行。失败已在服务层吞掉（只记日志），不影响心跳主流程。
+	if req.RuleObserved != nil {
+		h.deps.Services.Rule.IngestObserve(r.Context(), a.ID, req.RuleObserved)
+	}
 	httpx.WriteJSON(w, r, http.StatusOK, res)
 }
 

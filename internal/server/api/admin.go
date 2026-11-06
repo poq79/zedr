@@ -301,12 +301,22 @@ func (h *adminHandler) listCommands(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------- 规则
 
 func (h *adminHandler) listRules(w http.ResponseWriter, r *http.Request) {
-	items, err := h.deps.Services.Rule.List(r.Context())
+	items, err := h.deps.Services.Rule.ListWithObserve(r.Context())
 	if err != nil {
 		httpx.WriteError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+// ruleSchema 规则 DSL 的字段/操作符参考与模板库（表单编辑器的数据源）。
+func (h *adminHandler) ruleSchema(w http.ResponseWriter, r *http.Request) {
+	schema, err := h.deps.Services.Rule.Schema()
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, schema)
 }
 
 type ruleReq struct {
@@ -317,6 +327,7 @@ type ruleReq struct {
 	MITRE       []string `json:"mitre"`
 	Score       int      `json:"score"`
 	Enabled     bool     `json:"enabled"`
+	Mode        string   `json:"mode"`
 	Definition  string   `json:"definition"`
 }
 
@@ -335,6 +346,7 @@ func (h *adminHandler) upsertRule(w http.ResponseWriter, r *http.Request) {
 		MITRE:       req.MITRE,
 		Score:       req.Score,
 		Enabled:     req.Enabled,
+		Mode:        req.Mode,
 		Definition:  req.Definition,
 	}, p.Username)
 	if err != nil {
@@ -342,6 +354,28 @@ func (h *adminHandler) upsertRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "rule.upsert", rule.ID, rule.Name, httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, rule)
+}
+
+// setRuleMode 观察模式/正常模式切换。独立端点而非复用 upsert：
+// 转正是运营高频动作且语义单一，独立路由让审计记录一眼可读
+// （rule.mode 而不是一条内容不明的 rule.upsert）。
+func (h *adminHandler) setRuleMode(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	id := r.PathValue("id")
+	rule, err := h.deps.Services.Rule.SetMode(r.Context(), id, req.Mode, p.Username)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "rule.mode", id, req.Mode, httpx.ClientIP(r))
 	httpx.WriteJSON(w, r, http.StatusOK, rule)
 }
 
