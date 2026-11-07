@@ -54,7 +54,7 @@ const SUBTITLES: Record<string, string> = {
   report: 'MTTR / 误报率 / 运营周报',
   hosts: '已接入探针的主机与进程视图',
   rules: '模板写规则 · 观察模式试运行 · 签名下发',
-  intel: 'SHA256 指标 · 随签名包热下发到终端',
+  intel: '哈希 / IP / 路径 / 关键词 · 命中统计随心跳回传',
   allowlist: '加白降噪 · 误报回收 · 五类匹配维度',
   audit: '全部管理操作留痕',
   users: '账号 · 角色 · 密码策略',

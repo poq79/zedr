@@ -80,6 +80,27 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
     } catch (e) { toast((e as Error).message, 'err'); }
   };
 
+  /* 告警→加黑：研判确认真恶意后一键进情报库（对应 SentinelOne
+     Add to Blacklist 语义：其余终端下一轮同步即具备同一检测力） */
+  const blacklist = async () => {
+    if (!a?.hash_sha256) return toast('该告警没有文件哈希，无法按哈希加黑', 'warn');
+    const ok = await confirm({
+      title: '将文件哈希加入威胁情报黑名单？',
+      message: <>文件哈希：<code>{a.hash_sha256}</code><br />
+        加入后全部终端在下一轮签名包同步时按它告警——<b>只用于确认恶意的样本</b>，加错了等于全网误报。</>,
+      danger: true, okText: '加入黑名单',
+    });
+    if (!ok) return;
+    try {
+      await api.post('/api/v1/iocs', {
+        hash: a.hash_sha256,
+        note: `来自告警 ${a.id}（${a.process_name}）研判确认`,
+      });
+      toast('已加入黑名单，将随签名包下发到全部终端');
+      onChanged(); onClose();
+    } catch (e) { toast((e as Error).message, 'err'); }
+  };
+
   return (
     <Drawer
       open={alertId != null}
@@ -101,6 +122,7 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
           <div className="flex-1" />
           <Button variant="ghost" onClick={() => allow('path')}><ShieldBan size={13} /> 信任此路径</Button>
           {a.hash_sha256 && <Button variant="ghost" onClick={() => allow('hash')}>按哈希加白</Button>}
+          {a.hash_sha256 && <Button variant="ghost" onClick={blacklist}>加入黑名单</Button>}
         </>
       )}
     >

@@ -112,7 +112,13 @@ export interface AiStats { total: number; blocked: number; degraded: number; avg
 /* ---- v0.9 新接口（[FE-WANTED] 跟进） ---- */
 
 /** 威胁指标（当前仅 SHA256），随签名包下发到终端 */
-export interface IOC { id: string; hash: string; note?: string; created_by?: string; created_at: string }
+export interface IOC { id: string; hash: string; note?: string; created_by?: string; created_at: string; hits?: number }
+
+export interface IntelItem {
+  id: string; type: 'ip' | 'path' | 'keyword'; value: string;
+  score?: number; name?: string; note?: string; mitre?: string;
+  hits?: number; created_by?: string; created_at: string;
+}
 
 /** 远程指令：terminate/quarantine_file/quarantine_restore/rescan/sync_rules/collect */
 export interface AgentCommand {
