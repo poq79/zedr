@@ -534,6 +534,9 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 		entries = append(entries, allow.Entry{Type: e.Type, Value: e.Value, Source: "server"})
 	}
 	a.alw.ReplaceServer(entries)
+	// 非哈希情报（ip/path/keyword）随规则包整包替换（nil=清空，
+	// 与规则同语义：服务端明确清空时终端不能保留旧表）
+	a.eng.SetIntel(bundle.Intel)
 	// 加白即回收（链侧）：见 purgeChainsOnAllowlist 注释
 	a.purgeChainsOnAllowlist()
 
@@ -542,7 +545,8 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 		ri.RuleVersion = bundle.Version
 		ri.Whitelist = a.alw.Size()
 	})
-	a.log.Info("rules_applied", "version", bundle.Version, "rules", ok, "allow", len(entries), "bad", len(bad))
+	a.log.Info("rules_applied", "version", bundle.Version, "rules", ok, "allow", len(entries),
+		"intel", len(bundle.Intel), "bad", len(bad))
 
 	a.applyServerPolicy(bundle.AgentPolicy)
 }
@@ -1112,6 +1116,13 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			// 观察模式计数随心跳上报（整包替换语义，见 ObserveSnapshot）。
 			if obs, ok := a.eng.ObserveSnapshot(); ok {
 				req.RuleObserved = obs
+			}
+			// 情报命中（hash/ip/path/keyword）与白名单条目命中同节奏上报。
+			if ih, ok := a.eng.IntelHitsSnapshot(); ok {
+				req.IocHits = ih
+			}
+			if ah, ok := a.alw.EntryHitsSnapshot(); ok {
+				req.AllowHits = ah
 			}
 			hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			resp, err := a.up.Heartbeat(hctx, req)

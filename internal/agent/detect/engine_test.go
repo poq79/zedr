@@ -2,6 +2,7 @@ package detect
 
 import (
 	"testing"
+	"strings"
 
 	"zedr/internal/agent/allow"
 	"zedr/internal/agent/baseline"
@@ -289,5 +290,77 @@ func TestObserveRuleCountsButDoesNotAlert(t *testing.T) {
 	res3 := e3.Analyze(Input{Proc: proc})
 	if !res3.Alert {
 		t.Fatalf("转正后应正常告警，实际 score=%d verdict=%s", res3.Score, res3.Verdict)
+	}
+}
+
+// TestIntelIPPathKeyword 非哈希情报三条匹配面（v0.9.11 扩维）：
+// 远端 IP / 镜像路径精确匹配 → 情报加成直达恶意线；动态关键词参与
+// 关键词层打分；三类命中都进计数快照随心跳回传。
+func TestIntelIPPathKeyword(t *testing.T) {
+	e := newTestEngine(t)
+	e.SetIntel([]model.IntelDTO{
+		{Type: "ip", Value: "203.0.113.9", Note: "演练外联对端"},
+		{Type: "path", Value: `c:\temp\hg-obstest\zedr-diag.exe`, Note: "演练路径"},
+		{Type: "keyword", Value: "zedr-obstest-token", Score: 30, Name: "演练关键词", MITRE: "T1059"},
+	})
+
+	proc := ProcessInfo{
+		PID:     501,
+		Name:    "zedr-diag.exe",
+		Path:    `C:\Temp\hg-obstest\zedr-diag.exe`, // 大小写不同——查找已归一
+		CmdLine: `zedr-diag.exe --report zedr-obstest-token`,
+	}
+	res := e.Analyze(Input{
+		Proc: proc,
+		Connections: []model.NetConn{
+			{RemoteIP: "203.0.113.9", RemotePort: 443},
+			{RemoteIP: "203.0.113.9", RemotePort: 80}, // 同 IP 去重，只计一次
+		},
+	})
+	if res == nil {
+		t.Fatal("引擎应恒返回结果")
+	}
+	if res.Verdict != model.VerdictMalicious {
+		t.Fatalf("三重情报命中应直达恶意线，实际 %s score=%d", res.Verdict, res.Score)
+	}
+	sigIDs := map[string]bool{}
+	for _, s := range res.Evidence.Signals {
+		if s.Layer == "static" || s.Layer == "keyword" {
+			sigIDs[s.ID] = true
+		}
+	}
+	for _, want := range []string{"S-IOC-IP", "S-IOC-PATH", "KW-D-"} {
+		found := false
+		for id := range sigIDs {
+			if strings.HasPrefix(id, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("缺少信号 %s，实际 %v", want, sigIDs)
+		}
+	}
+
+	snap, ok := e.IntelHitsSnapshot()
+	if !ok {
+		t.Fatal("有情报时快照必须可上报")
+	}
+	for _, key := range []string{"ip:203.0.113.9", `path:c:\temp\hg-obstest\zedr-diag.exe`, "keyword:zedr-obstest-token"} {
+		if snap[key] < 1 {
+			t.Fatalf("命中计数缺失 %s，实际 %v", key, snap)
+		}
+	}
+
+	// 清空语义：SetIntel(nil) 后不再有情报面，但历史计数触发一次
+	// 空快照上报（服务端清理残留行）
+	e.SetIntel(nil)
+	if _, ok := e.IntelHitsSnapshot(); !ok {
+		t.Fatal("清空后仍有历史计数，应触发一次空快照上报")
+	}
+
+	// 全新引擎：从未有过情报面 → 不上报
+	e2 := newTestEngine(t)
+	if _, ok := e2.IntelHitsSnapshot(); ok {
+		t.Fatal("无情报且无命中时不应上报快照")
 	}
 }

@@ -30,6 +30,10 @@ type List struct {
 	local     []Entry
 	localPath string
 	hits      int64
+	// entryMu 保护 entryHits（独立小锁）：Match 持 RLock 做集合查找
+	// 热路径，不能为了计数升级成写锁；计数只进独立锁。
+	entryMu   sync.Mutex
+	entryHits map[string]int64 // "type:value" → 次数（本次运行期）
 }
 
 // 支持的白名单类型
@@ -166,6 +170,47 @@ func (l *List) Hits() int64 {
 	return l.hits
 }
 
+// EntryHitsSnapshot 返回按条目的命中快照与是否应上报。
+// 列表非空就上报（哪怕全 0）：条目删除后服务端残留行要靠
+// "整包替换"语义清理。
+func (l *List) EntryHitsSnapshot() (map[string]int64, bool) {
+	l.mu.RLock()
+	nonEmpty := false
+	for _, m := range l.set {
+		if len(m) > 0 {
+			nonEmpty = true
+			break
+		}
+	}
+	l.mu.RUnlock()
+
+	l.entryMu.Lock()
+	hits := len(l.entryHits)
+	l.entryMu.Unlock()
+	if !nonEmpty && hits == 0 {
+		return nil, false
+	}
+
+	l.entryMu.Lock()
+	out := make(map[string]int64, len(l.entryHits))
+	for k, n := range l.entryHits {
+		out[k] = n
+	}
+	l.entryMu.Unlock()
+	return out, true
+}
+
+func (l *List) countEntry(typ, value string) {
+	key := typ + ":" + strings.ToLower(value)
+	l.entryMu.Lock()
+	if l.entryHits == nil {
+		l.entryHits = make(map[string]int64, 8)
+	}
+	l.entryHits[key]++
+	l.entryMu.Unlock()
+	l.hits++
+}
+
 // Match 判断进程是否被白名单豁免，返回命中的类型。
 func (l *List) Match(hash, path, signer, parentName, procName, cmdline string) (bool, string) {
 	l.mu.RLock()
@@ -173,7 +218,7 @@ func (l *List) Match(hash, path, signer, parentName, procName, cmdline string) (
 
 	if hash != "" {
 		if _, ok := l.set[TypeHash][strings.ToLower(hash)]; ok {
-			l.hits++ // 计数型副作用可接受（仅统计用途）
+			l.countEntry(TypeHash, hash)
 			return true, TypeHash
 		}
 	}
@@ -182,7 +227,7 @@ func (l *List) Match(hash, path, signer, parentName, procName, cmdline string) (
 	if lp != "" {
 		for v := range l.set[TypePath] {
 			if v != "" && (lp == v || strings.HasPrefix(lp, v+`\`) || strings.Contains(lp, v)) {
-				l.hits++
+				l.countEntry(TypePath, v)
 				return true, TypePath
 			}
 		}
@@ -190,14 +235,14 @@ func (l *List) Match(hash, path, signer, parentName, procName, cmdline string) (
 
 	if signer != "" {
 		if _, ok := l.set[TypeSigner][strings.ToLower(signer)]; ok {
-			l.hits++
+			l.countEntry(TypeSigner, signer)
 			return true, TypeSigner
 		}
 	}
 
 	pair := strings.ToLower(parentName) + ">" + strings.ToLower(procName)
 	if _, ok := l.set[TypePair][pair]; ok {
-		l.hits++
+		l.countEntry(TypePair, pair)
 		return true, TypePair
 	}
 
@@ -205,7 +250,7 @@ func (l *List) Match(hash, path, signer, parentName, procName, cmdline string) (
 		lc := strings.ToLower(cmdline)
 		for v := range l.set[TypeCmdLine] {
 			if v != "" && strings.Contains(lc, v) {
-				l.hits++
+				l.countEntry(TypeCmdLine, v)
 				return true, TypeCmdLine
 			}
 		}

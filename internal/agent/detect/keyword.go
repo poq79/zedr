@@ -30,8 +30,14 @@ type kwPattern struct {
 }
 
 func newKeywordMatcher() *keywordMatcher {
+	return keywordMatcherFrom(keywordPatterns())
+}
+
+// keywordMatcherFrom 用给定模式表构建匹配器（内置表与运营者动态
+// 情报关键词共用一套 AC 管线）。
+func keywordMatcherFrom(patterns []kwPattern) *keywordMatcher {
 	m := &keywordMatcher{
-		patterns: keywordPatterns(),
+		patterns: patterns,
 		names:    make(map[string]kwPattern, 64),
 		index:    make(map[string]kwPattern, 128),
 	}
@@ -48,6 +54,35 @@ func newKeywordMatcher() *keywordMatcher {
 		m.index[p.Token] = p
 	}
 	return m
+}
+
+// matchPatterns 返回命中的原始模式（供命中计数等调用方使用）。
+// 求值口径与 match 逐条对齐（含自匹配保护），代价是多一次 AC 扫描——
+// 动态表小、频率为每次进程评估一次，可接受。
+func (m *keywordMatcher) matchPatterns(procName, cmdline string) []kwPattern {
+	var out []kwPattern
+	seen := make(map[string]struct{})
+	if p, ok := m.names[strings.ToLower(procName)]; ok {
+		seen[p.ID] = struct{}{}
+		out = append(out, p)
+	}
+	if cmdline == "" {
+		return out
+	}
+	lc := strings.ToLower(cmdline)
+	self := strings.ToLower(procName)
+	for _, token := range m.ac.FindAll(lc) {
+		p, ok := m.index[token]
+		if !ok || token == self {
+			continue
+		}
+		if _, dup := seen[p.ID]; dup {
+			continue
+		}
+		seen[p.ID] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }
 
 func (m *keywordMatcher) match(procName, cmdline string) []model.Signal {

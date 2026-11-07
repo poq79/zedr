@@ -1,6 +1,8 @@
 package detect
 
 import (
+	"hash/fnv"
+
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -96,6 +98,13 @@ type Engine struct {
 	// iocs 是服务端下发的威胁指标哈希表（hash → 备注）。
 	// 与 rules 同锁保护：两者都是"服务端可热替换的检测数据"。
 	iocs map[string]string
+	// intelIPs / intelPaths 是服务端下发的非哈希情报（v0.9.11）：
+	// IP 命中看进程连接的远端地址，path 命中看镜像路径精确匹配。
+	// 与 rules/iocs 同锁保护（同一类热替换检测数据）。
+	intelIPs   map[string]string
+	intelPaths map[string]string
+	// kwDyn 是运营者动态关键词匹配器（整表热替换，nil=无动态关键词）。
+	kwDyn *keywordMatcher
 
 	statMu      sync.Mutex
 	scanned     int64
@@ -109,6 +118,11 @@ type Engine struct {
 	// 心跳快照上报路径，与引擎统计的读写频率不同，分开锁避免互相拖累。
 	observeMu   sync.Mutex
 	observeHits map[string]int64
+
+	// intelHitsMu 保护情报命中计数（key="type:value"，含 hash 命中），
+	// 与 observeHits 同理由心跳快照上报。
+	intelHitsMu sync.Mutex
+	intelHits   map[string]int64
 
 	// 本地去重：同一指纹在窗口内只上报一次
 	recent map[string]time.Time
@@ -142,6 +156,7 @@ func New(enr *enrich.Enricher, base *baseline.Model, alw *allow.List, cfg Config
 		cfg:         cfg,
 		recent:      make(map[string]time.Time, 512),
 		observeHits: make(map[string]int64, 16),
+		intelHits:   make(map[string]int64, 16),
 	}
 }
 
@@ -159,6 +174,141 @@ func (e *Engine) SetIOCs(hashes map[string]string) {
 	e.mu.Lock()
 	e.iocs = normalized
 	e.mu.Unlock()
+}
+
+// SetIntel 加载服务端下发的非哈希情报（ip/path/keyword，整包替换）。
+// ip/path 进两张精确匹配表；keyword 构建独立 AC 匹配器（与内置关键词
+// 层共享 40 分帽）。nil/空列表等价于清空——服务端明确清空时终端同步
+// 清空，与 SetIOCs 同一语义。
+func (e *Engine) SetIntel(list []model.IntelDTO) {
+	ips := make(map[string]string)
+	paths := make(map[string]string)
+	var dynPatterns []kwPattern
+	for _, it := range list {
+		v := strings.ToLower(strings.TrimSpace(it.Value))
+		switch it.Type {
+		case "ip":
+			if v != "" {
+				ips[v] = it.Note
+			}
+		case "path":
+			if v != "" {
+				paths[v] = it.Note
+			}
+		case "keyword":
+			if v == "" {
+				continue
+			}
+			score := it.Score
+			if score <= 0 {
+				score = 25
+			}
+			dynPatterns = append(dynPatterns, kwPattern{
+				ID:    dynKeywordID(v),
+				Token: v,
+				Score: score,
+				Name:  it.Name,
+				Note:  it.Note,
+				MITRE: it.MITRE,
+			})
+		}
+	}
+	var dyn *keywordMatcher
+	if len(dynPatterns) > 0 {
+		dyn = keywordMatcherFrom(dynPatterns)
+	}
+	e.mu.Lock()
+	e.intelIPs = ips
+	e.intelPaths = paths
+	e.kwDyn = dyn
+	e.mu.Unlock()
+}
+
+// dynKeywordID 生成动态关键词的稳定信号 ID（值相同则 ID 相同，
+// 便于告警去重与服务端对账）。
+func dynKeywordID(v string) string {
+	return fmt.Sprintf("KW-D-%08x", fnv32a(v))
+}
+
+func fnv32a(s string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum32()
+}
+
+// kwDynSnapshot 取当前动态关键词匹配器（构建后只读，可无锁并发使用）。
+func (e *Engine) kwDynSnapshot() *keywordMatcher {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.kwDyn
+}
+
+// IntelCount 返回当前生效的非哈希情报条数（供本地状态展示）。
+func (e *Engine) IntelCount() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.intelIPs) + len(e.intelPaths)
+}
+
+// recordIntelHit 计数一次情报命中（key="type:value"）。
+func (e *Engine) recordIntelHit(key string) {
+	e.intelHitsMu.Lock()
+	e.intelHits[key]++
+	e.intelHitsMu.Unlock()
+}
+
+// IntelHitsSnapshot 返回情报命中快照与是否应上报（语义同
+// ObserveSnapshot：有情报或有过命中就要报，让服务端能清理残留行）。
+func (e *Engine) IntelHitsSnapshot() (map[string]int64, bool) {
+	e.mu.RLock()
+	hasIntel := len(e.intelIPs) > 0 || len(e.intelPaths) > 0 || e.kwDyn != nil
+	e.mu.RUnlock()
+
+	e.intelHitsMu.Lock()
+	hits := e.intelHits
+	e.intelHitsMu.Unlock()
+
+	if hasIntel {
+		out := make(map[string]int64, len(hits))
+		for k, n := range hits {
+			out[k] = n
+		}
+		return out, true
+	}
+	if len(hits) > 0 {
+		return map[string]int64{}, true
+	}
+	return nil, false
+}
+
+// lookupIntelPath 镜像路径精确匹配（小写化后比对——情报写入端已归一）。
+func (e *Engine) lookupIntelPath(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	note, ok := e.intelPaths[strings.ToLower(path)]
+	return note, ok
+}
+
+// lookupIntelIP 远端地址精确匹配（连接表里的 IP 已是规范文本）。
+func (e *Engine) lookupIntelIP(ip string) (string, bool) {
+	if ip == "" {
+		return "", false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	note, ok := e.intelIPs[strings.ToLower(ip)]
+	return note, ok
+}
+
+// intelNote 情报信号备注：有运营者备注用备注，没有就展示命中值本身。
+func intelNote(note, fallback string) string {
+	if strings.TrimSpace(note) != "" {
+		return note
+	}
+	return "命中值: " + fallback
 }
 
 // IOCCount 返回当前生效的 IOC 条数（供本地状态展示）。
@@ -244,6 +394,7 @@ func (e *Engine) ObserveStats() map[string]int64 {
 //     让服务端把该终端的计数行刷成真实值；
 //  2. 本次运行期产生过观察命中但规则已转正/移除——不发的话服务端
 //     残留旧计数，跨终端汇总虚高。
+//
 // 都不满足（本次运行从未见过观察规则）返回 false，服务端不动已存数据。
 func (e *Engine) ObserveSnapshot() (map[string]int64, bool) {
 	e.mu.RLock()
@@ -340,10 +491,18 @@ func (e *Engine) Analyze(in Input) *Result {
 	var notes []string
 
 	// ---- 第 1 层：静态指纹 ----
-	staticScore, iocBonus := e.staticLayer(p, meta, &signals, &notes)
+	staticScore, iocBonus := e.staticLayer(p, in.Connections, meta, &signals, &notes)
 
 	// ---- 第 2 层：关键词 ----
 	kwSignals := e.kw.match(p.Name, p.CmdLine)
+	if dyn := e.kwDynSnapshot(); dyn != nil {
+		// 运营者动态关键词：与内置同口径参与打分（共享 40 分帽），
+		// 按情报值计数随心跳回传（运营者能看到"这条关键词在现网响多少"）。
+		for _, dp := range dyn.matchPatterns(p.Name, p.CmdLine) {
+			e.recordIntelHit("keyword:" + dp.Token)
+		}
+		kwSignals = append(kwSignals, dyn.match(p.Name, p.CmdLine)...)
+	}
 	signals = append(signals, kwSignals...)
 	keywordScore := 0
 	for _, s := range kwSignals {
@@ -462,9 +621,10 @@ func (e *Engine) Analyze(in Input) *Result {
 // 猜测，70 分意味着单凭 IOC 命中即可到达恶意阈值（MaliciousAt=70）。
 const iocHashBonus = 70
 
-// staticLayer 静态指纹层：哈希黑名单、签名状态、路径信誉。
+// staticLayer 静态指纹层：哈希黑名单、非哈希情报（路径/远端 IP）、
+// 签名状态、路径信誉。
 // 返回值：(reputation 分（受帽子约束）, IOC 加成（不封顶）)。
-func (e *Engine) staticLayer(p ProcessInfo, meta enrich.Meta, signals *[]model.Signal, notes *[]string) (int, int) {
+func (e *Engine) staticLayer(p ProcessInfo, conns []model.NetConn, meta enrich.Meta, signals *[]model.Signal, notes *[]string) (int, int) {
 	score := 0
 	iocBonus := 0
 
@@ -480,9 +640,43 @@ func (e *Engine) staticLayer(p ProcessInfo, meta enrich.Meta, signals *[]model.S
 		}
 		if note, ok := e.lookupIOC(h); ok {
 			iocBonus += iocHashBonus
+			e.recordIntelHit("hash:" + h)
 			*signals = append(*signals, model.Signal{
 				Layer: "static", ID: "S-IOC", Name: "命中威胁情报 IOC 哈希",
 				Score: iocHashBonus, Note: note, MITRE: "T1204",
+			})
+		}
+	}
+
+	// 非哈希情报：镜像路径精确匹配（情报写入端已归一小写）
+	if note, ok := e.lookupIntelPath(p.Path); ok {
+		iocBonus += iocHashBonus
+		key := strings.ToLower(p.Path)
+		e.recordIntelHit("path:" + key)
+		*signals = append(*signals, model.Signal{
+			Layer: "static", ID: "S-IOC-PATH", Name: "命中威胁情报路径",
+			Score: iocHashBonus, Note: intelNote(note, key), MITRE: "T1204",
+		})
+	}
+
+	// 非哈希情报：远端地址匹配（按去重后的 IP 计分，同一坏 IP 的
+	// 多条连接只算一次命中）
+	seenIP := make(map[string]struct{})
+	for _, c := range conns {
+		ip := strings.ToLower(c.RemoteIP)
+		if ip == "" {
+			continue
+		}
+		if _, dup := seenIP[ip]; dup {
+			continue
+		}
+		seenIP[ip] = struct{}{}
+		if note, ok := e.lookupIntelIP(ip); ok {
+			iocBonus += iocHashBonus
+			e.recordIntelHit("ip:" + ip)
+			*signals = append(*signals, model.Signal{
+				Layer: "static", ID: "S-IOC-IP", Name: "连接命中威胁情报 IP",
+				Score: iocHashBonus, Note: intelNote(note, ip), MITRE: "T1071",
 			})
 		}
 	}
