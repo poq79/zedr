@@ -114,8 +114,8 @@ type Evidence struct {
 	KeywordScore float64        `json:"keyword_score"`
 	RuleScore    float64        `json:"rule_score"`
 	// DropScore 是"文件落地即执行"关联层的得分，单独列出便于事后审计
-	DropScore    float64        `json:"drop_score"`
-	Notes        []string       `json:"notes"`
+	DropScore float64  `json:"drop_score"`
+	Notes     []string `json:"notes"`
 }
 
 // ProcEvidence 是进程本体字段。
@@ -212,15 +212,15 @@ type EnrollResponse struct {
 
 // HeartbeatRequest 是心跳（同时携带运行指标）。
 type HeartbeatRequest struct {
-	Hostname     string          `json:"hostname"`
-	Version      string          `json:"version"`
-	ProcCount    int             `json:"proc_count"`
-	CPUPercent   float64         `json:"cpu_percent"`
-	MemMB        float64         `json:"mem_mb"`
-	UptimeSec    int64           `json:"uptime_sec"`
-	RuleVersion  int             `json:"rule_version"`
-	Detector     DetectorStats   `json:"detector"`
-	Samples      int64           `json:"samples"`
+	Hostname    string        `json:"hostname"`
+	Version     string        `json:"version"`
+	ProcCount   int           `json:"proc_count"`
+	CPUPercent  float64       `json:"cpu_percent"`
+	MemMB       float64       `json:"mem_mb"`
+	UptimeSec   int64         `json:"uptime_sec"`
+	RuleVersion int           `json:"rule_version"`
+	Detector    DetectorStats `json:"detector"`
+	Samples     int64         `json:"samples"`
 	// AgentTime 是探针发出心跳时的本地时钟（RFC3339）。
 	// 服务端用"到达时刻 - AgentTime"估算两端时钟偏移：
 	// 偏移过大时，告警时间线、事件聚类的窗口判定都会失真，
@@ -235,6 +235,13 @@ type HeartbeatRequest struct {
 	// 已存数据）；非 nil（含空 map）=整包替换语义，服务端据此清理该
 	// 终端已失效的计数行，避免"规则转正后旧计数残留"虚高汇总。
 	RuleObserved map[string]int64 `json:"rule_observed,omitempty"`
+	// IocHits 是威胁情报（hash/ip/path/keyword）命中计数快照，key=
+	// "type:value"。语义同 RuleObserved：非 nil 即整包替换该终端的
+	// ioc_observations 快照行。
+	IocHits map[string]int64 `json:"ioc_hits,omitempty"`
+	// AllowHits 是白名单条目命中计数快照，key="type:value"（与规则包
+	// AllowDTO 同构）。整包替换 allow_observations。
+	AllowHits map[string]int64 `json:"allow_hits,omitempty"`
 }
 
 // DetectorStats 是本地检测器计数，便于观察去噪效果。
@@ -248,11 +255,11 @@ type DetectorStats struct {
 
 // HeartbeatResponse 返回服务端指令与规则版本。
 type HeartbeatResponse struct {
-	ServerTime  int64           `json:"server_time"`
-	RuleVersion int             `json:"rule_version"`
-	AckCommand  []string        `json:"ack_command"` // 已投递的指令 ID
-	Commands    []Command       `json:"commands"`
-	ScanSeconds int             `json:"scan_seconds"`
+	ServerTime  int64     `json:"server_time"`
+	RuleVersion int       `json:"rule_version"`
+	AckCommand  []string  `json:"ack_command"` // 已投递的指令 ID
+	Commands    []Command `json:"commands"`
+	ScanSeconds int       `json:"scan_seconds"`
 }
 
 // Command 是服务端下发到终端的指令。
@@ -323,9 +330,9 @@ type AllowDTO struct {
 
 // RuleBundle 是规则+白名单整包下发。
 type RuleBundle struct {
-	Version     int       `json:"version"`
-	GeneratedAt time.Time `json:"generated_at"`
-	Rules       []RuleDTO `json:"rules"`
+	Version     int        `json:"version"`
+	GeneratedAt time.Time  `json:"generated_at"`
+	Rules       []RuleDTO  `json:"rules"`
 	Allowlist   []AllowDTO `json:"allowlist"`
 	// Signature 是整包内容的 HMAC-SHA256（hex），v1 口径：不含 RuleDTO.Mode。
 	// 保留给老探针——老结构体没有 Mode 字段，重序列化时天然丢弃该字段，
@@ -338,6 +345,21 @@ type RuleBundle struct {
 	// AgentPolicy 是随规则包下发的运行策略（nil = 不干预终端本地配置）。
 	// 规则签名覆盖整包，策略也被同一签名保护——不能被篡改成关闭采集。
 	AgentPolicy *AgentPolicy `json:"agent_policy,omitempty"`
+
+	// Intel 是 ip/path/keyword 三类非哈希情报（v0.9.11 扩维）。
+	// 哈希类继续走 IOCBundle（老探针兼容，wire 不变）。老探针反序列化
+	// 丢弃本字段（结构体无此字段），v1 签名不覆盖、v2 签名覆盖。
+	Intel []IntelDTO `json:"intel,omitempty"`
+}
+
+// IntelDTO 是下发给终端的一条非哈希威胁情报。
+type IntelDTO struct {
+	Type  string `json:"type"` // ip | path | keyword
+	Value string `json:"value"`
+	Score int    `json:"score,omitempty"` // keyword 生效（5-40）；ip/path 固定加成
+	Name  string `json:"name,omitempty"`  // keyword 告警展示名
+	Note  string `json:"note,omitempty"`
+	MITRE string `json:"mitre,omitempty"`
 }
 
 // AgentPolicy 是服务端统一下发的探针运行策略。

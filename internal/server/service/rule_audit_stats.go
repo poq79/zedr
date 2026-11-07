@@ -165,7 +165,9 @@ func (s *RuleService) Delete(ctx context.Context, id, by string) error {
 	return nil
 }
 
-// Bundle 生成下发给终端的规则+白名单整包。
+// Bundle 生成下发给终端的规则+白名单+非哈希情报整包。
+// 版本取 max(rules, intel)：情报增删必须推动探针重拉（ETag/单调校验
+// 都比较这个版本号），否则情报变更会在"规则没变"的终端上静默失效。
 func (s *RuleService) Bundle(ctx context.Context, sinceVersion int) (*model.RuleBundle, error) {
 	enabled, err := s.repos.Rules.ListEnabled(ctx)
 	if err != nil {
@@ -179,12 +181,20 @@ func (s *RuleService) Bundle(ctx context.Context, sinceVersion int) (*model.Rule
 	if err != nil {
 		return nil, err
 	}
+	intelVer, err := s.repos.Intel.Version(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if intelVer > maxVer {
+		maxVer = intelVer
+	}
 
 		bundle := &model.RuleBundle{
 		Version:     maxVer,
 		GeneratedAt: time.Now().UTC(),
 		Rules:       make([]model.RuleDTO, 0, len(enabled)),
 		Allowlist:   make([]model.AllowDTO, 0, len(allow)),
+		Intel:       s.intelOf(ctx),
 		AgentPolicy: s.agentPolicyOf(),
 	}
 	for _, r := range enabled {
@@ -203,9 +213,26 @@ func (s *RuleService) Bundle(ctx context.Context, sinceVersion int) (*model.Rule
 
 // ---------------------------------------------------------------- 白名单
 
-// ListAllowlist 列出白名单。
+// ListAllowlist 列出白名单（附加全终端命中汇总，按 type:value 求和）。
 func (s *RuleService) ListAllowlist(ctx context.Context) ([]domain.AllowlistEntry, error) {
-	return s.repos.Allowlist.List(ctx)
+	items, err := s.repos.Allowlist.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sums, err := s.repos.AllowObserve.SumByKey(ctx)
+	if err != nil {
+		s.log.WarnContext(ctx, "allow_hits_sum_failed", "err", err)
+		sums = nil
+	}
+	for i := range items {
+		if h, ok := sums[items[i].Type+":"+items[i].Value]; ok && h > 0 {
+			items[i].Hits = int(h)
+			if h > 1<<31 { // 防御性钳制：int 在 32 位构建下溢出
+				items[i].Hits = 1 << 31
+			}
+		}
+	}
+	return items, nil
 }
 
 // AddAllowlist 添加白名单项，并校验类型与取值。

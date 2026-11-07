@@ -16,9 +16,24 @@ import (
 // 等外部情报源做按需查询（RESEARCH.md R2），而不是无限堆哈希。
 const iocMaxEntries = 10000
 
-// ListIOCs 列出全部威胁指标。
+// ListIOCs 列出全部威胁指标（附加全终端命中汇总：跨终端 SUM 才是
+// 诚实口径，单列累计在多终端下会被互相覆盖）。
 func (s *RuleService) ListIOCs(ctx context.Context) ([]domain.IOC, error) {
-	return s.repos.IOCs.List(ctx)
+	items, err := s.repos.IOCs.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sums, err := s.repos.IocObserve.SumByKey(ctx)
+	if err != nil {
+		s.log.WarnContext(ctx, "ioc_hits_sum_failed", "err", err)
+		sums = nil
+	}
+	for i := range items {
+		if h, ok := sums["hash:"+items[i].Hash]; ok && h > 0 {
+			items[i].Hits = h
+		}
+	}
+	return items, nil
 }
 
 // AddIOC 新增一条 SHA256 指标。命中表随规则包节奏整包下发终端。

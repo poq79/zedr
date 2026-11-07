@@ -412,6 +412,54 @@ func (h *adminHandler) deleteRule(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteNoContent(w)
 }
 
+// listIntel 非哈希威胁情报列表（type 过滤可选）。
+func (h *adminHandler) listIntel(w http.ResponseWriter, r *http.Request) {
+	items, err := h.deps.Services.Rule.ListIntel(r.Context(), r.URL.Query().Get("type"))
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+type intelReq struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+	Score int    `json:"score"`
+	Name  string `json:"name"`
+	Note  string `json:"note"`
+	MITRE string `json:"mitre"`
+}
+
+func (h *adminHandler) addIntel(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req intelReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	e, err := h.deps.Services.Rule.AddIntel(r.Context(), req.Type, req.Value, req.Score,
+		req.Name, req.Note, req.MITRE, p.Username)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "intel.add",
+		e.Type+":"+e.Value, e.Name, httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, e)
+}
+
+func (h *adminHandler) deleteIntel(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	id := r.PathValue("id")
+	if err := h.deps.Services.Rule.DeleteIntel(r.Context(), id, p.Username); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "intel.delete", id, "", httpx.ClientIP(r))
+	httpx.WriteNoContent(w)
+}
+
 // ---------------------------------------------------------------- 白名单
 
 // exportAllowlist 白名单整表导出（灾备/迁移）。

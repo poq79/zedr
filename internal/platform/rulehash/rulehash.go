@@ -18,7 +18,8 @@ import (
 	"zedr/internal/model"
 )
 
-// signingPayload 构造 v1 口径的规范化签名内容：不含 RuleDTO.Mode。
+// signingPayload 构造 v1 口径的规范化签名内容：不含 RuleDTO.Mode 与
+// RuleBundle.Intel。
 //
 // 双签名兼容说明（规则观察模式引入 Mode 字段时的混合舰队问题）：
 // 验签是对"解码后结构体重序列化"的字节算 HMAC，老探针的 RuleDTO
@@ -27,24 +28,48 @@ import (
 // 老探针必然验签失败、整包拒绝应用、回退内置规则。因此 v1 口径
 // 显式清零 Mode 后序列化：老探针（天然丢字段）与新探针（清零后序列化）
 // 得到的字节完全一致，签名互通。mode 的防篡改由 v2 口径承接。
+// Intel 同理（v0.9.11 扩维）：老探针不认识该字段，反序列化即丢弃。
 func signingPayload(b *model.RuleBundle) ([]byte, error) {
 	rules, err := json.Marshal(stripRuleModes(b.Rules))
 	if err != nil {
 		return nil, fmt.Errorf("规则序列化失败: %w", err)
 	}
-	return assemblePayload("v1", b, rules)
+	allow, err := json.Marshal(b.Allowlist)
+	if err != nil {
+		return nil, fmt.Errorf("白名单序列化失败: %w", err)
+	}
+	head := fmt.Sprintf("v1|%d|%d|%d|%d|",
+		b.Version, b.GeneratedAt.UnixNano(), len(b.Rules), len(b.Allowlist))
+	return joinPayload(head, rules, allow), nil
 }
 
-// signingPayloadV2 构造 v2 口径：包含 Mode。mode 决定规则是否告警，
-// 属于"能让人闭眼"的字段，必须纳入签名——老探针验不了 v2，但老探针
-// 本来就不认识 mode 字段（反序列化即丢弃），mode 对它们不存在，
-// 因此老探针没有"被改 mode 致盲"的攻击面。
+// signingPayloadV2 构造 v2 口径：包含 Mode 与 Intel。这两者都直接影响
+// 检测是否告警（mode=致盲单条规则；intel=下发黑名单），属于"能让人
+// 闭眼"的字段，必须纳入签名——老探针验不了 v2，但老探针本来就不认识
+// 这些字段（反序列化即丢弃），它们对老探针不存在，攻击面为零。
 func signingPayloadV2(b *model.RuleBundle) ([]byte, error) {
 	rules, err := json.Marshal(b.Rules)
 	if err != nil {
 		return nil, fmt.Errorf("规则序列化失败: %w", err)
 	}
-	return assemblePayload("v2", b, rules)
+	allow, err := json.Marshal(b.Allowlist)
+	if err != nil {
+		return nil, fmt.Errorf("白名单序列化失败: %w", err)
+	}
+	// Intel 归一：nil 与空切片序列化结果不同（"null" vs "[]"），而
+	// omitempty 会让空切片在 wire 上消失、探针解码得到 nil——两端
+	// 口径必须钉死为"空=nil"。
+	intelSrc := b.Intel
+	if len(intelSrc) == 0 {
+		intelSrc = nil
+	}
+	intel, err := json.Marshal(intelSrc)
+	if err != nil {
+		return nil, fmt.Errorf("情报序列化失败: %w", err)
+	}
+	head := fmt.Sprintf("v2|%d|%d|%d|%d|%d|",
+		b.Version, b.GeneratedAt.UnixNano(), len(b.Rules), len(b.Allowlist), len(intelSrc))
+	return joinPayload(head, rules, allow, intel), nil
 }
 
 // stripRuleModes 返回清零 Mode 的规则切片副本（不改动调用方的切片）。
@@ -57,21 +82,16 @@ func stripRuleModes(list []model.RuleDTO) []model.RuleDTO {
 	return out
 }
 
-func assemblePayload(version string, b *model.RuleBundle, rules []byte) ([]byte, error) {
-	allow, err := json.Marshal(b.Allowlist)
-	if err != nil {
-		return nil, fmt.Errorf("白名单序列化失败: %w", err)
-	}
-
-	head := fmt.Sprintf("%s|%d|%d|%d|%d|",
-		version, b.Version, b.GeneratedAt.UnixNano(), len(b.Rules), len(b.Allowlist))
-
-	out := make([]byte, 0, len(head)+len(rules)+len(allow)+1)
+func joinPayload(head string, parts ...[]byte) []byte {
+	out := make([]byte, 0, len(head)+64)
 	out = append(out, head...)
-	out = append(out, rules...)
-	out = append(out, '|')
-	out = append(out, allow...)
-	return out, nil
+	for i, p := range parts {
+		if i > 0 {
+			out = append(out, '|')
+		}
+		out = append(out, p...)
+	}
+	return out
 }
 
 // Sign 计算并写入双口径签名：Signature（v1，老探针唯一依据）+

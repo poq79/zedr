@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
+	"zedr/internal/platform/apperr"
 	"zedr/internal/rules"
 	"zedr/internal/server/domain"
-	"zedr/internal/platform/apperr"
 )
 
 // 本文件承载规则"运营面"能力：字段/模板参考、观察模式切换、
@@ -85,6 +85,29 @@ func (s *RuleService) IngestObserve(ctx context.Context, agentID string, stats m
 	}
 }
 
+// IngestHitCounters 摄入一台终端的情报（hash/ip/path/keyword）与白名单
+// 命中快照（随心跳上报，整包替换语义）。失败只记日志——计数是辅助
+// 信号，不值得让心跳失败。
+func (s *RuleService) IngestHitCounters(ctx context.Context, agentID string, iocHits, allowHits map[string]int64) {
+	if iocHits != nil {
+		if err := s.repos.IocObserve.ReplaceForAgent(ctx, agentID, iocHits, time.Now()); err != nil {
+			s.log.WarnContext(ctx, "ioc_hits_ingest_failed", "agent_id", agentID, "err", err)
+		}
+	}
+	if allowHits != nil {
+		if err := s.repos.AllowObserve.ReplaceForAgent(ctx, agentID, allowHits, time.Now()); err != nil {
+			s.log.WarnContext(ctx, "allow_hits_ingest_failed", "agent_id", agentID, "err", err)
+		}
+	}
+}
+
+// IntelVersion 当前情报版本（心跳响应用它对齐规则包版本口径：
+// Bundle.Version = max(rules, intel)，心跳回传的版本必须是同一个值，
+// 否则探针在情报变更后永远看不到版本推进、不重拉）。
+func (s *RuleService) IntelVersion(ctx context.Context) (int, error) {
+	return s.repos.Intel.Version(ctx)
+}
+
 // ListWithObserve 列出规则并附加全终端观察命中汇总。
 // 汇总只对 observe 模式的规则展示：计数行是探针运行期快照，
 // 规则转正/删除后残留在表里的旧行（等下一次心跳清理）没有展示意义。
@@ -93,7 +116,7 @@ func (s *RuleService) ListWithObserve(ctx context.Context) ([]domain.Rule, error
 	if err != nil {
 		return nil, err
 	}
-	sums, err := s.repos.RuleObserve.SumByRule(ctx)
+	sums, err := s.repos.RuleObserve.SumByKey(ctx)
 	if err != nil {
 		// 汇总失败不阻塞列表（老库迁移前/表损坏都可能是原因），只置空
 		s.log.WarnContext(ctx, "observe_sum_failed", "err", err)

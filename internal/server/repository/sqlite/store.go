@@ -25,17 +25,20 @@ type Store struct {
 	agents    agentRepo
 	alerts    alertRepo
 	rules     ruleRepo
-	robserve  ruleObserveRepo
+	robserve  observeRepo
+	iobserve  observeRepo
+	aobserve  observeRepo
+	intel     intelRepo
 	allowlist allowlistRepo
 	iocs      iocRepo
 	audit     auditRepo
 	commands  commandRepo
 	stats     statsRepo
-		inventory inventoryRepo
-		incidents incidentRepo
-		aicfg     aiConfigRepo
-		aitriage  aiTriageRepo
-	}
+	inventory inventoryRepo
+	incidents incidentRepo
+	aicfg     aiConfigRepo
+	aitriage  aiTriageRepo
+}
 
 var _ = (*Store)(nil)
 
@@ -81,33 +84,39 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 	s.agents = agentRepo{s}
 	s.alerts = alertRepo{s}
 	s.rules = ruleRepo{s}
-	s.robserve = ruleObserveRepo{s}
+	s.robserve = observeRepo{s, "rule_observations"}
+	s.iobserve = observeRepo{s, "ioc_observations"}
+	s.aobserve = observeRepo{s, "allow_observations"}
+	s.intel = intelRepo{s}
 	s.allowlist = allowlistRepo{s}
 	s.iocs = iocRepo{s}
 	s.audit = auditRepo{s}
 	s.commands = commandRepo{s}
 	s.stats = statsRepo{s}
-		s.inventory = inventoryRepo{s}
-		s.incidents = incidentRepo{s}
-		s.aicfg = aiConfigRepo{s}
-		s.aitriage = aiTriageRepo{s}
+	s.inventory = inventoryRepo{s}
+	s.incidents = incidentRepo{s}
+	s.aicfg = aiConfigRepo{s}
+	s.aitriage = aiTriageRepo{s}
 
 	repos := repository.Repos{
-		Users:     &s.users,
-		Tokens:    &s.tokens,
-		Agents:    &s.agents,
-		Alerts:    &s.alerts,
-		Rules:     &s.rules,
-		RuleObserve: &s.robserve,
-		Allowlist: &s.allowlist,
-		IOCs:      &s.iocs,
-		Audit:     &s.audit,
-		Commands:  &s.commands,
-		Stats:     &s.stats,
-		Inventory: &s.inventory,
-		Incidents: &s.incidents,
-		AIConfig:  &s.aicfg,
-		ATriage:   &s.aitriage,
+		Users:        &s.users,
+		Tokens:       &s.tokens,
+		Agents:       &s.agents,
+		Alerts:       &s.alerts,
+		Rules:        &s.rules,
+		RuleObserve:  &s.robserve,
+		IocObserve:   &s.iobserve,
+		AllowObserve: &s.aobserve,
+		Intel:        &s.intel,
+		Allowlist:    &s.allowlist,
+		IOCs:         &s.iocs,
+		Audit:        &s.audit,
+		Commands:     &s.commands,
+		Stats:        &s.stats,
+		Inventory:    &s.inventory,
+		Incidents:    &s.incidents,
+		AIConfig:     &s.aicfg,
+		ATriage:      &s.aitriage,
 	}
 	return s, repos, nil
 }
@@ -415,6 +424,49 @@ CREATE TABLE IF NOT EXISTS rule_observations (
   PRIMARY KEY (agent_id, rule_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rule_obs_rule ON rule_observations(rule_id);
+`,
+	},
+	{
+		name: "010_intel_ops",
+		sql: `
+-- 威胁情报扩维（RESEARCH-RULE-OPS P1 后半）：
+-- intel_items：ip/path/keyword 三类可运营黑名单（hash 留在 iocs 表走
+-- 独立 IOC 包管线，老探针兼容不动）。keyword 带 score/name——动态
+-- 关键词与内置关键词层共享 40 分帽，运营者按噪声容忍度调分。
+-- ioc_observations / allow_observations：与 rule_observations 同构的
+-- 按终端命中快照（key = "type:value"）。跨终端 SUM 才是诚实口径——
+-- 单列累计值在多终端下会被互相覆盖。
+CREATE TABLE IF NOT EXISTS intel_items (
+  id         TEXT PRIMARY KEY,
+  type       TEXT NOT NULL,
+  value      TEXT NOT NULL,
+  score      INTEGER NOT NULL DEFAULT 25,
+  name       TEXT NOT NULL DEFAULT '',
+  note       TEXT NOT NULL DEFAULT '',
+  mitre      TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  UNIQUE (type, value)
+);
+CREATE INDEX IF NOT EXISTS idx_intel_type ON intel_items(type);
+
+CREATE TABLE IF NOT EXISTS ioc_observations (
+  agent_id   TEXT NOT NULL,
+  obs_key    TEXT NOT NULL,
+  hits       INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, obs_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ioc_obs_key ON ioc_observations(obs_key);
+
+CREATE TABLE IF NOT EXISTS allow_observations (
+  agent_id   TEXT NOT NULL,
+  obs_key    TEXT NOT NULL,
+  hits       INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, obs_key)
+);
+CREATE INDEX IF NOT EXISTS idx_allow_obs_key ON allow_observations(obs_key);
 `,
 	},
 }

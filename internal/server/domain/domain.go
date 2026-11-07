@@ -181,6 +181,31 @@ type IOC struct {
 	Note      string    `json:"note"`
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
+	// Hits 是列表接口附加的全终端命中汇总（ioc_observations SUM），
+	// 不落 iocs 表；0 时 JSON 省略。
+	Hits int64 `json:"hits,omitempty"`
+}
+
+// Intel 情报类型（ip/path/keyword 走规则包通道；hash 走 IOC 包通道）。
+const (
+	IntelIP      = "ip"
+	IntelPath    = "path"
+	IntelKeyword = "keyword"
+)
+
+// IntelItem 是一条可运营的威胁情报黑名单条目（非哈希类）。
+type IntelItem struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"` // ip | path | keyword
+	Value     string    `json:"value"`
+	Score     int       `json:"score"` // keyword 生效；ip/path 固定 iocBonus
+	Name      string    `json:"name"`  // 告警展示名（keyword 必填，默认取 value）
+	Note      string    `json:"note"`
+	MITRE     string    `json:"mitre,omitempty"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	// Hits 同 IOC.Hits：列表接口附加的全终端观察命中汇总。
+	Hits int64 `json:"hits,omitempty"`
 }
 
 // AuditLog 是后台操作审计。

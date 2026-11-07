@@ -13,21 +13,24 @@ import (
 
 // Repos 汇总所有仓储。
 type Repos struct {
-	Users      UserRepo
-	Tokens     TokenRepo
-	Agents     AgentRepo
-	Alerts     AlertRepo
-	Rules      RuleRepo
-	RuleObserve RuleObserveRepo
-	Allowlist  AllowlistRepo
-	IOCs       IocRepo
-	Audit      AuditRepo
-	Commands   CommandRepo
-	Stats      StatsRepo
-	Inventory  InventoryRepo
-	Incidents  IncidentRepo
-	AIConfig   AIConfigRepo
-	ATriage    AITriageRepo
+	Users        UserRepo
+	Tokens       TokenRepo
+	Agents       AgentRepo
+	Alerts       AlertRepo
+	Rules        RuleRepo
+	RuleObserve  ObserveRepo
+	IocObserve   ObserveRepo
+	AllowObserve ObserveRepo
+	Intel        IntelRepo
+	Allowlist    AllowlistRepo
+	IOCs         IocRepo
+	Audit        AuditRepo
+	Commands     CommandRepo
+	Stats        StatsRepo
+	Inventory    InventoryRepo
+	Incidents    IncidentRepo
+	AIConfig     AIConfigRepo
+	ATriage      AITriageRepo
 }
 
 // AITriageRepo AI 判定台账：AI/确定性调查结论的按告警快照。
@@ -147,17 +150,34 @@ type RuleRepo interface {
 	MaxVersion(ctx context.Context) (int, error)
 }
 
-// RuleObserveRepo 观察模式命中计数数据访问。
+// ObserveRepo 命中计数快照数据访问（rule/ioc/allow 三张同构表共用）。
 // 计数是探针运行期快照（重启清零），按心跳整包替换——它回答的是
-// "这条观察规则此刻在现网会命中多少"，不是历史总量（历史总量交给
-// 告警表，转正后自然产生）。
-type RuleObserveRepo interface {
+// "此刻在现网会命中多少"，不是历史总量（历史总量交给告警表）。
+type ObserveRepo interface {
 	// ReplaceForAgent 用探针上报的快照整体替换该终端的计数行：
-	// 上报里没有的规则 ID（已转正/已删除）对应行会被删除，
+	// 上报里没有的 key（已转正/已删除）对应行会被删除，
 	// 防止残留计数虚高汇总。
 	ReplaceForAgent(ctx context.Context, agentID string, stats map[string]int64, at time.Time) error
-	// SumByRule 跨终端汇总：规则 ID → 全部终端当前命中之和。
-	SumByRule(ctx context.Context) (map[string]int64, error)
+	// SumByKey 跨终端汇总：key → 全部终端当前命中之和。
+	SumByKey(ctx context.Context) (map[string]int64, error)
+}
+
+// IntelRepo 非哈希威胁情报（ip/path/keyword）数据访问。
+type IntelRepo interface {
+	List(ctx context.Context, typ string) ([]domain.IntelItem, error)
+	ByID(ctx context.Context, id string) (*domain.IntelItem, error)
+	ByValue(ctx context.Context, typ, value string) (*domain.IntelItem, error)
+	Add(ctx context.Context, e *domain.IntelItem) error
+	Delete(ctx context.Context, id string) error
+	Count(ctx context.Context) (int, error)
+	// Version 读取情报版本（settings.intel_version，随内容变更递增）。
+	// 规则包版本取 max(rules.MaxVersion, intel.Version)——情报随规则包
+	// 下发，情报变更必须能推动探针重拉。
+	Version(ctx context.Context) (int, error)
+	// BumpVersion 递增情报版本，floor 是版本下限（调用方传当前规则
+	// MaxVersion）：情报版本低于规则版本时，max() 口径会让 ETag 不变、
+	// 探针永远拉不到新情报（实测踩过）——因此 bump 必须越过下限。
+	BumpVersion(ctx context.Context, floor int) (int, error)
 }
 
 // AllowlistRepo 白名单数据访问。

@@ -248,6 +248,10 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/iocs", viewer(adminH.listIOCs))
 	mux.Handle("POST /api/v1/iocs", writer(adminH.addIOC))
 	mux.Handle("DELETE /api/v1/iocs/{id}", writer(adminH.deleteIOC))
+	// 非哈希情报（ip/path/keyword，随规则包下发）：权限口径与 IOC 一致
+	mux.Handle("GET /api/v1/intel", viewer(adminH.listIntel))
+	mux.Handle("POST /api/v1/intel", writer(adminH.addIntel))
+	mux.Handle("DELETE /api/v1/intel/{id}", writer(adminH.deleteIntel))
 
 	mux.Handle("GET /api/v1/incidents", viewer(adminH.listIncidents))
 	mux.Handle("POST /api/v1/incidents/{id}/status", writer(adminH.transitionIncident))

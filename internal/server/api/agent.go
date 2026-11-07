@@ -58,6 +58,15 @@ func (h *agentHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if req.RuleObserved != nil {
 		h.deps.Services.Rule.IngestObserve(r.Context(), a.ID, req.RuleObserved)
 	}
+	if req.IocHits != nil || req.AllowHits != nil {
+		h.deps.Services.Rule.IngestHitCounters(r.Context(), a.ID, req.IocHits, req.AllowHits)
+	}
+	// 版本口径对齐：Bundle.Version = max(rules, intel)（情报随规则包
+	// 下发），心跳回传的版本必须同一口径——否则情报变更后探针看到的
+	// 版本号纹丝不动，永远不重拉（实测踩过）。取高者覆盖。
+	if iv, err := h.deps.Services.Rule.IntelVersion(r.Context()); err == nil && iv > res.RuleVersion {
+		res.RuleVersion = iv
+	}
 	httpx.WriteJSON(w, r, http.StatusOK, res)
 }
 
