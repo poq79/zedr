@@ -16,11 +16,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
 	"zedr/internal/agent/state"
 	"zedr/internal/agent/winapi"
+	"zedr/internal/livecatalog"
 	"zedr/internal/model"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
@@ -82,51 +84,82 @@ type server struct {
 
 // New 构建只读调查 mux，返回的 http.Handler 直接交给隧道的 http.Server
 // （Go 1.27 方法+路径 pattern 路由，风格与 localapi 一致）。
+//
+// 路由由 livecatalog 驱动构建（单一事实源，2026-11-09 起）：catalog 里的
+// 每个端点必须有对应 handler，反之 handler 必须登记进 catalog——任何一侧
+// 漂移在探针启动时立即 panic（宁可起不来也不能静默 404/漏注册）。
 func New(d Deps) http.Handler {
 	if d.FS == nil {
 		d.FS = OSFS{}
 	}
 	s := &server{d: d}
+	// handlers 显式登记：key 必须 == livecatalog.Endpoint.Name。
+	// baseline/accounts/persistence 三个是包级构造函数（不依赖 Deps），
+	// 其余是 *server 方法。
+	handlers := map[string]http.HandlerFunc{
+		"ping":         s.handlePing,
+		"info":         s.handleInfo,
+		"_catalog":     s.handleCatalog,
+		"fs":           s.handleFSList,
+		"fs/stat":      s.handleFSStat,
+		"fs/read":      s.handleFSRead,
+		"fs/hash":      s.handleFSHash,
+		"fs/search":    s.handleFSSearch,
+		"fs/grep":      s.handleFSGrep,
+		"ads":          s.handleADS,
+		"analyze":      s.handleAnalyze,
+		"collect":      s.handleCollect,
+		"processes":    s.handleProcesses,
+		"procinfo":     s.handleProcInfo,
+		"handles":      s.handleHandles,
+		"handleowners": s.handleHandleOwners,
+		"threads":      s.handleThreads,
+		"memscan":      s.handleMemScan,
+		"netstat":      s.handleNetstat,
+		"peers":        s.handlePeers,
+		"netinfo":      s.handleNetinfo,
+		"registry":     s.handleRegistry,
+		"evtlog":       s.handleEvtLog,
+		"tasks":        s.handleTasks,
+		"services":     s.handleServices,
+		"drivers":      s.handleDrivers,
+		"sessions":     s.handleSessions,
+		"usn":          s.handleUSN,
+		"baseline":     HandleBaseline(),
+		"accounts":     HandleAccounts(),
+		"persistence":  HandlePersistence(),
+		"recon":        s.handleRecon,
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /ping", s.handlePing)
-	mux.HandleFunc("GET /fs", s.handleFSList)
-	mux.HandleFunc("GET /fs/stat", s.handleFSStat)
-	mux.HandleFunc("GET /fs/read", s.handleFSRead)
-	mux.HandleFunc("GET /fs/hash", s.handleFSHash)
-	mux.HandleFunc("GET /fs/search", s.handleFSSearch)
-	mux.HandleFunc("GET /processes", s.handleProcesses)
-	mux.HandleFunc("GET /netstat", s.handleNetstat)
-	mux.HandleFunc("GET /analyze", s.handleAnalyze)
-	mux.HandleFunc("GET /ads", s.handleADS)
-	mux.HandleFunc("GET /procinfo", s.handleProcInfo)
-	mux.HandleFunc("GET /info", s.handleInfo)
-	// 资产侦查（§12）：六类资产 + 回环探测
-	mux.HandleFunc("GET /recon", s.handleRecon)
-	// 主机详情深化（§13）：安全基线 / 账户与会话（handler 不依赖 Deps）
-	mux.HandleFunc("GET /baseline", HandleBaseline())
-	mux.HandleFunc("GET /accounts", HandleAccounts())
-	// 进程取证（§15）：句柄 / 占用者 / 线程 / 内存元数据
-	mux.HandleFunc("GET /handles", s.handleHandles)
-	mux.HandleFunc("GET /handleowners", s.handleHandleOwners)
-	mux.HandleFunc("GET /threads", s.handleThreads)
-	mux.HandleFunc("GET /memscan", s.handleMemScan)
-	mux.HandleFunc("GET /persistence", HandlePersistence())
-	mux.HandleFunc("GET /peers", s.handlePeers)
-	// 调查面扩展（2026-11-09，AI 取证对接基座）：注册表/事件日志/计划任务/
-	// 服务/驱动/登录会话/网络面/USN 文件活动——全部沿用既有只读铁律与
-	// 双侧钳制纪律，服务端代理白名单同步收口（api/live.go）。
-	mux.HandleFunc("GET /registry", s.handleRegistry)
-	mux.HandleFunc("GET /evtlog", s.handleEvtLog)
-	mux.HandleFunc("GET /tasks", s.handleTasks)
-	mux.HandleFunc("GET /services", s.handleServices)
-	mux.HandleFunc("GET /drivers", s.handleDrivers)
-	mux.HandleFunc("GET /sessions", s.handleSessions)
-	mux.HandleFunc("GET /netinfo", s.handleNetinfo)
-	mux.HandleFunc("GET /usn", s.handleUSN)
-	// 文件取证打包（zip 流式）：信息暴露面最大的新端点，服务端有独立
-	// 子开关（HG_SERVER_LIVEQUERY_COLLECT，默认关）对齐 fs/read 纪律
-	mux.HandleFunc("GET /collect", s.handleCollect)
+	for _, ep := range livecatalog.All() {
+		h, ok := handlers[ep.Name]
+		if !ok {
+			panic(fmt.Sprintf("liveapi: catalog 端点 %q 没有对应 handler（实现与注册表漂移）", ep.Name))
+		}
+		mux.HandleFunc("GET /"+ep.Name, h)
+		delete(handlers, ep.Name)
+	}
+	if len(handlers) > 0 {
+		names := make([]string, 0, len(handlers))
+		for n := range handlers {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		panic(fmt.Sprintf("liveapi: handler 未登记进 livecatalog（AI/服务端看不见这些端点）: %v", names))
+	}
 	return recoverWrap(mux)
+}
+
+// handleCatalog 是能力清单自描述端点（livecatalog 的运行时投影）：
+// AI/服务端按主机版本拿参数契约——老版本探针的 catalog 自然少端点，
+// 调用方据此做能力探测而不是猜端点存不存在。
+func (s *server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+		"agent_version": s.d.Version,
+		"hostname":      s.d.Hostname,
+		"generated_at":  time.Now().Unix(),
+		"endpoints":     livecatalog.All(),
+	})
 }
 
 func (s *server) handlePing(w http.ResponseWriter, r *http.Request) {
