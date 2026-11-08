@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -12,11 +15,26 @@ import (
 	"zedr/internal/server/domain"
 )
 
+// agentLiveBodyCap 是 Agentic 调查 host_live 工具的响应读取上限：引擎
+// 循环本就把工具结果截到 4000 字节喂给模型，这里放宽只为 JSON 完整。
+const agentLiveBodyCap = 2 << 20
+
 // Agentic 调查 v2 的服务端部分：工具白名单实现 + 编排 + 确定性回退。
 //
-// 工具只有**只读**七件：主机近期告警、同哈希跨主机、IOC 比对、同进程名、
-// 清单节、指纹历史、清单变更。模型能影响的只有参数值——字段到查询的映射
-// 与单告警研判/狩猎同一纪律（模型接触不到 SQL，也写不了任何东西）。
+// 工具只有**只读**七件落库查询 + 一件实时快照：主机近期告警、同哈希
+// 跨主机、IOC 比对、同进程名、清单节、指纹历史、清单变更、host_live
+// （2026-11-09 新增，主机在线时经隧道现采，端点限快速枚举子集）。
+// 模型能影响的只有参数值——字段到查询的映射与单告警研判/狩猎同一纪律
+// （模型接触不到 SQL，也写不了任何东西）。
+
+// agentLiveEndpoints 是 Agentic 调查可用的实时端点子集：引擎工具循环
+// 有 10s 单工具硬顶（internal/ai），所以只放 <10s 的快速枚举端点；
+// persistence/evtlog/usn 等慢端点留给 MCP host_live / 管理台。
+var agentLiveEndpoints = map[string]bool{
+	"processes": true, "netstat": true, "procinfo": true,
+	"accounts": true, "sessions": true, "tasks": true, "services": true,
+	"drivers": true, "registry": true, "netinfo": true, "info": true,
+}
 
 // agentTools 返回给模型的工具定义（JSON Schema）。
 func agentTools() []ai.AgentTool {
@@ -35,6 +53,14 @@ func agentTools() []ai.AgentTool {
 			Parameters: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50}}}`)},
 		{Name: "inventory_changes", Description: "该主机近期资产变更事件（服务/任务/启动项新增）",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":20}}}`)},
+		{Name: "host_live", Description: "在该告警主机上实时现采（探针在线时；主机离线返回说明）。endpoint 取值：" +
+			"processes 进程表 | netstat 连接 | procinfo 进程详情(pid) | accounts 账户 | sessions 登录会话 | " +
+			"tasks 计划任务 | services 服务 | drivers 驱动 | registry 注册表键值(path=HKLM\\...) | " +
+			"netinfo ARP·路由·DNS缓存 | info 探针状态。其他参数经 params 传（如 {\"pid\":123}）",
+			Parameters: json.RawMessage(`{"type":"object","properties":{
+				"endpoint":{"type":"string","enum":["processes","netstat","procinfo","accounts","sessions","tasks","services","drivers","registry","netinfo","info"]},
+				"params":{"type":"object","additionalProperties":{"type":["string","number","boolean"]}}},
+				"required":["endpoint"]}`)},
 	}
 }
 
@@ -219,6 +245,37 @@ func (x *agentToolExec) Execute(ctx context.Context, name string, args json.RawM
 			out = append(out, alertDigest(a))
 		}
 		return marshalJSON(map[string]any{"count": len(out), "changes": out})
+
+	case "host_live":
+		var in struct {
+			Endpoint string         `json:"endpoint"`
+			Params   map[string]any `json:"params"`
+		}
+		_ = json.Unmarshal(args, &in)
+		if !agentLiveEndpoints[in.Endpoint] {
+			return "", fmt.Errorf("endpoint 只支持快速枚举子集（processes/netstat/procinfo/accounts/sessions/tasks/services/drivers/registry/netinfo/info）")
+		}
+		if x.s.live == nil || !x.s.live.Enabled {
+			return "", fmt.Errorf("实时查询未启用（HG_SERVER_LIVEQUERY_ENABLED），只能基于落库数据调查")
+		}
+		q := url.Values{}
+		for k, v := range in.Params {
+			q.Set(k, fmt.Sprint(v))
+		}
+		// agent 固定为告警主机：模型不能借调查工具横向游走到别的终端
+		conn, err := x.s.live.Open(ctx, x.alert.AgentID, in.Endpoint, q, "", "ai-investigate", "")
+		if err != nil {
+			return "", err
+		}
+		defer conn.Close()
+		body, err := io.ReadAll(io.LimitReader(conn.Body, agentLiveBodyCap))
+		if err != nil {
+			return "", fmt.Errorf("读取探针响应失败: %w", err)
+		}
+		if conn.Status != http.StatusOK {
+			return "", fmt.Errorf("探针返回 %d: %s", conn.Status, truncateRunes(string(body), 200))
+		}
+		return string(body), nil
 	}
 	return "", fmt.Errorf("未知工具 %q", name)
 }
