@@ -154,6 +154,12 @@ Response actions are audited, RBAC-gated, and never automatic.
 
 - **Agent API** (API key): enroll, heartbeat, alert ingest, rule fetch, command result, tunnel upgrade.
 - **Console API** (JWT): dashboard, alerts, incidents, hosts, inventory, commands, live queries, ATT&CK matrix, IOCs, rules, allowlist, audit, users, SSE stream.
+- **MCP tools** (Bearer token, read-only): alert/incident/intel queries plus
+  `host_live` — real-time, on-endpoint forensics (processes, netstat, registry,
+  event log channels, scheduled tasks, services, kernel drivers, logon sessions,
+  ARP/route/DNS cache, USN file activity, PE analysis with md5/sha1/sha256 and
+  imphash, process handles/threads/memory map, bounded evidence zip). Every tool
+  call is audited; the AI assistant in the console shares the same toolset.
 - **Public**: `/health`, `/ready`, `/metrics` (Prometheus text format).
 
 The full endpoint table and RBAC matrix live in the repository's internal docs.
