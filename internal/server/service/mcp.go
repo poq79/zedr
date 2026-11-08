@@ -344,8 +344,23 @@ func (x *MCPExecutor) Call(ctx context.Context, name string, args json.RawMessag
 			return map[string]any{"agent_id": in.AgentID, "endpoint": in.Endpoint,
 				"status": conn.Status, "raw": string(body)}, nil
 		}
+		// 探针侧 httpx.WriteJSON 带 {data:...} 全站包装；对模型解掉一层，
+		// 让工具结果直接就是端点数据（错误结构 {error:{message}} 同理解包）
+		var env struct {
+			Data  json.RawMessage `json:"data"`
+			Error *struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		payload := json.RawMessage(body)
+		if err := json.Unmarshal(body, &env); err == nil && env.Error != nil {
+			return nil, fmt.Errorf("探针错误 %s: %s", env.Error.Code, env.Error.Message)
+		} else if err == nil && len(env.Data) > 0 {
+			payload = env.Data
+		}
 		return map[string]any{"agent_id": in.AgentID, "endpoint": in.Endpoint,
-			"status": conn.Status, "data": json.RawMessage(body)}, nil
+			"status": conn.Status, "data": payload}, nil
 
 	case "system_status":
 		agents, err := x.ai.repos.Agents.List(ctx)
