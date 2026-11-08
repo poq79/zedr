@@ -38,9 +38,9 @@ const (
 // 直接 Marshal 会输出大写字段名与富字段的 snake_case 混排，这里统一收敛。
 // Triggers/Actions 复用 winapi 类型（自带 json tag），避免两处定义漂移。
 type taskItem struct {
-	Path     string               `json:"path"`      // 完整任务路径，如 \Microsoft\Windows\...\X
-	Name     string               `json:"name"`      // 叶子名
-	State    string               `json:"state"`     // 恒 "unknown"（见文件头），如实透传
+	Path     string               `json:"path"`  // 完整任务路径，如 \Microsoft\Windows\...\X
+	Name     string               `json:"name"`  // 叶子名
+	State    string               `json:"state"` // 恒 "unknown"（见文件头），如实透传
 	Author   string               `json:"author"`
 	Enabled  bool                 `json:"enabled"`
 	RunLevel string               `json:"run_level"` // LeastPrivilege / HighestAvailable

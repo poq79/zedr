@@ -34,12 +34,12 @@ const (
 // serviceItem 是 items[] 的一行。不复用 winapi.ServiceInfo 直接序列化
 // 的原因同 /tasks：其字段无 json tag，直接 Marshal 会输出大写字段名。
 type serviceItem struct {
-	Name        string `json:"name"`          // 服务键名，如 wuauserv
-	DisplayName string `json:"display_name"`  // 如 Windows Update
-	State       string `json:"state"`         // running / stopped / ...（winapi 映射口径）
-	StartMode   string `json:"start_mode"`    // auto / manual / disabled / boot / system
-	PathName    string `json:"path_name"`     // 二进制命令行（含参数）
-	Account     string `json:"account"`       // 运行账户（LocalSystem 等可显示为空）
+	Name        string `json:"name"`         // 服务键名，如 wuauserv
+	DisplayName string `json:"display_name"` // 如 Windows Update
+	State       string `json:"state"`        // running / stopped / ...（winapi 映射口径）
+	StartMode   string `json:"start_mode"`   // auto / manual / disabled / boot / system
+	PathName    string `json:"path_name"`    // 二进制命令行（含参数）
+	Account     string `json:"account"`      // 运行账户（LocalSystem 等可显示为空）
 }
 
 func (s *server) handleServices(w http.ResponseWriter, r *http.Request) {
