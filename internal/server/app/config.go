@@ -61,9 +61,12 @@ type Config struct {
 	// 实时隧道/实时查询（只读调查面，docs/LIVE-TUNNEL.md）。
 	// LiveQueryEnabled 默认开：只读 + JWT + 全程审计，风险面低于处置类，
 	// 默认关会让"开箱可分析"落空；LiveQueryFileRead 默认关——文件内容预览
-	// 是该体系里信息暴露面最大的端点，与处置类同纪律，现场显式开启。
+	// 是该体系里信息暴露面最大的端点，与处置类同纪律，现场显式开启；
+	// LiveQueryCollect 同理默认关——取证打包是完整文件出站（≤128MB zip），
+	// 暴露面比 512KB 内容预览更大。
 	LiveQueryEnabled  bool
 	LiveQueryFileRead bool
+	LiveQueryCollect  bool
 
 	// 下发给所有终端的运行策略（随规则包走，零值=不干预终端本地配置）
 	AgentPolicyScanInterval time.Duration
@@ -151,6 +154,7 @@ func LoadConfig() (*Config, error) {
 	c.DeployVersion = l.Env("HG_SERVER_DEPLOY_VERSION", "")
 	c.LiveQueryEnabled = l.Bool("HG_SERVER_LIVEQUERY_ENABLED", true)
 	c.LiveQueryFileRead = l.Bool("HG_SERVER_LIVEQUERY_FILEREAD", false)
+	c.LiveQueryCollect = l.Bool("HG_SERVER_LIVEQUERY_COLLECT", false)
 
 	c.AgentPolicyScanInterval = l.Duration("HG_AGENT_POLICY_SCAN_INTERVAL", 0)
 	c.AgentPolicyCollector = l.Env("HG_AGENT_POLICY_COLLECTOR", "")

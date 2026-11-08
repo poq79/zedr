@@ -60,7 +60,10 @@ func (s *AIService) Chat(ctx context.Context, question string, history []ai.Chat
 			DegradedReason: "未配置模型服务：AI 助手需要模型才能对话；告警研判/狩猎/事件叙事等确定性能力不受影响",
 		}, nil
 	}
-	return s.eng.AgentChat(ctx, q, history, mcpToolsAsAgentTools(), chatToolExec{ex: NewMCPExecutor(s)}), nil
+	// 助手工具集 = MCP 同一白名单同一执行器：host_live 注入后助手获得
+	// 实时调查能力（问"主机 X 现在有什么进程"不再只能翻心跳快照）
+	return s.eng.AgentChat(ctx, q, history, mcpToolsAsAgentTools(),
+		chatToolExec{ex: NewMCPExecutor(s, s.live)}), nil
 }
 
 // ---------------- C：AI 值班队列（2026-11 方向 C） ----------------

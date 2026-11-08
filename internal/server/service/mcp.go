@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 
 	"zedr/internal/mcp"
@@ -13,8 +16,31 @@ import (
 // MCP 对外工具集的只读实现（与 Agent 调查同一纪律：模型/客户端只能读）。
 //
 // 证据（2026-11 取证）：Wazuh 生态的 MCP Server 全部只读默认、写入需显式
-// ALLOW_WRITES；工具按功能域拆分、数量控制在数十个以内。我们 v1 八件工具，
-// 覆盖"查告警/事件/情报/清单/猎况/状态"，不提供任何写操作。
+// ALLOW_WRITES；工具按功能域拆分、数量控制在数十个以内。v1 八件工具覆盖
+// "查告警/事件/情报/清单/猎况/状态"；v2（2026-11-09）补实时调查桥：
+// host_live 经隧道现采（与管理台同一执法点 service.LiveQueryService），
+// intel_lookup 补非哈希情报面，host_inventory 补齐落库未暴露的三节。
+// 仍无任何写操作。
+
+// mcpLiveBlocked 是 host_live 对 AI 关闭的端点：fs/read 是文本内容流、
+// collect 是 128MB 二进制 zip——两者都是大块内容出站，对模型价值低
+// （模型要哈希用 fs/hash、要 PE 分析用 analyze 即可）且审计回放成本高，
+// 白名单在此二次收口（服务端 LiveQueryService 还有子开关兜底）。
+var mcpLiveBlocked = map[string]bool{"fs/read": true, "collect": true}
+
+// mcpLiveBodyCap 是 host_live 单次响应的读取上限：MCP 协议层本就截断
+// 64KB（internal/mcp server.go），这里放宽到 4MB 只为 JSON 完整解析，
+// 防止个别枚举端点在异常大主机上把服务端内存吃穿。
+const mcpLiveBodyCap = 4 << 20
+
+// truncateRunes 截断超长文本（错误摘要用），不产生半个 rune。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
 
 // MCPTools 返回对外工具定义（JSON Schema）。
 func MCPTools() []mcp.Tool {
@@ -34,10 +60,26 @@ func MCPTools() []mcp.Tool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`)},
 		{Name: "ioc_lookup", Description: "在威胁情报库比对 SHA256 是否已知恶意（只读）",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"hash":{"type":"string"}},"required":["hash"]}`)},
+		{Name: "intel_lookup", Description: "在非哈希威胁情报库中精确匹配一个值（只读）：ip=远端IP、path=文件路径、keyword=动态关键词；哈希请改用 ioc_lookup",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"type":{"type":"string","enum":["ip","path","keyword"]},"value":{"type":"string"}},"required":["type","value"]}`)},
 		{Name: "host_inventory", Description: "读取主机资产清单：不带 section 返回节名与摘要，带 section 返回该节 JSON（只读）",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"agent_id":{"type":"string"},"section":{"type":"string","enum":["system","adapters","listeners","services","tasks","startup","agent"]}},"required":["agent_id"]}`)},
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"agent_id":{"type":"string"},"section":{"type":"string","enum":["system","adapters","listeners","services","tasks","startup","agent","accounts","defender","firewall"]}},"required":["agent_id"]}`)},
 		{Name: "hunt", Description: "自然语言检索告警（内部翻译成受控 DSL 后执行；模型接触不到 SQL）",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","maxLength":500}},"required":["query"]}`)},
+		{Name: "host_live", Description: "对指定主机实时只读调查（探针在线时经隧道现采，非落库快照）。endpoint 取值：" +
+			"processes 进程表 | netstat 连接 | procinfo 单进程详情(pid) | persistence 持久化驻留 | " +
+			"tasks 计划任务 | services 服务 | drivers 内核驱动 | registry 注册表键值(path=HKLM\\...) | " +
+			"evtlog 事件日志(channel,ids,minutes) | accounts 账户 | sessions 登录会话 | " +
+			"netinfo ARP·路由·DNS缓存 | usn 卷级文件活动(volume,minutes) | info 探针状态 | " +
+			"baseline 安全基线 | recon 资产侦查 | peers 外联聚合 | " +
+			"fs 目录浏览(path) | fs/stat 文件属性(path) | fs/hash 文件SHA256(path) | fs/search 限深搜索(path,pattern) | " +
+			"analyze PE分析(md5/sha1/sha256/熵/imphash)(path) | ads 流与下载来源(path) | " +
+			"handles 进程句柄(pid) | handleowners 文件占用者(path) | threads 线程起始地址(pid) | memscan 内存元数据(pid)。括号内为 params 键",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"agent_id":{"type":"string"},
+				"endpoint":{"type":"string"},
+				"params":{"type":"object","additionalProperties":{"type":["string","number","boolean"]}}},
+				"required":["agent_id","endpoint"]}`)},
 		{Name: "system_status", Description: "平台运况摘要：主机数/在线数/未处置告警/AI 引擎与预算（只读）",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
 	}
@@ -45,10 +87,13 @@ func MCPTools() []mcp.Tool {
 
 // MCPExecutor 实现 mcp.Executor。
 type MCPExecutor struct {
-	ai *AIService
+	ai   *AIService
+	live *LiveQueryService
 }
 
-func NewMCPExecutor(ai *AIService) *MCPExecutor { return &MCPExecutor{ai: ai} }
+func NewMCPExecutor(ai *AIService, live *LiveQueryService) *MCPExecutor {
+	return &MCPExecutor{ai: ai, live: live}
+}
 
 func (x *MCPExecutor) Call(ctx context.Context, name string, args json.RawMessage) (any, error) {
 	switch name {
@@ -177,6 +222,34 @@ func (x *MCPExecutor) Call(ctx context.Context, name string, args json.RawMessag
 		}
 		return map[string]any{"hit": true, "hash": ioc.Hash, "note": ioc.Note, "created_at": ioc.CreatedAt}, nil
 
+	case "intel_lookup":
+		var in struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		}
+		_ = json.Unmarshal(args, &in)
+		switch in.Type {
+		case "ip", "path", "keyword":
+		default:
+			return nil, fmt.Errorf("type 只支持 ip/path/keyword")
+		}
+		if in.Value == "" {
+			return nil, fmt.Errorf("缺少 value")
+		}
+		it, err := x.ai.repos.Intel.ByValue(ctx, in.Type, in.Value)
+		if err != nil {
+			return nil, err
+		}
+		if it == nil {
+			return map[string]any{"hit": false, "type": in.Type, "value": in.Value}, nil
+		}
+		out := map[string]any{"hit": true, "id": it.ID, "type": it.Type, "value": it.Value,
+			"name": it.Name, "note": it.Note, "score": it.Score, "created_at": it.CreatedAt}
+		if it.MITRE != "" {
+			out["mitre"] = it.MITRE
+		}
+		return out, nil
+
 	case "host_inventory":
 		var in struct {
 			AgentID string `json:"agent_id"`
@@ -225,6 +298,54 @@ func (x *MCPExecutor) Call(ctx context.Context, name string, args json.RawMessag
 			alerts = append(alerts, alertDigest(a))
 		}
 		return map[string]any{"query": res.Query, "total": res.Total, "alerts": alerts}, nil
+
+	case "host_live":
+		var in struct {
+			AgentID  string         `json:"agent_id"`
+			Endpoint string         `json:"endpoint"`
+			Params   map[string]any `json:"params"`
+		}
+		_ = json.Unmarshal(args, &in)
+		if in.AgentID == "" {
+			return nil, fmt.Errorf("缺少 agent_id")
+		}
+		if in.Endpoint == "" {
+			return nil, fmt.Errorf("缺少 endpoint")
+		}
+		if mcpLiveBlocked[in.Endpoint] {
+			return nil, fmt.Errorf("endpoint %q 不对 AI 开放（内容出站面；用 fs/hash 或 analyze 代替）", in.Endpoint)
+		}
+		if _, ok := LiveEndpoints[in.Endpoint]; !ok {
+			return nil, fmt.Errorf("未知 endpoint %q（可选值见 tools/list 的 host_live 描述）", in.Endpoint)
+		}
+		if x.live == nil {
+			return nil, fmt.Errorf("实时查询未接线（HG_SERVER_LIVEQUERY_ENABLED 关闭或老版本部署）")
+		}
+		q := url.Values{}
+		for k, v := range in.Params {
+			q.Set(k, fmt.Sprint(v))
+		}
+		conn, err := x.live.Open(ctx, in.AgentID, in.Endpoint, q, "", "mcp", "")
+		if err != nil {
+			return nil, err
+		}
+		defer conn.Close()
+		body, err := io.ReadAll(io.LimitReader(conn.Body, mcpLiveBodyCap+1))
+		if err != nil {
+			return nil, fmt.Errorf("读取探针响应失败: %w", err)
+		}
+		if int64(len(body)) > mcpLiveBodyCap {
+			return nil, fmt.Errorf("响应超过 %d 字节上限（收窄查询参数后重试）", mcpLiveBodyCap)
+		}
+		if conn.Status != http.StatusOK {
+			return nil, fmt.Errorf("探针返回 %d: %s", conn.Status, truncateRunes(string(body), 300))
+		}
+		if !json.Valid(body) {
+			return map[string]any{"agent_id": in.AgentID, "endpoint": in.Endpoint,
+				"status": conn.Status, "raw": string(body)}, nil
+		}
+		return map[string]any{"agent_id": in.AgentID, "endpoint": in.Endpoint,
+			"status": conn.Status, "data": json.RawMessage(body)}, nil
 
 	case "system_status":
 		agents, err := x.ai.repos.Agents.List(ctx)

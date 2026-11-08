@@ -91,12 +91,17 @@ func skillMarkdown(d Deps) []byte {
 	b.WriteString("2. 每条结论必须引用真实告警 ID / 哈希前缀 / IOC 条目；无引用时标注\"无引用\"。\n")
 	b.WriteString("3. 查询默认按时间倒序；`get_alert` 返回完整证据链（signals 带层与分值）。\n")
 	b.WriteString("4. `get_incident_narrative` 只返回已生成且未过期的叙事；否则提示在管理台生成。\n")
-	b.WriteString("5. 不要编造工具不返回的事实；不确定就说明缺什么数据。\n\n")
+	b.WriteString("5. 不要编造工具不返回的事实；不确定就说明缺什么数据。\n")
+	b.WriteString("6. `host_live` 是探针实时现采（主机离线会报 tunnel_not_connected）：" +
+		"先 `system_status` 或 `host_inventory` 确认主机在线再实时查询；" +
+		"返回的 params 键名见工具描述括号内的提示。\n\n")
 	b.WriteString("## 示例问题\n\n")
 	b.WriteString("- \"最近 24 小时有哪些恶意告警？按主机汇总。\"\n")
 	b.WriteString("- \"主机 WIN-XXX 上未签名的高分进程有哪些？\"\n")
 	b.WriteString("- \"查一下事件 <id> 的攻击链叙事。\"\n")
 	b.WriteString("- \"这个哈希 <sha256> 命中威胁情报吗？\"\n")
+	b.WriteString("- \"主机 WIN-XXX 现在有哪些计划任务和自启动服务？有没有可疑驻留？\"\n")
+	b.WriteString("- \"看看主机 WIN-XXX 的 C:\\Users\\Public 下最近落了什么文件（usn），可疑的话做 PE 分析（analyze）。\"\n")
 
 	// 附：JSON-RPC 示例（便于非 MCP 客户端直接 curl 调试）
 	b.WriteString("\n## 直接调用示例\n\n```bash\n")

@@ -29,7 +29,14 @@ type AIService struct {
 	// encKey 是后台配置敏感字段的静态加密密钥（见 service.Config）。
 	bootstrap ai.Config
 	encKey    []byte
+
+	// live 是实时查询业务核心（app 装配期注入）：Agentic 调查在主机
+	// 在线时取实时证据，AI 助手工具集（chat_ops）经 MCPExecutor 共用。
+	live *LiveQueryService
 }
+
+// SetLiveQuery 注入实时查询服务（app 装配期调用一次；nil = 未接线）。
+func (s *AIService) SetLiveQuery(lq *LiveQueryService) { s.live = lq }
 
 // Triage 研判一条告警。
 func (s *AIService) Triage(ctx context.Context, alertID string) (*ai.TriageResult, error) {

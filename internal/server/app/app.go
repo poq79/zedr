@@ -272,6 +272,13 @@ func New() (*App, error) {
 		tunnelReg = livetunnel.NewRegistry(log)
 	}
 
+	// 实时查询业务核心：管理台代理与 MCP host_live 工具共用同一执法点
+	//（白名单/预算/审计唯一事实源，service/livequery.go）。AI 服务的
+	// Agentic 调查也借此在主机在线时取实时证据。
+	liveSvc := service.NewLiveQueryService(tunnelReg, cfg.LiveQueryEnabled,
+		cfg.LiveQueryFileRead, cfg.LiveQueryCollect, svc.Audit)
+	svc.AI.SetLiveQuery(liveSvc)
+
 	// MCP 对外工具服务（只读）：独立 Token 鉴权、每工具调用进审计流。
 	// 默认关闭；SDK 转正前协议子集自研（internal/mcp，TRADEOFFS §3.14）。
 	var mcpSrv *mcp.Server
@@ -279,7 +286,7 @@ func New() (*App, error) {
 		mcpSrv = &mcp.Server{
 			Name: "zedr-edr", Version: Version,
 			Tools: service.MCPTools(),
-			Ex:    service.NewMCPExecutor(svc.AI),
+			Ex:    service.NewMCPExecutor(svc.AI, liveSvc),
 		}
 		mcpSrv.OnCall = func(name string, callErr error) {
 			detail := "tool=" + name
@@ -316,8 +323,7 @@ func New() (*App, error) {
 		DeployVersion:  cfg.DeployVersion,
 		EnrollToken:    cfg.EnrollToken,
 		Tunnel:           tunnelReg,
-		LiveQueryEnabled: cfg.LiveQueryEnabled,
-		LiveQueryFileRead: cfg.LiveQueryFileRead,
+		Live:             liveSvc,
 		Ingest: ingestguard.New(cfg.IngestAlertRPS, cfg.IngestAlertBurst, cfg.IngestMaxInflight),
 		MCP:      mcpSrv,
 		MCPToken: cfg.MCPToken,

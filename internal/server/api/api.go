@@ -68,10 +68,9 @@ type Deps struct {
 	// Ingest 是终端告警上报的背压闸（每终端限速 + 在途批次上限）。
 	// nil = 不限制，兼容测试与老部署的默认行为。
 	Ingest *ingestguard.Guard
-	// LiveQueryEnabled/FileRead 对应 HG_SERVER_LIVEQUERY_ENABLED/FILEREAD，
-	// 执法逻辑见 api/live.go。
-	LiveQueryEnabled  bool
-	LiveQueryFileRead bool
+	// Live 是实时查询业务核心（白名单/预算/子开关/审计的唯一事实源，
+	// 见 service/livequery.go；管理台与 MCP host_live 共用同一执法点）。
+	Live *service.LiveQueryService
 
 	// sseActive 是当前活跃的实时流连接数。
 	// 用指针而非值：Deps 是按值传递的，而 atomic.Int64 内含 noCopy，
