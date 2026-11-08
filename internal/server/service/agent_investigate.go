@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 
 	"zedr/internal/ai"
+	"zedr/internal/livecatalog"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/server/domain"
 )
@@ -27,13 +29,35 @@ const agentLiveBodyCap = 2 << 20
 // 模型能影响的只有参数值——字段到查询的映射与单告警研判/狩猎同一纪律
 // （模型接触不到 SQL，也写不了任何东西）。
 
-// agentLiveEndpoints 是 Agentic 调查可用的实时端点子集：引擎工具循环
-// 有 10s 单工具硬顶（internal/ai），所以只放 <10s 的快速枚举端点；
-// persistence/evtlog/usn 等慢端点留给 MCP host_live / 管理台。
-var agentLiveEndpoints = map[string]bool{
-	"processes": true, "netstat": true, "procinfo": true,
-	"accounts": true, "sessions": true, "tasks": true, "services": true,
-	"drivers": true, "registry": true, "netinfo": true, "info": true,
+// agentLiveEndpoints 是 Agentic 调查可用的实时端点子集——**由
+// livecatalog 派生**（AI 开放 + 非内容出站 + 代理预算 ≤10s）：引擎工具
+// 循环有 10s 单工具硬顶（internal/ai），预算超限的 persistence/evtlog/
+// usn/analyze 等自然落选，留给 MCP host_live / 管理台。ping/_catalog
+// 对调查循环没有信息价值，排除。
+func agentLiveEndpoints() map[string]bool {
+	m := make(map[string]bool)
+	for _, ep := range livecatalog.All() {
+		if ep.AI && !ep.FileRead && !ep.Collect && ep.TimeoutMs <= 10000 &&
+			ep.Name != "_catalog" && ep.Name != "ping" {
+			m[ep.Name] = true
+		}
+	}
+	return m
+}
+
+// agentLiveSchema 生成 host_live 的参数 schema：endpoint 枚举直接从
+// livecatalog 派生子集（与执行白名单同一来源，永不漂移）。
+func agentLiveSchema() string {
+	names := make([]string, 0, len(agentLiveEndpoints()))
+	for n := range agentLiveEndpoints() {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	enum, _ := json.Marshal(names)
+	return fmt.Sprintf(`{"type":"object","properties":{
+		"endpoint":{"type":"string","enum":%s},
+		"params":{"type":"object","additionalProperties":{"type":["string","number","boolean"]}}},
+		"required":["endpoint"]}`, enum)
 }
 
 // agentTools 返回给模型的工具定义（JSON Schema）。
@@ -53,14 +77,8 @@ func agentTools() []ai.AgentTool {
 			Parameters: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50}}}`)},
 		{Name: "inventory_changes", Description: "该主机近期资产变更事件（服务/任务/启动项新增）",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":20}}}`)},
-		{Name: "host_live", Description: "在该告警主机上实时现采（探针在线时；主机离线返回说明）。endpoint 取值：" +
-			"processes 进程表 | netstat 连接 | procinfo 进程详情(pid) | accounts 账户 | sessions 登录会话 | " +
-			"tasks 计划任务 | services 服务 | drivers 驱动 | registry 注册表键值(path=HKLM\\...) | " +
-			"netinfo ARP·路由·DNS缓存 | info 探针状态。其他参数经 params 传（如 {\"pid\":123}）",
-			Parameters: json.RawMessage(`{"type":"object","properties":{
-				"endpoint":{"type":"string","enum":["processes","netstat","procinfo","accounts","sessions","tasks","services","drivers","registry","netinfo","info"]},
-				"params":{"type":"object","additionalProperties":{"type":["string","number","boolean"]}}},
-				"required":["endpoint"]}`)},
+		{Name: "host_live", Description: "在该告警主机上实时现采（探针在线时；主机离线返回说明）。endpoint 枚举为快速子集（≤10s），参数经 params 传（如 {\"pid\":123}、{\"path\":\"HKLM\\\\...\"}），完整契约见工具描述或 endpoint 枚举",
+			Parameters: json.RawMessage(agentLiveSchema())},
 	}
 }
 
@@ -252,8 +270,8 @@ func (x *agentToolExec) Execute(ctx context.Context, name string, args json.RawM
 			Params   map[string]any `json:"params"`
 		}
 		_ = json.Unmarshal(args, &in)
-		if !agentLiveEndpoints[in.Endpoint] {
-			return "", fmt.Errorf("endpoint 只支持快速枚举子集（processes/netstat/procinfo/accounts/sessions/tasks/services/drivers/registry/netinfo/info）")
+		if !agentLiveEndpoints()[in.Endpoint] {
+			return "", fmt.Errorf("endpoint 不在快速子集内（见工具 schema 枚举；慢端点走管理台或 MCP）")
 		}
 		if x.s.live == nil || !x.s.live.Enabled {
 			return "", fmt.Errorf("实时查询未启用（HG_SERVER_LIVEQUERY_ENABLED），只能基于落库数据调查")

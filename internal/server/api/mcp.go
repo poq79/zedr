@@ -93,8 +93,8 @@ func skillMarkdown(d Deps) []byte {
 	b.WriteString("4. `get_incident_narrative` 只返回已生成且未过期的叙事；否则提示在管理台生成。\n")
 	b.WriteString("5. 不要编造工具不返回的事实；不确定就说明缺什么数据。\n")
 	b.WriteString("6. `host_live` 是探针实时现采（主机离线会报 tunnel_not_connected）：" +
-		"先 `system_status` 或 `host_inventory` 确认主机在线再实时查询；" +
-		"返回的 params 键名见工具描述括号内的提示。\n\n")
+		"先 `system_status` 确认主机在线；**调用任何端点前先 `endpoint=_catalog` 一次性拿到全部端点的参数契约**（参数/默认值/上限/输出形态），再按契约传 params；" +
+		"响应带 ai_shaped=true 时说明结果被整形截断，请用更小的 limit 或过滤参数收窄而不是重复拉全量。\n\n")
 	b.WriteString("## 示例问题\n\n")
 	b.WriteString("- \"最近 24 小时有哪些恶意告警？按主机汇总。\"\n")
 	b.WriteString("- \"主机 WIN-XXX 上未签名的高分进程有哪些？\"\n")

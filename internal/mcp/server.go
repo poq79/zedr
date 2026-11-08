@@ -18,10 +18,15 @@ import (
 )
 
 // Tool 是一个对外暴露的工具定义。
+// Annotations 是 2025-11-25 稳定线的 ToolAnnotations 行为提示
+// （readOnlyHint/destructiveHint/idempotentHint/openWorldHint/title）——
+// 规范明示它们是 UX 提示而非安全边界，客户端不得仅凭注解做安全决策，
+// 这里用松散 map 承载以跟随规范演进（本服务全部只读：readOnlyHint=true）。
 type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	Annotations map[string]any  `json:"annotations,omitempty"`
 }
 
 // Executor 执行一次工具调用；返回可 JSON 序列化的结果。

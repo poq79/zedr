@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"zedr/internal/livecatalog"
 	"zedr/internal/mcp"
 	"zedr/internal/server/domain"
 )
@@ -33,6 +34,108 @@ var mcpLiveBlocked = map[string]bool{"fs/read": true, "collect": true}
 // 防止个别枚举端点在异常大主机上把服务端内存吃穿。
 const mcpLiveBodyCap = 4 << 20
 
+// mcpLiveShapeBudget 是模型上下文预算：超过它就做服务端整形——协议层
+// 的 64KB 截断会把大结果砍成断头 JSON（模型既解析不了又以为拿到全量），
+// 整形保 JSON 合法、保留计数语义字段和截断说明，模型据此收窄查询。
+const mcpLiveShapeBudget = 48 << 10
+
+// shapeForModel 整形超预算响应（见上）。只收缩不扩张：条目大小不均匀时
+// 逐轮按比例收缩，宁可少给一条也不超预算。
+func shapeForModel(body []byte) ([]byte, bool) {
+	if len(body) <= mcpLiveShapeBudget {
+		return body, false
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return shapeHead(body), true
+	}
+	items, ok := doc["items"].([]any)
+	if !ok || len(items) == 0 {
+		return shapeHead(body), true
+	}
+	k := len(items) * (mcpLiveShapeBudget - 1024) / len(body)
+	if k < 1 {
+		k = 1
+	}
+	if k > len(items) {
+		k = len(items)
+	}
+	for k > 1 {
+		doc["items"] = items[:k]
+		if out, err := json.Marshal(doc); err == nil && len(out) <= mcpLiveShapeBudget {
+			break
+		}
+		k = k * 3 / 4
+	}
+	doc["items"] = items[:k]
+	doc["ai_shaped"] = true
+	doc["ai_note"] = fmt.Sprintf("原始响应 %dB 超出模型预算，已保留前 %d/%d 条；请用更小的 limit/过滤参数收窄（参数契约见 endpoint=_catalog）", len(body), k, len(items))
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return shapeHead(body), true
+	}
+	return out, true
+}
+
+// shapeHead 兜底：无 items 结构的超大响应——不伪装成完整数据，
+// 显式标记 raw_head 只是开头片段。
+func shapeHead(body []byte) []byte {
+	head := body
+	if len(head) > 8192 {
+		head = head[:8192]
+	}
+	out, _ := json.Marshal(map[string]any{
+		"ai_shaped": true,
+		"ai_note":   fmt.Sprintf("响应 %dB 超出预算且无 items 结构，仅保留开头 %d 字节片段；请改用更窄的查询（参数契约见 endpoint=_catalog）", len(body), len(head)),
+		"raw_head":  string(head),
+	})
+	return out
+}
+
+// hostLiveDescription 由 livecatalog 生成 host_live 的工具描述（AI 开放
+// 端点按分类分组）——与探针 /_catalog、服务端白名单同一事实源，探针加
+// 端点只改 catalog 一处，这里自动跟上，不再手写会漂移的大字符串。
+func hostLiveDescription() string {
+	cates := []struct{ key, label string }{
+		{livecatalog.CateOps, "运维"}, {livecatalog.CateFS, "文件"},
+		{livecatalog.CateEvidence, "取证"}, {livecatalog.CateProc, "进程"},
+		{livecatalog.CateNet, "网络"}, {livecatalog.CateSys, "系统"},
+	}
+	var b strings.Builder
+	b.WriteString("对指定主机实时只读调查（探针在线时经隧道现采，非落库快照）。")
+	b.WriteString("先用 endpoint=_catalog 获取全部端点的参数契约（参数/默认值/上限/输出形态），再按需调用。AI 可用端点：")
+	for _, c := range cates {
+		b.WriteString("【" + c.label + "】")
+		first := true
+		for _, ep := range livecatalog.All() {
+			if !ep.AI || ep.Cate != c.key {
+				continue
+			}
+			if !first {
+				b.WriteString(" | ")
+			}
+			first = false
+			b.WriteString(ep.Name)
+			if len(ep.Params) > 0 {
+				b.WriteString("(")
+				for i, p := range ep.Params {
+					if i > 0 {
+						b.WriteString(",")
+					}
+					b.WriteString(p.Name)
+					if p.Required {
+						b.WriteString("*")
+					}
+				}
+				b.WriteString(")")
+			}
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("带*为必填；cost=slow 的端点（analyze/recon 等）确认必要后再调；fs/read 与 collect 不对 AI 开放。")
+	return b.String()
+}
+
 // truncateRunes 截断超长文本（错误摘要用），不产生半个 rune。
 func truncateRunes(s string, n int) string {
 	r := []rune(s)
@@ -43,8 +146,12 @@ func truncateRunes(s string, n int) string {
 }
 
 // MCPTools 返回对外工具定义（JSON Schema）。
+// 全部工具补 2025-11-25 稳定线的 ToolAnnotations：readOnlyHint=true
+// （本服务无写操作）、openWorldHint=false（封闭主机集合）——规范明示
+// 注解是 UX 提示而非安全边界，真正的执法在 executor 与白名单。
 func MCPTools() []mcp.Tool {
-	return []mcp.Tool{
+	ro := map[string]any{"readOnlyHint": true, "openWorldHint": false}
+	tools := []mcp.Tool{
 		{Name: "query_alerts", Description: "查询告警（只读）。支持按进程名/主机/结论/严重度/最低分/签名过滤，最多 50 条",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"process_name":{"type":"string"},"hostname":{"type":"string"},
@@ -66,23 +173,19 @@ func MCPTools() []mcp.Tool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"agent_id":{"type":"string"},"section":{"type":"string","enum":["system","adapters","listeners","services","tasks","startup","agent","accounts","defender","firewall"]}},"required":["agent_id"]}`)},
 		{Name: "hunt", Description: "自然语言检索告警（内部翻译成受控 DSL 后执行；模型接触不到 SQL）",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","maxLength":500}},"required":["query"]}`)},
-		{Name: "host_live", Description: "对指定主机实时只读调查（探针在线时经隧道现采，非落库快照）。endpoint 取值：" +
-			"processes 进程表 | netstat 连接 | procinfo 单进程详情(pid) | persistence 持久化驻留 | " +
-			"tasks 计划任务 | services 服务 | drivers 内核驱动 | registry 注册表键值(path=HKLM\\...) | " +
-			"evtlog 事件日志(channel,ids,minutes) | accounts 账户 | sessions 登录会话 | " +
-			"netinfo ARP·路由·DNS缓存 | usn 卷级文件活动(volume,minutes) | info 探针状态 | " +
-			"baseline 安全基线 | recon 资产侦查 | peers 外联聚合 | " +
-			"fs 目录浏览(path) | fs/stat 文件属性(path) | fs/hash 文件SHA256(path) | fs/search 限深搜索(path,pattern) | " +
-			"analyze PE分析(md5/sha1/sha256/熵/imphash)(path) | ads 流与下载来源(path) | " +
-			"handles 进程句柄(pid) | handleowners 文件占用者(path) | threads 线程起始地址(pid) | memscan 内存元数据(pid)。括号内为 params 键",
+		{Name: "host_live", Description: hostLiveDescription(),
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"agent_id":{"type":"string"},
-				"endpoint":{"type":"string"},
+				"endpoint":{"type":"string","description":"端点名；=_catalog 返回全部端点的参数契约"},
 				"params":{"type":"object","additionalProperties":{"type":["string","number","boolean"]}}},
 				"required":["agent_id","endpoint"]}`)},
 		{Name: "system_status", Description: "平台运况摘要：主机数/在线数/未处置告警/AI 引擎与预算（只读）",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
 	}
+	for i := range tools {
+		tools[i].Annotations = ro
+	}
+	return tools
 }
 
 // MCPExecutor 实现 mcp.Executor。
@@ -359,8 +462,11 @@ func (x *MCPExecutor) Call(ctx context.Context, name string, args json.RawMessag
 		} else if err == nil && len(env.Data) > 0 {
 			payload = env.Data
 		}
+		// 上下文长度设计：超预算先整形（保 JSON 合法+截断说明），不让
+		// 协议层把结果砍成模型无法解析的断头
+		shaped, _ := shapeForModel(payload)
 		return map[string]any{"agent_id": in.AgentID, "endpoint": in.Endpoint,
-			"status": conn.Status, "data": payload}, nil
+			"status": conn.Status, "data": json.RawMessage(shaped)}, nil
 
 	case "system_status":
 		agents, err := x.ai.repos.Agents.List(ctx)
