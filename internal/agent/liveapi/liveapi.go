@@ -112,6 +112,20 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /memscan", s.handleMemScan)
 	mux.HandleFunc("GET /persistence", HandlePersistence())
 	mux.HandleFunc("GET /peers", s.handlePeers)
+	// 调查面扩展（2026-11-09，AI 取证对接基座）：注册表/事件日志/计划任务/
+	// 服务/驱动/登录会话/网络面/USN 文件活动——全部沿用既有只读铁律与
+	// 双侧钳制纪律，服务端代理白名单同步收口（api/live.go）。
+	mux.HandleFunc("GET /registry", s.handleRegistry)
+	mux.HandleFunc("GET /evtlog", s.handleEvtLog)
+	mux.HandleFunc("GET /tasks", s.handleTasks)
+	mux.HandleFunc("GET /services", s.handleServices)
+	mux.HandleFunc("GET /drivers", s.handleDrivers)
+	mux.HandleFunc("GET /sessions", s.handleSessions)
+	mux.HandleFunc("GET /netinfo", s.handleNetinfo)
+	mux.HandleFunc("GET /usn", s.handleUSN)
+	// 文件取证打包（zip 流式）：信息暴露面最大的新端点，服务端有独立
+	// 子开关（HG_SERVER_LIVEQUERY_COLLECT，默认关）对齐 fs/read 纪律
+	mux.HandleFunc("GET /collect", s.handleCollect)
 	return recoverWrap(mux)
 }
 
