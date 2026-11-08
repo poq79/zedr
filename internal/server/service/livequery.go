@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"zedr/internal/livecatalog"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/logx"
 	"zedr/internal/platform/redact"
@@ -29,61 +30,26 @@ import (
 // LiveEndpoint 描述一个隧道内只读端点的转发预算与开关要求。
 type LiveEndpoint struct {
 	Timeout  time.Duration
-	FileRead bool // 需要 HG_SERVER_LIVEQUERY_FILEREAD 子开关把门（内容预览）
+	FileRead bool // 需要 HG_SERVER_LIVEQUERY_FILEREAD 子开关把门（内容预览/查找）
 	Collect  bool // 需要 HG_SERVER_LIVEQUERY_COLLECT 子开关把门（取证打包）
 }
 
-// LiveEndpoints 白名单预算表（原 api/live.go 口径 + 2026-11-09 调查面
-// 扩展九端点）。fs/hash 与 analyze 要扫全文件所以最长；fs/search、
-// evtlog、usn 探针侧自带 15s 内部预算，代理放宽让 truncated 语义有机会
-// 送达而不是被代理先掐；collect 是 128MB zip 流式传输给 120s。
-// 只读：消费方不得修改本表。
-var LiveEndpoints = map[string]LiveEndpoint{
-	"ping":      {Timeout: 5 * time.Second},
-	"fs":        {Timeout: 15 * time.Second},
-	"fs/stat":   {Timeout: 10 * time.Second},
-	"fs/read":   {Timeout: 20 * time.Second, FileRead: true},
-	"fs/hash":   {Timeout: 30 * time.Second},
-	"processes": {Timeout: 10 * time.Second},
-	"netstat":   {Timeout: 10 * time.Second},
-	"analyze":   {Timeout: 30 * time.Second},
-	"ads":       {Timeout: 10 * time.Second},
-	"fs/search": {Timeout: 35 * time.Second},
-	"procinfo":  {Timeout: 10 * time.Second},
-	"info":      {Timeout: 5 * time.Second},
-	// recon 含回环探测（40 次 × 2s 上限 + 30s 内部预算），代理给 40s：
-	// 比探针内部预算宽，保证探针的 truncated 语义能送达而不是被代理先掐
-	"recon":    {Timeout: 40 * time.Second},
-	"baseline": {Timeout: 10 * time.Second},
-	"accounts": {Timeout: 10 * time.Second},
-	// 进程取证：句柄/线程枚举是内存级操作给 5s；占用者扫描与内存区域
-	// 遍历更重（全系统句柄 + VirtualQueryEx 循环）给 10s，探针侧仍自带
-	// 5s/2s 内部预算，超时返回 truncated
-	"handles":      {Timeout: 5 * time.Second},
-	"handleowners": {Timeout: 10 * time.Second},
-	"threads":      {Timeout: 5 * time.Second},
-	"memscan":      {Timeout: 10 * time.Second},
-	// 持久化总览聚合三套枚举（服务+任务XML+启动项），15s 留足余量；
-	// 外联对端是 Netstat 纯聚合，5s 足够
-	"persistence": {Timeout: 15 * time.Second},
-	"peers":       {Timeout: 5 * time.Second},
-
-	// ---- 2026-11-09 调查面扩展（AI 取证对接基座）----
-	// evtlog/usn 探针侧 15s 内部预算，代理给 20s 保 truncated 语义；
-	// drivers 默认不验签 <1s，verify=1 实测 50 驱动 5.7s 给 15s；
-	// tasks 实测 186 任务 0.5s、services 238 条 0.2s，均给足余量
-	"registry": {Timeout: 10 * time.Second},
-	"evtlog":   {Timeout: 20 * time.Second},
-	"tasks":    {Timeout: 15 * time.Second},
-	"services": {Timeout: 10 * time.Second},
-	"drivers":  {Timeout: 15 * time.Second},
-	"sessions": {Timeout: 10 * time.Second},
-	"netinfo":  {Timeout: 10 * time.Second},
-	"usn":      {Timeout: 20 * time.Second},
-	// 取证打包：128MB zip 流式 + 探针 110s 软预算，代理给 120s；
-	// Collect 子开关默认关（信息暴露面最大的端点，对齐 fs/read 纪律）
-	"collect": {Timeout: 120 * time.Second, Collect: true},
-}
+// LiveEndpoints 白名单预算表——**派生自 internal/livecatalog（单一事实
+// 源）**，本文件不再手维护端点清单：探针加端点只改 catalog 一处，这里
+// 与 MCP host_live 描述自动跟上。探针侧内部预算通常比代理预算短一档
+//（见 catalog 各端点 timeout_ms），保证探针的 truncated 语义有机会
+// 送达而不是被代理先掐。只读：消费方不得修改本表。
+var LiveEndpoints = func() map[string]LiveEndpoint {
+	m := make(map[string]LiveEndpoint, len(livecatalog.All()))
+	for _, ep := range livecatalog.All() {
+		m[ep.Name] = LiveEndpoint{
+			Timeout:  time.Duration(ep.TimeoutMs) * time.Millisecond,
+			FileRead: ep.FileRead,
+			Collect:  ep.Collect,
+		}
+	}
+	return m
+}()
 
 // errTunnelNotConnected 是前端据以渲染"隧道未连接"状态条的错误码。
 // 探针离线、老版本探针、主机 ID 不存在三种情况都归入此码：
