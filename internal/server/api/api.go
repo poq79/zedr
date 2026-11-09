@@ -210,6 +210,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/ai/eval/last", adminOnly(adminH.aiLastEval))
 	// 网页内 AI 助手（方向 B）与 AI 值班队列（方向 C）
 	mux.Handle("POST /api/v1/ai/chat", viewer(adminH.aiChat))
+	mux.Handle("POST /api/v1/ai/chat/stream", viewer(adminH.aiChatStream))
 	mux.Handle("GET /api/v1/ai/ops/queue", viewer(adminH.aiOpsQueue))
 	mux.Handle("GET /api/v1/ai/quality/report", viewer(adminH.aiQualityReport))
 	mux.Handle("POST /api/v1/ai/ops/bulk-review", writer(adminH.aiOpsBulkReview))

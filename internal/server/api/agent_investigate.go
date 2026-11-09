@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"zedr/internal/ai"
+	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
 )
 
@@ -77,6 +78,62 @@ type aiTurn struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
+
+// aiChatStream 是 AI 助手的流式对话端点（SSE）。
+//
+// 用 POST + fetch 流读取而不是 EventSource：事件带 Authorization 头
+// 鉴权（EventSource 不能带自定义头，告警流为此走一次性票据，这里
+// 没必要复用那套）。响应头 X-Accel-Buffering:no 防代理缓冲。
+// 非流式 /api/v1/ai/chat 保留：老前端兼容 + 流式不可用时的回退。
+func (h *adminHandler) aiChatStream(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Question string     `json:"question"`
+		History  []aiTurn   `json:"history"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		httpx.WriteError(w, r, apperr.Unavailable("当前服务端不支持流式响应"))
+		return
+	}
+	hdr := w.Header()
+	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
+	hdr.Set("Cache-Control", "no-cache, no-transform")
+	hdr.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	hist := make([]ai.ChatTurn, 0, len(req.History))
+	for _, t := range req.History {
+		hist = append(hist, ai.ChatTurn{Role: t.Role, Content: t.Content})
+	}
+	var writeErr once
+	emit := func(ev ai.ChatStreamEvent) {
+		if writeErr.done {
+			return
+		}
+		payload, err := marshalJSON(ev)
+		if err != nil {
+			return
+		}
+		frame := "event: " + ev.Type + "\ndata: " + string(payload) + "\n\n"
+		if _, werr := w.Write([]byte(frame)); werr != nil {
+			writeErr.done = true // 客户端断开（停止生成），停止写出
+			return
+		}
+		flusher.Flush()
+	}
+	h.deps.Services.AI.ChatStream(r.Context(), req.Question, hist, emit)
+	if p := principal(r); p != nil && !writeErr.done {
+		h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "ai.chat.stream", "",
+			"question_len="+itoa(len(req.Question)), httpx.ClientIP(r))
+	}
+}
+
+// once 是单布尔栅栏（aiChatStream 专用）：客户端断开后停止写 SSE。
+type once struct{ done bool }
 
 // aiOpsQueue 返回 AI 值班队列（方向 C）。
 func (h *adminHandler) aiOpsQueue(w http.ResponseWriter, r *http.Request) {

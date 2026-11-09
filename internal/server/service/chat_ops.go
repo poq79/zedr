@@ -66,6 +66,32 @@ func (s *AIService) Chat(ctx context.Context, question string, history []ai.Chat
 		chatToolExec{ex: NewMCPExecutor(s, s.live)}), nil
 }
 
+// ChatStream 是流式版 Chat：同一护栏与降级策略，增量事件经 emit 交给
+// SSE 出口。事件契约见 ai.ChatStreamEvent（delta/thinking/tool_start/
+// tool_end/done/error）。
+func (s *AIService) ChatStream(ctx context.Context, question string, history []ai.ChatTurn, emit func(ai.ChatStreamEvent)) {
+	q := strings.TrimSpace(question)
+	if q == "" {
+		emit(ai.ChatStreamEvent{Type: "error", Text: "问题不能为空"})
+		return
+	}
+	if len(q) > 500 {
+		emit(ai.ChatStreamEvent{Type: "error", Text: "问题过长（上限 500 字）"})
+		return
+	}
+	if len(history) > 12 {
+		history = history[len(history)-12:]
+	}
+	if !s.eng.AgentAvailable() {
+		emit(ai.ChatStreamEvent{Type: "done", Report: &ai.ChatReport{
+			Engine: "none", Degraded: true,
+			DegradedReason: "未配置模型服务：AI 助手需要模型才能对话；告警研判/狩猎/事件叙事等确定性能力不受影响",
+		}})
+		return
+	}
+	s.eng.AgentChatStream(ctx, q, history, mcpToolsAsAgentTools(), chatToolExec{ex: NewMCPExecutor(s, s.live)}, emit)
+}
+
 // ---------------- C：AI 值班队列（2026-11 方向 C） ----------------
 
 // 设计依据（2026-11 取证）：agentic 工作流应"只读/仅建议起步 + 人审批门 +
