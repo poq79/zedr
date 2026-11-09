@@ -109,6 +109,13 @@ async function logout() {
   auth.token = null;
 }
 
+// authHeaders 供自管响应流的调用方（AI 对话 SSE）复用同一套鉴权。
+export function authHeaders(accept: string): Record<string, string> {
+  const headers: Record<string, string> = { Accept: accept };
+  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
+  return headers;
+}
+
 export const api = {
   get: <T>(p: string) => request<T>(p),
   post: <T>(p: string, body?: unknown) => request<T>(p, { method: 'POST', body }),
