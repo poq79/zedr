@@ -306,6 +306,10 @@ type RuleFPStat struct {
 	FalsePos    int     `json:"false_pos"`
 	FPRate      float64 `json:"fp_rate"`
 	HandledRate float64 `json:"-"`
+	// TuneCandidate 标记"调优候选"：已处置 ≥5 条且误报率 ≥80%——
+	// 调研口径是"每规则 TP 率 <10% 进调优清单"（2026-11-06，
+	// 来源见 overview.md），保守取 80% 起标，宁缺毋滥。
+	TuneCandidate bool `json:"tune_candidate"`
 }
 
 // ListRuleFPStats 统计过去 window 内各规则的误报率，返回误报率最高的前 5 条
@@ -344,9 +348,10 @@ func (s *StatsService) ListRuleFPStats(ctx context.Context, window time.Duration
 		if a.handled < 5 {
 			continue
 		}
+		fr := float64(a.fp) / float64(a.handled)
 		out = append(out, RuleFPStat{
 			RuleID: id, Handled: a.handled, FalsePos: a.fp,
-			FPRate: float64(a.fp) / float64(a.handled),
+			FPRate: fr, TuneCandidate: a.handled >= 5 && fr >= 0.8,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].FPRate > out[j].FPRate })
