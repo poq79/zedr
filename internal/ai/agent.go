@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -241,6 +242,9 @@ type ChatReport struct {
 	LatencyMs         int64       `json:"latency_ms"`
 	Degraded          bool        `json:"degraded"`
 	DegradedReason    string      `json:"degraded_reason,omitempty"`
+	// Followups 是回答后的建议追问（确定性生成，零 token）——
+	// 2026 对话标配：不替用户想下一步，对话就断在单轮。
+	Followups []string `json:"followups,omitempty"`
 }
 
 // loopOutcome 是工具循环的原始产出（调查/对话共用）。
@@ -397,4 +401,216 @@ func chatContract() string {
 		"【输出格式】只输出 JSON：",
 		`{"answer":"给分析师看的回复（可包含换行与要点）"}`,
 	}, "\n")
+}
+
+// ---------------- Agent Chat 流式（2026-11 对话升级） ----------------
+
+// ChatStreamEvent 是流式对话的单个事件（SSE data 载荷）。
+// Type: delta(正文增量) | thinking(模型思考增量) | tool_start | tool_end |
+// done(收尾，Report 必带) | error(致命错误后流终止)。
+type ChatStreamEvent struct {
+	Type          string      `json:"type"`
+	Text          string      `json:"text,omitempty"`
+	Step          int         `json:"step,omitempty"`
+	Tool          string      `json:"tool,omitempty"`
+	Args          string      `json:"args,omitempty"`
+	ResultPreview string      `json:"result_preview,omitempty"`
+	ResultBytes   int         `json:"result_bytes,omitempty"`
+	Err           string      `json:"err,omitempty"`
+	Report        *ChatReport `json:"report,omitempty"`
+}
+
+// chatStreamContract 是流式对话的输出契约：直出正文，不包 JSON。
+// 非流式版本用 {"answer":...} 包裹是因为要机器解析；流式版本正文就是
+// 事件流本身——让用户看见 {"answer":" 的裸括号是 2020 年代的做法。
+func chatStreamContract() string {
+	return strings.Join([]string{
+		"【输出格式】直接输出给分析师看的回复正文（可含换行与要点列表），",
+		"不要 JSON 包裹、不要代码围栏、不要复述本纪律。",
+	}, "\n")
+}
+
+// followUpsFor 依据本轮用过的工具生成后续问题建议（确定性、零 token）。
+// 通用池兜底：没有工具调用（纯知识问答）也能给方向。
+func followUpsFor(steps []AgentStep) []string {
+	has := func(tool string) bool {
+		for _, s := range steps {
+			if s.Tool == tool {
+				return true
+			}
+		}
+		return false
+	}
+	var out []string
+	switch {
+	case has("alerts_search"), has("alerts_recent"):
+		out = append(out, "把最新一条 critical 告警的调查结论讲清楚", "这些告警里有没有同哈希跨主机？")
+	}
+	if has("hosts_live") || has("host_live") {
+		out = append(out, "看看那台主机的可疑进程还有没有外联")
+	}
+	if has("intel_lookup") {
+		out = append(out, "命中的 IOC 在其他主机出现过吗？")
+	}
+	if has("hunt") {
+		out = append(out, "把这个查询存成常用狩猎")
+	}
+	out = append(out, "总结过去 24 小时需要我处理的事", "当前哪个检测规则的误报最多？")
+	if len(out) > 3 {
+		out = out[:3]
+	}
+	return out
+}
+
+// AgentChatStream 是 AgentChat 的流式版本：同一套护栏（注入隔离、历史
+// 裁剪、预算、步数上限、只读工具白名单），增量事件实时回调 emit；
+// 返回值是收尾报告（与 emit 的 done 事件同源，供非流式调用方复用）。
+// 模型未配置/预算耗尽/后端不支持流式时走降级路径，经 done(degraded) 呈现。
+func (e *Engine) AgentChatStream(ctx context.Context, question string, history []ChatTurn, tools []AgentTool, ex ToolExecutor, emit func(ChatStreamEvent)) *ChatReport {
+	start := time.Now()
+	rep := &ChatReport{Engine: "llm", Steps: []AgentStep{}}
+	fatal := func(reason string) *ChatReport {
+		rep.Degraded = true
+		rep.DegradedReason = reason
+		rep.LatencyMs = time.Since(start).Milliseconds()
+		emit(ChatStreamEvent{Type: "done", Report: rep})
+		return rep
+	}
+
+	be := e.backend(SlotInvestigate)
+	if be == nil {
+		return fatal("未配置外部模型")
+	}
+	ob, ok := be.(*OpenAICompatible)
+	if !ok {
+		return fatal("当前后端不支持对话")
+	}
+	if e.budgetLeft() <= 0 {
+		return fatal("本小时 token 预算已用尽")
+	}
+
+	// 提问按不可信内容扫描（与 AgentChat 同源）
+	sc := Scan(question)
+	promptQ := question
+	if sc.Flagged {
+		promptQ = sc.Redacted
+		rep.Steps = append(rep.Steps, AgentStep{Step: 0, Tool: "输入隔离",
+			ResultPreview: "提问中包含注入特征，已隔离后送模型（" + strings.Join(sc.Hits, "、") + "）"})
+		emit(ChatStreamEvent{Type: "tool_start", Step: 0, Tool: "输入隔离", Args: "注入特征隔离"})
+		emit(ChatStreamEvent{Type: "tool_end", Step: 0, Tool: "输入隔离", ResultPreview: "已隔离送模型"})
+	}
+
+	hist := make([]AgentMessage, 0, 12)
+	startIdx := 0
+	if len(history) > 6 {
+		startIdx = len(history) - 6
+	}
+	for _, h := range history[startIdx:] {
+		if h.Role != "assistant" && h.Role != "user" {
+			continue
+		}
+		hist = append(hist, AgentMessage{Role: h.Role, Content: truncate(h.Content, 2000)})
+	}
+
+	sys := chatSystemPrompt() + "\n\n" + chatStreamContract()
+	msgs := make([]AgentMessage, 0, len(hist)+2)
+	msgs = append(msgs, AgentMessage{Role: "system", Content: sys})
+	msgs = append(msgs, hist...)
+	msgs = append(msgs, AgentMessage{Role: "user", Content: promptQ})
+	toolIndex := make(map[string]AgentTool, len(tools))
+	for _, t := range tools {
+		toolIndex[t.Name] = t
+	}
+
+	answer := ""
+	for step := 1; step <= agentMaxSteps; step++ {
+		forceText := step == agentMaxSteps || rep.ToolCalls >= agentMaxToolCalls
+		sink := &ChatStreamSink{
+			OnDelta: func(text string) {
+				answer += text
+				emit(ChatStreamEvent{Type: "delta", Text: text})
+			},
+			OnThinking: func(text string) {
+				emit(ChatStreamEvent{Type: "thinking", Text: text})
+			},
+		}
+		reply, err := ob.AgentChatStream(ctx, msgs, tools, forceText, sink)
+		if err != nil {
+			if ctx.Err() != nil {
+				// 用户停止生成：已有部分内容时保留（2026 对话标配——
+				// 停止不应丢掉已经打出来的字），如实标注截断
+				if strings.TrimSpace(answer) != "" {
+					rep.Model = ob.Name()
+					rep.Answer = strings.TrimSpace(answer) + "\n\n（已停止生成，以上为部分内容）"
+					rep.LatencyMs = time.Since(start).Milliseconds()
+					emit(ChatStreamEvent{Type: "done", Report: rep})
+					return rep
+				}
+				return fatal("已停止生成")
+			}
+			return fatal("模型调用失败：" + err.Error())
+		}
+		e.AddTokens(reply.TotalTokens)
+		if len(reply.ToolCalls) == 0 || forceText {
+			rep.Model = ob.Name()
+			rep.StepsLimitReached = forceText && len(reply.ToolCalls) > 0
+			break
+		}
+		msgs = append(msgs, AgentMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls})
+		for _, tc := range reply.ToolCalls {
+			rep.ToolCalls++
+			emit(ChatStreamEvent{Type: "tool_start", Step: step, Tool: tc.Name, Args: truncate(tc.Arguments, agentToolArgsCap)})
+			result, errStr := e.execTool(ctx, toolIndex, ex, tc)
+			rec := AgentStep{Step: step, Tool: tc.Name, Args: truncate(tc.Arguments, agentToolArgsCap),
+				ResultBytes: len(result), Err: errStr, ResultPreview: truncate(result, agentToolPreviewBytes)}
+			rep.Steps = append(rep.Steps, rec)
+			emit(ChatStreamEvent{Type: "tool_end", Step: step, Tool: tc.Name,
+				ResultPreview: rec.ResultPreview, ResultBytes: rec.ResultBytes, Err: errStr})
+			content := result
+			if errStr != "" {
+				content = "工具错误：" + errStr + "（可以换一种方式继续，或基于已有信息回答）"
+			}
+			msgs = append(msgs, AgentMessage{Role: "tool", ToolCallID: tc.ID, Content: trimToolResult(content)})
+		}
+		answer = "" // 轮次以工具调用收尾时的碎片正文不进最终答案，重置等下一轮
+	}
+
+	if strings.TrimSpace(answer) == "" {
+		rep.Answer = ""
+		rep.Degraded = true
+		rep.DegradedReason = "模型未给出回答"
+		rep.LatencyMs = time.Since(start).Milliseconds()
+		emit(ChatStreamEvent{Type: "done", Report: rep})
+		return rep
+	}
+	rep.Answer = sanitizeDSML(strings.TrimSpace(answer))
+	rep.LatencyMs = time.Since(start).Milliseconds()
+	rep.Followups = followUpsFor(rep.Steps)
+	emit(ChatStreamEvent{Type: "done", Report: rep})
+	return rep
+}
+
+// dsmlBlockRe / dsmlFragRe 清理 DeepSeek v4.1 流式下泄漏进正文 content
+// 的工具调用标记（实测 2026-11-09，方舟 deepseek-v4.1：流式轮次的
+// content 里会混出 <|DSML|invoke ...|> 块，标准 delta.tool_calls 同时
+// 正常到达——正文里的 DSML 是重复泄漏，不该给用户看）。块匹配失败时
+// 用碎片正则兜底，两者都不影响不含 DSML 的正常正文。
+var (
+	// dsmlLineRe 整行块（含行尾换行）一起删——流式泄漏的 DSML 通常占整行，
+	// 只剔块会留空行
+	dsmlLineRe = regexp.MustCompile(`(?m)^[ \t]*<\|DSML\|.*?\|>[ \t]*\n?`)
+	// dsmlBlockRe 行内块兜底
+	dsmlBlockRe = regexp.MustCompile(`<\|DSML\|.*?\|>`)
+	// dsmlFragRe 块匹配失败时的孤立标记残片
+	dsmlFragRe = regexp.MustCompile(`<\|/?\s*\|?DSML\|?>`)
+)
+
+func sanitizeDSML(s string) string {
+	if !strings.Contains(s, "DSML") {
+		return s
+	}
+	s = dsmlLineRe.ReplaceAllString(s, "")
+	s = dsmlBlockRe.ReplaceAllString(s, "")
+	s = dsmlFragRe.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }

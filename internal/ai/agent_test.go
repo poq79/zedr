@@ -282,3 +282,18 @@ func TestAgentChatWithoutModel(t *testing.T) {
 		t.Fatal("降级时不应编造回答")
 	}
 }
+
+// TestSanitizeDSML 锁死 DeepSeek v4.1 流式 DSML 泄漏的清理行为
+// （实测 2026-11-09：方舟流式 content 混出工具标记，标准 tool_calls 同时正常）。
+func TestSanitizeDSML(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"纯 DSML 块", `<|DSML|invoke name="query_alerts"><|DSML|parameter name="limit">20<|/|DSML|>`, ""},
+		{"正文夹 DSML", "当前有 3 条 critical 告警。\n<|DSML|invoke name=\"get_alert\">x<|/|DSML|>\n最严重的是暴破成功。", "当前有 3 条 critical 告警。\n最严重的是暴破成功。"},
+		{"正常正文不动", "结论：建议人工复核告警 ffd563d0。", "结论：建议人工复核告警 ffd563d0。"},
+	}
+	for _, c := range cases {
+		if got := sanitizeDSML(c.in); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}

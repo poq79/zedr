@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -929,4 +930,210 @@ func probeByChat(client *http.Client, base, apiKey, model string, start time.Tim
 	}
 	return &ProbeResult{OK: true, LatencyMs: time.Since(start).Milliseconds(),
 		Detail: "对话探测成功，模型可响应"}
+}
+
+// ChatStreamSink 接收一次流式对话的增量事件。所有回调同步调用，
+// 实现方必须快速返回（一般直接喂给 SSE 出口），重活交给调用方自己排队。
+type ChatStreamSink struct {
+	// OnDelta 收到一段正文增量（可能为空串，跳过即可）。
+	OnDelta func(text string)
+	// OnThinking 收到一段思考过程增量（reasoning 模型的 reasoning_content）。
+	// 只做"模型在思考"的呈现，不进最终正文。
+	OnThinking func(text string)
+	// OnToolStart 某个工具调用的增量开始/更新（按 index 聚合）。
+	// name/args 是截至当前的全部聚合值，args 会随 delta 增长多次回调。
+	OnToolUpdate func(index int, id, name, args string)
+	// OnUsage 请求结束时的 token 用量（仅在服务端回传 usage 时触发）。
+	OnUsage func(totalTokens int)
+}
+
+// AgentChatStream 是 AgentChat 的流式版本：SSE 逐块解析 chat/completions
+// 的增量（stream:true + stream_options.include_usage），增量拼装规则
+// （2026-11-09 联网核对，来源见 overview.md）：
+//   - 正文在 choices[0].delta.content，按块追加；
+//   - 工具调用按 delta.tool_calls[i].index 聚合：首块带 id/name，
+//     arguments 逐块追加；
+//   - finish_reason 出现后该 choice 不再有增量；
+//   - usage 在最后一个 chunk（需要 include_usage，且该 chunk 的
+//     choices 为空数组）；
+//   - 终止符是单独一行 data: [DONE]。
+//
+// 兼容性：火山方舟/DeepSeek 的 OpenAI 兼容层同样回这一形状；reasoning
+// 系模型的思考内容在 delta.reasoning_content，与本线正文分离。
+// 非流式降级：若网关不支持 stream（响应不是 event-stream），回退整段
+// 解析并一次性回调，调用方无感。
+func (o *OpenAICompatible) AgentChatStream(ctx context.Context, msgs []AgentMessage, tools []AgentTool, forceText bool, sink *ChatStreamSink) (*AgentReply, error) {
+	wire := make([]wireAgentMessage, 0, len(msgs))
+	for _, m := range msgs {
+		wm := wireAgentMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			wm.ToolCalls = append(wm.ToolCalls, wireToolCall{ID: tc.ID, Type: "function",
+				Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{tc.Name, tc.Arguments}})
+		}
+		wire = append(wire, wm)
+	}
+	tdefs := make([]wireToolDef, 0, len(tools))
+	for _, t := range tools {
+		var d wireToolDef
+		d.Type = "function"
+		d.Function.Name = t.Name
+		d.Function.Description = t.Description
+		d.Function.Parameters = t.Parameters
+		tdefs = append(tdefs, d)
+	}
+	body := map[string]any{
+		"model": o.model, "messages": wire, "tools": tdefs,
+		"temperature": o.temperature, "max_tokens": o.maxTokens,
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+	}
+	if forceText {
+		body["tool_choice"] = "none"
+	} else {
+		body["tool_choice"] = "auto"
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiEndpoint(o.baseURL, "/chat/completions"), bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if o.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	}
+	res, err := o.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("模型请求失败: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
+		return nil, fmt.Errorf("模型返回 HTTP %d: %s", res.StatusCode, truncate(string(b), 300))
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "event-stream") {
+		// 网关不支持流式：退回非流式解析（同请求体去掉 stream 字段重发）
+		return o.agentChatNonStream(ctx, msgs, tools, forceText, sink)
+	}
+
+	reply := &AgentReply{}
+	// 工具调用增量按 index 聚合（协议按 index 对齐，不是数组顺序）
+	type tcAcc struct{ id, name, args string }
+	acc := map[int]*tcAcc{}
+	sc := bufio.NewScanner(res.Body)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	done := false
+	for sc.Scan() && !done {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue // 注释/心跳
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			done = true
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *struct {
+				TotalTokens int `json:"total_tokens"`
+			} `json:"usage"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue // 单块坏数据不终结整条流——模型侧偶发残块属常态
+		}
+		if chunk.Error != nil {
+			return nil, fmt.Errorf("模型错误: %s", chunk.Error.Message)
+		}
+		for _, ch := range chunk.Choices {
+			if ch.Delta.Content != "" {
+				reply.Content += ch.Delta.Content
+				if sink != nil && sink.OnDelta != nil {
+					sink.OnDelta(ch.Delta.Content)
+				}
+			}
+			if ch.Delta.ReasoningContent != "" && sink != nil && sink.OnThinking != nil {
+				sink.OnThinking(ch.Delta.ReasoningContent)
+			}
+			for _, tc := range ch.Delta.ToolCalls {
+				a := acc[tc.Index]
+				if a == nil {
+					a = &tcAcc{}
+					acc[tc.Index] = a
+				}
+				if tc.ID != "" {
+					a.id = tc.ID
+				}
+				if tc.Function.Name != "" {
+					a.name = tc.Function.Name
+				}
+				a.args += tc.Function.Arguments
+				if sink != nil && sink.OnToolUpdate != nil {
+					sink.OnToolUpdate(tc.Index, a.id, a.name, a.args)
+				}
+			}
+		}
+		if chunk.Usage != nil {
+			reply.TotalTokens = chunk.Usage.TotalTokens
+			if sink != nil && sink.OnUsage != nil {
+				sink.OnUsage(chunk.Usage.TotalTokens)
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("流式响应中断: %w", err)
+	}
+	for _, a := range acc {
+		reply.ToolCalls = append(reply.ToolCalls, ToolCall{ID: a.id, Name: a.name, Arguments: a.args})
+	}
+	return reply, nil
+}
+
+// agentChatNonStream 是流式不可用时的降级路径：同参数去掉 stream 重发，
+// 结果一次性回调（调用方渲染无感，只是少了打字机效果）。
+func (o *OpenAICompatible) agentChatNonStream(ctx context.Context, msgs []AgentMessage, tools []AgentTool, forceText bool, sink *ChatStreamSink) (*AgentReply, error) {
+	reply, err := o.AgentChat(ctx, msgs, tools, forceText)
+	if err != nil {
+		return nil, err
+	}
+	if sink != nil {
+		if reply.Content != "" && sink.OnDelta != nil {
+			sink.OnDelta(reply.Content)
+		}
+		for i, tc := range reply.ToolCalls {
+			if sink.OnToolUpdate != nil {
+				sink.OnToolUpdate(i, tc.ID, tc.Name, tc.Arguments)
+			}
+		}
+		if reply.TotalTokens > 0 && sink.OnUsage != nil {
+			sink.OnUsage(reply.TotalTokens)
+		}
+	}
+	return reply, nil
 }
