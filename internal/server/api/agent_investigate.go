@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"net/http"
 
 	"zedr/internal/ai"
@@ -87,8 +88,9 @@ type aiTurn struct {
 // 非流式 /api/v1/ai/chat 保留：老前端兼容 + 流式不可用时的回退。
 func (h *adminHandler) aiChatStream(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Question string     `json:"question"`
-		History  []aiTurn   `json:"history"`
+		Question string   `json:"question"`
+		Scope    string   `json:"scope"`
+		History  []aiTurn `json:"history"`
 	}
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		httpx.WriteError(w, r, err)
@@ -125,7 +127,7 @@ func (h *adminHandler) aiChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		flusher.Flush()
 	}
-	h.deps.Services.AI.ChatStream(r.Context(), req.Question, hist, emit)
+	h.deps.Services.AI.ChatStream(r.Context(), req.Question, req.Scope, hist, emit)
 	if p := principal(r); p != nil && !writeErr.done {
 		h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "ai.chat.stream", "",
 			"question_len="+itoa(len(req.Question)), httpx.ClientIP(r))
@@ -143,6 +145,21 @@ func (h *adminHandler) aiOpsQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, list)
+}
+
+// aiBriefing 返回今日值班简报（纯确定性聚合，零模型调用——
+// 简报的可靠性优先于聪明；AI 解读由用户点击"追问 AI"进作用域对话）。
+func (h *adminHandler) aiBriefing(w http.ResponseWriter, r *http.Request) {
+	hours := 24
+	if v, err := strconv.Atoi(r.URL.Query().Get("hours")); err == nil && v > 0 && v <= 168 {
+		hours = v
+	}
+	b, err := h.deps.Services.AI.DailyBriefing(r.Context(), hours)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, b)
 }
 
 // aiQualityReport 返回研判质量对账（AI 结论 × 分析师处置）。
