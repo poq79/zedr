@@ -69,7 +69,7 @@ func (s *AIService) Chat(ctx context.Context, question string, history []ai.Chat
 // ChatStream 是流式版 Chat：同一护栏与降级策略，增量事件经 emit 交给
 // SSE 出口。事件契约见 ai.ChatStreamEvent（delta/thinking/tool_start/
 // tool_end/done/error）。
-func (s *AIService) ChatStream(ctx context.Context, question string, history []ai.ChatTurn, emit func(ai.ChatStreamEvent)) {
+func (s *AIService) ChatStream(ctx context.Context, question, scope string, history []ai.ChatTurn, emit func(ai.ChatStreamEvent)) {
 	q := strings.TrimSpace(question)
 	if q == "" {
 		emit(ai.ChatStreamEvent{Type: "error", Text: "问题不能为空"})
@@ -81,6 +81,14 @@ func (s *AIService) ChatStream(ctx context.Context, question string, history []a
 	}
 	if len(history) > 12 {
 		history = history[len(history)-12:]
+	}
+	// 作用域上下文：注入到本轮消息**尾部**、紧贴问题——lost in the middle
+	// 的注意力规律下，开头和结尾最容易被看到（2026-11-11 定向调研）。
+	// scope 是"用户当前正在看的对象"的裁剪摘要，随 chip 可摘除；
+	// 注入前截断，防止整页粘贴吃掉上下文预算。
+	scope = strings.TrimSpace(scope)
+	if scope != "" {
+		q += "\n\n[分析师当前正在查看的页面上下文]\n" + truncate(scope, 1200)
 	}
 	if !s.eng.AgentAvailable() {
 		emit(ai.ChatStreamEvent{Type: "done", Report: &ai.ChatReport{
