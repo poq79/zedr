@@ -42,6 +42,12 @@ type AgentStep struct {
 	ResultBytes   int    `json:"result_bytes"`
 	Err           string `json:"err,omitempty"`
 	LatencyMs     int64  `json:"latency_ms"`
+	// InjectionHit/InjectionNote：工具结果注入扫描命中标记（toolguard.go）。
+	// 命中时结果数据**不删除**（恶意内容是取证证据），只给回喂文本加声明头
+	// 并在此留痕供前端轨迹展示。omitempty：未命中时字段不出场，
+	// 旧版 JSON 输出字节级不变（前端轨迹渲染向后兼容）。
+	InjectionHit  bool   `json:"injection_hit,omitempty"`
+	InjectionNote string `json:"injection_note,omitempty"`
 }
 
 // AgentReport 是 Agent 调查的最终报告（结构对齐 Investigation，便于界面复用）。
@@ -312,12 +318,15 @@ func (e *Engine) runToolLoop(ctx context.Context, sys, user string, history []Ag
 			rec.ResultBytes = len(result)
 			rec.Err = errStr
 			rec.ResultPreview = truncate(result, agentToolPreviewBytes)
-			out.steps = append(out.steps, rec)
 			content := result
 			if errStr != "" {
 				content = "工具错误：" + errStr + "（可以换一种方式继续，或基于已有信息回答）"
 			}
-			msgs = append(msgs, AgentMessage{Role: "tool", ToolCallID: tc.ID, Content: trimToolResult(content)})
+			// 工具结果注入防线：喂什么扫什么（先截断后扫描），命中则加声明头
+			// + 步骤打标，数据本体不动（toolguard.go，纵深防御之一层）
+			fed := guardToolResult(&rec, trimToolResult(content))
+			out.steps = append(out.steps, rec)
+			msgs = append(msgs, AgentMessage{Role: "tool", ToolCallID: tc.ID, Content: fed})
 		}
 	}
 	out.errReason = "模型在步数上限内未给出回答"
@@ -563,14 +572,17 @@ func (e *Engine) AgentChatStream(ctx context.Context, question string, history [
 			result, errStr := e.execTool(ctx, toolIndex, ex, tc)
 			rec := AgentStep{Step: step, Tool: tc.Name, Args: truncate(tc.Arguments, agentToolArgsCap),
 				ResultBytes: len(result), Err: errStr, ResultPreview: truncate(result, agentToolPreviewBytes)}
-			rep.Steps = append(rep.Steps, rec)
-			emit(ChatStreamEvent{Type: "tool_end", Step: step, Tool: tc.Name,
-				ResultPreview: rec.ResultPreview, ResultBytes: rec.ResultBytes, Err: errStr})
 			content := result
 			if errStr != "" {
 				content = "工具错误：" + errStr + "（可以换一种方式继续，或基于已有信息回答）"
 			}
-			msgs = append(msgs, AgentMessage{Role: "tool", ToolCallID: tc.ID, Content: trimToolResult(content)})
+			// 与 runToolLoop 同一条注入防线：先截断后扫描，命中只加声明头
+			// + 步骤打标（toolguard.go）
+			fed := guardToolResult(&rec, trimToolResult(content))
+			rep.Steps = append(rep.Steps, rec)
+			emit(ChatStreamEvent{Type: "tool_end", Step: step, Tool: tc.Name,
+				ResultPreview: rec.ResultPreview, ResultBytes: rec.ResultBytes, Err: errStr})
+			msgs = append(msgs, AgentMessage{Role: "tool", ToolCallID: tc.ID, Content: fed})
 		}
 		answer = "" // 轮次以工具调用收尾时的碎片正文不进最终答案，重置等下一轮
 	}
