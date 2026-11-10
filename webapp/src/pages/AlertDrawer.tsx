@@ -120,6 +120,12 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
           <Button onClick={() => setStatus('resolved')}>标记已解决</Button>
           <Button onClick={() => setStatus('false_positive')}>标记误报</Button>
           <div className="flex-1" />
+          <Button variant="ghost" onClick={() => window.dispatchEvent(new CustomEvent('zedr:ai-context', {
+            detail: { open: true, text: '告警 ' + (a?.id || '') + '：' + (a?.title || '') +
+              '（严重度 ' + (a?.severity || '') + '，' + (a?.score || 0) + ' 分' +
+              (a?.process_name ? '，进程 ' + a.process_name : '') +
+              (a?.image_path ? '，路径 ' + a.image_path : '') + '）' },
+          }))} title="打开 AI 助手并带上这条告警的上下文">问 AI</Button>
           <Button variant="ghost" onClick={() => allow('path')}><ShieldBan size={13} /> 信任此路径</Button>
           {a.hash_sha256 && <Button variant="ghost" onClick={() => allow('hash')}>按哈希加白</Button>}
           {a.hash_sha256 && <Button variant="ghost" onClick={blacklist}>加入黑名单</Button>}

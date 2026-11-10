@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
-import { Card, CardTitle, EmptyState, Skeleton } from '../components/ui/basics';
+import { Badge, Button, Card, CardTitle, EmptyState, Skeleton } from '../components/ui/basics';
 import { TimelineChart, SeverityDonut, BarList, type HourPoint } from '../components/charts';
 import { useError } from '../lib/hooks';
 
@@ -40,6 +40,8 @@ export function OverviewPage() {
 
   return (
     <div>
+      <BriefingCard />
+
       {/* KPI 数据带：一格面板 + 内部发丝线分隔，替代四张浮动卡片。
           数字一律 mono——仪表读数是本系统的记忆锚点（UI-DESIGN §3） */}
       <div className="mb-3.5 grid grid-cols-2 divide-border-soft border border-border-soft rounded-md bg-card xl:grid-cols-4 xl:divide-x">
@@ -108,3 +110,90 @@ function Kpi({ loading, label, value, suffix, sub, tone }: {
 }
 
 export { EmptyState };
+
+/* ---------------- 今日值班简报（主动式 AI，2026-11 对话升级轮） ----------------
+   Copilot Today 三分法口径：需要立即关注 / 夜间漏斗 / 基础设施健康。
+   简报是纯确定性聚合（零模型调用，可靠性优先于聪明），角标写具体
+   ——"统计汇总"而非裸"AI"徽章（模糊 AI 标注反而增加回避）；
+   "让 AI 解读"把简报作为作用域上下文喂给流式助手（用户主动点击才花 token）。 */
+
+interface Briefing {
+  window_hours: number; generated_at: string;
+  alerts_new: number; critical_new: number; events_open: number;
+  chain_hits: number; ops_pending: number; hosts_offline: number;
+  top_rules?: { rule_id: string; count: number }[];
+  recent_critical?: { id: string; title: string; hostname: string; score: number; occurred_at: string }[];
+}
+
+function dispatchAIContext(text: string) {
+  window.dispatchEvent(new CustomEvent('zedr:ai-context', { detail: { text, open: true } }));
+}
+
+function BriefingCard() {
+  const [b, setB] = useState<Briefing | null>(null);
+  useEffect(() => {
+    api.get<Briefing>('/api/v1/ai/briefing?hours=24').then(setB).catch(() => setB(null));
+  }, []);
+
+  const askText = b ? `结合这份值班简报，指出过去 ${b.window_hours} 小时最需要处理的三件事：` +
+    `新增告警 ${b.alerts_new}（critical ${b.critical_new}）、新开事件 ${b.events_open}、攻击链命中 ${b.chain_hits}、` +
+    `值班队列待审 ${b.ops_pending}、失联主机 ${b.hosts_offline}、` +
+    `高发规则 ${(b.top_rules || []).map((r) => r.rule_id).join('/') || '无'}。` : '';
+  const attention = (b?.critical_new || 0) + (b?.events_open || 0);
+
+  return (
+    <Card className="mb-3.5 px-4 pb-3.5 pt-3.5">
+      <div className="mb-2.5 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <CardTitle>今日值班简报</CardTitle>
+          <Badge tone="neutral" title="纯确定性聚合，零模型调用——AI 解读由你点击后进入对话">统计汇总 · 近 {b?.window_hours ?? 24}h</Badge>
+        </div>
+        {!!b && (
+          <Button size="sm" variant="ghost" onClick={() => dispatchAIContext(askText)}
+            title="把简报作为上下文发给 AI 助手，让它解读并给优先级">
+            让 AI 解读
+          </Button>
+        )}
+      </div>
+      {!b ? (
+        <div className="text-[12px] text-faint">简报加载中…</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            {[
+              { label: '需立即关注', value: attention, tone: attention ? 'crit' : 'ok', sub: `critical ${b.critical_new} · 新事件 ${b.events_open}` },
+              { label: '新增告警', value: b.alerts_new, tone: 'neutral', sub: '全部严重度' },
+              { label: '攻击链命中', value: b.chain_hits, tone: b.chain_hits ? 'warn' : 'neutral', sub: 'CHAIN-* 规则' },
+              { label: '队列待审', value: b.ops_pending, tone: b.ops_pending ? 'warn' : 'ok', sub: 'AI 值班队列' },
+              { label: '失联主机', value: b.hosts_offline, tone: b.hosts_offline ? 'warn' : 'ok', sub: '防护面缺口' },
+            ].map((k) => (
+              <div key={k.label} className="rounded-md border border-border-soft bg-secondary/40 px-3 py-2" title={k.sub}>
+                <div className="text-[10.5px] text-faint">{k.label}</div>
+                <div className={`mt-0.5 font-mono text-[17px] font-semibold tabular-nums ${k.tone === 'crit' ? 'text-crit' : k.tone === 'warn' ? 'text-warn' : k.tone === 'ok' ? 'text-ok' : 'text-foreground'}`}>{k.value}</div>
+                <div className="text-[10px] text-faint">{k.sub}</div>
+              </div>
+            ))}
+          </div>
+          {!!b.recent_critical?.length && (
+            <div className="mt-2.5">
+              <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-faint">最近的 critical</div>
+              <div className="grid gap-1">
+                {b.recent_critical.map((a) => (
+                  <div key={a.id} className="flex items-center gap-2 text-[11.5px]">
+                    <span className="rounded border border-crit/30 bg-crit-soft px-1.5 py-px text-[10px] font-semibold text-crit">严重</span>
+                    <b className="min-w-0 flex-1 truncate" title={a.title}>{a.title}</b>
+                    <span className="text-faint">{a.hostname} · {a.score} 分</span>
+                    <a href={`#/alerts?open=${a.id}`} className="text-[11px] text-primary hover:underline">Open ›</a>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {!!b.top_rules?.length && (
+            <div className="mt-2 text-[11px] text-faint">高发规则：{b.top_rules.map((r) => `${r.rule_id}×${r.count}`).join(' · ')}</div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}

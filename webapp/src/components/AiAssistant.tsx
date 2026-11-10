@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Eraser, Send, Square, X } from 'lucide-react';
+import { Bot, Eraser, Plus, Send, Square, X } from 'lucide-react';
 import { api, authHeaders } from '../lib/api';
-import { Badge, Button, Card, Input } from './ui/basics';
+import { Badge, Button, Card, Input, Select } from './ui/basics';
 import { useToast } from './ui/overlays';
 
-/* 全局 AI 助手 2.0（2026-11 对话升级）：流式打字机 + 可折叠思考块 +
-   工具调用实时时间线 + 停止生成（保留部分内容）+ 建议追问 + 告警 ID
-   溯源跳转 + 本地会话持久化。纪律与 Agent 调查同源：只读工具、每一步
-   可见、无模型时诚实降级。协议调研（2026-11-09，来源见 overview.md）：
-   EventSource 不支持 POST，用 fetch + ReadableStream 自解析 SSE 帧。 */
+/* 全局 AI 助手 2.1：流式对话 + 作用域上下文（chip 可摘除）+ 多会话。
+   纪律与 Agent 调查同源：只读工具、每一步可见、无模型时诚实降级。
+   作用域对话（2026-11-11 定向调研）：告警/主机详情"问 AI"入口经
+   window 事件注入"当前正在看的对象"裁剪摘要——chip 行是审计面
+   （发送前可见、可逐个摘除），scope 注入到本轮消息尾部紧贴问题
+   （防 lost in the middle），并随消息固化进会话历史。 */
 
 interface ToolStep {
   step: number; tool: string; args?: string; result_preview?: string;
@@ -25,13 +26,15 @@ interface Msg {
   reply?: ChatReply;
   thinking?: string;
   steps?: ToolStep[];
+  scope?: string; // 发送时固化的上下文快照（回看历史仍锚定当时对象）
   streaming?: boolean;
 }
+interface Session {
+  id: string; name: string; updated: number; msgs: Msg[];
+}
 
-// StreamEv 是 SSE 事件载荷的宽松视图（字段按 event 类型分支取用）。
-type StreamEv = { [k: string]: unknown };
-
-const LS_KEY = 'zedr_ai_chat_v1';
+const LS_KEY = 'zedr_ai_sessions_v1';
+const CONTEXT_EVENT = 'zedr:ai-context';
 
 // 快捷动作库（Purple AI Quick Starts 同款）：空态给方向，不用猜第一句
 const STARTERS = [
@@ -74,50 +77,92 @@ function AnswerText({ text }: { text: string }) {
   );
 }
 
+function newSession(): Session {
+  return { id: `s${Date.now()}${Math.floor(Math.random() * 1000)}`, name: '新会话', updated: Date.now(), msgs: [] };
+}
+
+function loadSessions(): { list: Session[]; active: string } {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const list = JSON.parse(raw) as Session[];
+      if (list.length) {
+        list.sort((a, b) => b.updated - a.updated);
+        return { list: list.slice(0, 20), active: list[0].id };
+      }
+    }
+  } catch { /* 损坏即重置——对话历史不是关键数据 */ }
+  const s = newSession();
+  return { list: [s], active: s.id };
+}
+
 export function AiAssistant() {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [thinking, setThinking] = useState(false);
-  const [msgs, setMsgs] = useState<Msg[]>(() => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      return raw ? (JSON.parse(raw) as Msg[]) : [];
-    } catch { return []; }
-  });
+  // 初始化只跑一次 loadSessions：内部会生成新会话，两次调用会拿到
+  // 两个不同 id，activeId 与列表永不匹配（本轮实测踩过）
+  const [boot] = useState(() => loadSessions());
+  const [sessions, setSessions] = useState<Session[]>(boot.list);
+  const [activeId, setActiveId] = useState<string>(boot.active);
+  const [scope, setScope] = useState(''); // 待发送的上下文 chip（可摘除）
   const [lastEngine, setLastEngine] = useState<string>('');
   const listRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const busyRef = useRef(false);
+
+  const active = sessions.find((s) => s.id === activeId) || sessions[0];
+  const msgs = active?.msgs || [];
 
   useEffect(() => {
-    // 持久化：strip streaming 标记后落 localStorage，刷新不丢会话
+    // 持久化：strip streaming 标记后落 localStorage，刷新不丢
     try {
-      const clean = msgs.slice(-60).map((m) => ({ ...m, streaming: false }));
-      localStorage.setItem(LS_KEY, JSON.stringify(clean));
-    } catch { /* 配额满等静默放弃——对话历史不是关键数据 */ }
-  }, [msgs]);
+      const clean = sessions.map((s) => ({
+        ...s, updated: s.id === activeId ? Date.now() : s.updated,
+        msgs: s.msgs.slice(-60).map((m) => ({ ...m, streaming: false })),
+      }));
+      localStorage.setItem(LS_KEY, JSON.stringify(clean.slice(0, 20)));
+    } catch { /* 配额满等静默放弃 */ }
+  }, [sessions, activeId]);
 
   useEffect(() => {
     api.get<{ stats?: { engine?: string } }>('/api/v1/ai/stats')
       .then((r) => setLastEngine(r.stats?.engine || 'heuristic')).catch(() => {});
   }, [open]);
 
+  // 作用域上下文入口：告警/主机详情的"问 AI"按钮与总览简报的
+  // "让 AI 解读"经 window 事件注入。chip 常驻输入栏上方，可摘除。
+  useEffect(() => {
+    const onCtx = (e: Event) => {
+      const d = (e as CustomEvent<{ text: string; open?: boolean }>).detail;
+      if (!d?.text) return;
+      setScope(d.text);
+      if (d.open) setOpen(true);
+    };
+    window.addEventListener(CONTEXT_EVENT, onCtx);
+    return () => window.removeEventListener(CONTEXT_EVENT, onCtx);
+  }, []);
+
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
   }, [msgs, busy, thinking]);
 
+  const updateActive = (fn: (s: Session) => Session) =>
+    setSessions((prev) => prev.map((s) => (s.id === activeId ? fn(s) : s)));
+
   const patchLast = (fn: (m: Msg) => Msg) =>
-    setMsgs((prev) => {
-      if (!prev.length || prev[prev.length - 1].role !== 'assistant') return prev;
-      return [...prev.slice(0, -1), fn(prev[prev.length - 1])];
+    updateActive((s) => {
+      if (!s.msgs.length || s.msgs[s.msgs.length - 1].role !== 'assistant') return s;
+      return { ...s, msgs: [...s.msgs.slice(0, -1), fn(s.msgs[s.msgs.length - 1])] };
     });
 
   const finalizeLast = (rep: ChatReply) =>
-    setMsgs((prev) => {
-      if (!prev.length || prev[prev.length - 1].role !== 'assistant') return prev;
-      const cur = prev[prev.length - 1];
-      return [...prev.slice(0, -1), { ...cur, streaming: false, content: rep.answer || cur.content, reply: rep }];
+    updateActive((s) => {
+      if (!s.msgs.length || s.msgs[s.msgs.length - 1].role !== 'assistant') return s;
+      const cur = s.msgs[s.msgs.length - 1];
+      return { ...s, msgs: [...s.msgs.slice(0, -1), { ...cur, streaming: false, content: rep.answer || cur.content, reply: rep }] };
     });
 
   const stop = () => {
@@ -132,12 +177,18 @@ export function AiAssistant() {
 
   const ask = useCallback(async (text: string) => {
     const q = text.trim();
-    if (!q || busy) return;
-    const history = msgs.slice(-6).map((m) => ({ role: m.role, content: m.content }));
-    setMsgs((prev) => [...prev, { role: 'user', content: q }, { role: 'assistant', content: '', streaming: true, steps: [] }]);
-    setInput('');
+    if (!q || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setThinking(false);
+    const usedScope = scope; // 固化进消息记录（回看历史仍锚定当时对象）
+    const history = msgs.slice(-6).map((m) => ({ role: m.role, content: m.content }));
+    updateActive((s) => {
+      // 首条用户消息命名会话（截 18 字）
+      const name = s.name === '新会话' && !s.msgs.length ? (q.length > 18 ? q.slice(0, 18) + '…' : q) : s.name;
+      return { ...s, name, msgs: [...s.msgs, { role: 'user', content: q, scope: usedScope || undefined }, { role: 'assistant', content: '', streaming: true, steps: [] }] };
+    });
+    setInput('');
     const ac = new AbortController();
     abortRef.current = ac;
     try {
@@ -145,7 +196,7 @@ export function AiAssistant() {
         method: 'POST',
         headers: authHeaders('text/event-stream'),
         credentials: 'same-origin',
-        body: JSON.stringify({ question: q, history }),
+        body: JSON.stringify({ question: q, scope: usedScope, history }),
         signal: ac.signal,
       });
       if (!res.ok || !res.body) throw new Error('stream unavailable');
@@ -153,60 +204,60 @@ export function AiAssistant() {
       const decoder = new TextDecoder();
       let buffer = '';
       let sawDone = false;
+      const handle = (frame: string) => {
+        let event = 'message';
+        const dataLines: string[] = [];
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) return;
+        let ev: { [k: string]: unknown } | null = null;
+        try { ev = JSON.parse(dataLines.join('\n')); } catch { return; }
+        if (!ev) return;
+        if (event === 'delta' && typeof ev.text === 'string') {
+          patchLast((m) => ({ ...m, content: m.content + ev.text }));
+        } else if (event === 'thinking') {
+          setThinking(true);
+          patchLast((m) => ({ ...m, thinking: (m.thinking || '') + (ev.text || '') }));
+        } else if (event === 'tool_start') {
+          setThinking(false);
+          patchLast((m) => ({ ...m, steps: [...(m.steps || []), {
+            step: Number(ev.step), tool: String(ev.tool), args: typeof ev.args === 'string' ? ev.args : '', running: true,
+          }] }));
+        } else if (event === 'tool_end') {
+          patchLast((m) => {
+            const steps = [...(m.steps || [])];
+            for (let i = steps.length - 1; i >= 0; i--) {
+              if (steps[i].running && steps[i].tool === ev.tool) {
+                steps[i] = { ...steps[i], running: false,
+                  result_preview: typeof ev.result_preview === 'string' ? ev.result_preview : undefined,
+                  result_bytes: typeof ev.result_bytes === 'number' ? ev.result_bytes : undefined,
+                  err: typeof ev.err === 'string' ? ev.err : undefined };
+                break;
+              }
+            }
+            return { ...m, steps };
+          });
+        } else if (event === 'done') {
+          sawDone = true;
+          setThinking(false);
+          if (ev.report) finalizeLast(ev.report as ChatReply);
+        } else if (event === 'error') {
+          toast(String(ev.text || '对话失败'), 'err');
+        }
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        // SSE 按 \n\n 分帧，半帧留在 buffer（协议分帧纪律）
         let idx: number;
         while ((idx = buffer.indexOf('\n\n')) >= 0) {
-          const frame = buffer.slice(0, idx);
+          handle(buffer.slice(0, idx));
           buffer = buffer.slice(idx + 2);
-          let event = 'message';
-          const dataLines: string[] = [];
-          for (const line of frame.split('\n')) {
-            if (line.startsWith('event:')) event = line.slice(6).trim();
-            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
-          }
-          if (!dataLines.length) continue;
-          let ev: StreamEv | null = null;
-          try { ev = JSON.parse(dataLines.join('\n')); } catch { continue; }
-          if (!ev) continue;
-          if (event === 'delta' && typeof ev.text === 'string') {
-            patchLast((m) => ({ ...m, content: m.content + ev.text }));
-          } else if (event === 'thinking') {
-            setThinking(true);
-            patchLast((m) => ({ ...m, thinking: (m.thinking || '') + (ev.text || '') }));
-          } else if (event === 'tool_start') {
-            setThinking(false);
-            patchLast((m) => ({ ...m, steps: [...(m.steps || []), {
-              step: Number(ev.step), tool: String(ev.tool), args: typeof ev.args === 'string' ? ev.args : '', running: true,
-            }] }));
-          } else if (event === 'tool_end') {
-            patchLast((m) => {
-              const steps = [...(m.steps || [])];
-              for (let i = steps.length - 1; i >= 0; i--) {
-                if (steps[i].running && steps[i].tool === ev.tool) {
-                  steps[i] = { ...steps[i], running: false,
-                    result_preview: typeof ev.result_preview === 'string' ? ev.result_preview : undefined,
-                    result_bytes: typeof ev.result_bytes === 'number' ? ev.result_bytes : undefined,
-                    err: typeof ev.err === 'string' ? ev.err : undefined };
-                  break;
-                }
-              }
-              return { ...m, steps };
-            });
-          } else if (event === 'done') {
-            sawDone = true;
-            setThinking(false);
-            if (ev.report) finalizeLast(ev.report as ChatReply);
-          } else if (event === 'error') {
-            toast(String(ev.text || '对话失败'), 'err');
-          }
         }
       }
       if (!sawDone) {
-        // 流中断且无 done：保留已收内容并如实标注
         patchLast((m) => ({ ...m, streaming: false, content: m.content || '（连接中断，未收到完整回答）' }));
       }
     } catch (e) {
@@ -224,8 +275,15 @@ export function AiAssistant() {
       setBusy(false);
       setThinking(false);
       abortRef.current = null;
+      busyRef.current = false;
     }
-  }, [busy, msgs, toast]);
+  }, [busy, msgs, scope, toast]);
+
+  const createSession = () => {
+    const s = newSession();
+    setSessions((prev) => [s, ...prev].slice(0, 20));
+    setActiveId(s.id);
+  };
 
   return (
     <>
@@ -236,17 +294,21 @@ export function AiAssistant() {
         </button>
       )}
       {open && (
-        <Card className="fixed bottom-5 right-5 z-40 flex h-[560px] w-[420px] flex-col overflow-hidden p-0 shadow-2xl">
-          <div className="flex items-center gap-2 border-b border-border-soft px-3.5 py-2.5">
+        <Card className="fixed bottom-5 right-5 z-40 flex h-[580px] w-[420px] flex-col overflow-hidden p-0 shadow-2xl">
+          <div className="flex items-center gap-2 border-b border-border-soft px-3 py-2.5">
             <Bot size={14} className="text-primary" />
-            <b className="text-[13px]">AI 助手</b>
+            <Select value={activeId} onChange={(e) => setActiveId(e.target.value)} aria-label="切换会话"
+              className="h-7 max-w-[150px] flex-1 text-[11.5px]">
+              {sessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </Select>
+            <button onClick={createSession} aria-label="新建会话" title="新建会话"
+              className="cursor-pointer rounded p-1 text-faint hover:bg-secondary hover:text-foreground"><Plus size={14} /></button>
+            <button onClick={() => { if (!busy && msgs.length) { updateActive((s) => ({ ...s, msgs: [] })); toast('会话已清空'); } }}
+              disabled={busy || !msgs.length} aria-label="清空当前会话" title="清空当前会话"
+              className="cursor-pointer rounded p-1 text-faint hover:bg-secondary hover:text-foreground disabled:opacity-40"><Eraser size={14} /></button>
             <Badge tone={lastEngine === 'llm' ? 'resolved' : 'info'}>
               {lastEngine === 'llm' ? '模型引擎' : '未配置模型'}
             </Badge>
-            <div className="flex-1" />
-            <button onClick={() => { if (!busy && msgs.length) { setMsgs([]); toast('会话已清空'); } }}
-              disabled={busy || !msgs.length} aria-label="清空会话" title="清空会话"
-              className="cursor-pointer rounded p-1 text-faint hover:bg-secondary hover:text-foreground disabled:opacity-40"><Eraser size={14} /></button>
             <button onClick={() => setOpen(false)} aria-label="关闭"
               className="cursor-pointer rounded p-1 text-faint hover:bg-secondary hover:text-foreground"><X size={14} /></button>
           </div>
@@ -254,7 +316,7 @@ export function AiAssistant() {
           <div ref={listRef} className="flex-1 space-y-2.5 overflow-y-auto px-3.5 py-3">
             {msgs.length === 0 && (
               <div className="space-y-2">
-                <p className="text-[12px] leading-[1.7] text-faint">问平台里的事实（告警/事件/主机/情报/实时进程），需要时我会调用只读工具核实，每一步都实时可见。</p>
+                <p className="text-[12px] leading-[1.7] text-faint">问平台里的事实（告警/事件/主机/情报/实时进程），需要时我会调用只读工具核实，每一步都实时可见。在告警或主机详情点「问 AI」会自动带上当前对象上下文。</p>
                 {STARTERS.map((s) => (
                   <button key={s} onClick={() => ask(s)}
                     className="block w-full cursor-pointer rounded-md border border-border-soft bg-secondary px-2.5 py-1.5 text-left text-[12px] text-muted-foreground hover:border-border-strong hover:text-foreground">
@@ -266,7 +328,10 @@ export function AiAssistant() {
             {msgs.map((m, i) => (
               <div key={i}>
                 {m.role === 'user' ? (
-                  <div className="ml-10 rounded-lg rounded-br-sm bg-primary px-3 py-2 text-[12.5px] text-primary-foreground">{m.content}</div>
+                  <div className="ml-10 rounded-lg rounded-br-sm bg-primary px-3 py-2 text-[12.5px] text-primary-foreground">
+                    {m.content}
+                    {m.scope && <div className="mt-1 text-[10px] opacity-70">（附带了当时页面的上下文）</div>}
+                  </div>
                 ) : (
                   <div className="mr-4 space-y-1.5">
                     {m.thinking && (
@@ -327,6 +392,18 @@ export function AiAssistant() {
               </div>
             )}
           </div>
+
+          {/* 上下文 chip 行：发送前对"模型将看到什么"的审计面，可逐个摘除 */}
+          {scope && (
+            <div className="flex items-center gap-1.5 border-t border-border-soft px-3 py-1.5">
+              <span className="rounded-full border border-primary/30 bg-brand-soft px-2 py-0.5 text-[11px] text-foreground">
+                上下文：{scope.length > 26 ? scope.slice(0, 26) + '…' : scope}
+                <button onClick={() => setScope('')} aria-label="移除上下文"
+                  className="ml-1 cursor-pointer text-faint hover:text-destructive"><X size={10} className="inline" /></button>
+              </span>
+              <span className="text-[10px] text-faint">将随下一条消息发送</span>
+            </div>
+          )}
 
           <form onSubmit={(e) => { e.preventDefault(); ask(input); }}
             className="flex items-center gap-2 border-t border-border-soft p-2.5">
