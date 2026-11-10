@@ -1,27 +1,38 @@
-// Package mcp 提供 MCP（Model Context Protocol）服务端的最小无状态子集：
-// initialize / ping / tools/list / tools/call（JSON-RPC 2.0 over HTTP POST）。
+// Package mcp 提供 MCP 工具服务的协议面——自 v1.8.0 起基于官方 Go SDK
+// （github.com/modelcontextprotocol/go-sdk，Tier 1）实现。
 //
-// 为什么自研而不是引 SDK（2026-11 取证结论）：官方 Go SDK 对 2026-07-28
-// 无状态规范的支持仍是 v1.7.0-pre.1（beta，MCP 官方博客 2026-06-29）；
-// pre-release 依赖不进主干（AGENTS §3.6）。本包把协议面收在一个文件里，
-// SDK 转正后只需替换 Handle 实现——上层（工具注册、审计、鉴权）不动。
+// 迁移史（为什么是这个形状）：
+//   - 2026-11 首版自研最小子集（2025-11-25 线），当时官方 SDK 对
+//     2026-07-28 无状态规范还是 pre-release，依赖不进主干（AGENTS §3.6）；
+//   - 2026-11-10 取证（pkg.go.dev / Go 官方博客 / MCP 官方博客）：SDK
+//     v1.0.0 已于 2025-09 转正、v1.8.0（2026-09-04）升 Tier 1 并支持
+//     2026-07-28 规范——TRADEOFFS §3.15 的替换触发条件达成，本包整体
+//     换装 SDK，上层（工具注册/审计/鉴权/service 层）接口零改动。
 //
-// 安全口径：工具描述与结果都按不可信数据处理；只读工具白名单在服务层；
-// 鉴权/审计在 HTTP 层（api/mcp.go）。
+// 协议能力（SDK 提供，本包不再手写）：无状态核心（无握手/无
+// Mcp-Session-Id，每请求 _meta 自带协议版本，GET/DELETE 405）、
+// server/discover 能力探测、resultType、serverInfo 身份、
+// 2025-11-25 老客户端透明协商。ping 已在 2026-07-28 规范移除。
+//
+// 安全口径不变：工具描述与结果都按不可信数据处理；只读工具白名单在
+// 服务层；鉴权/审计在 HTTP 层（api/mcp.go 的 Bearer 检查 + OnCall 钩子）。
 package mcp
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"net/http"
 	"sort"
+	"strings"
+	"sync"
+
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Tool 是一个对外暴露的工具定义。
-// Annotations 是 2025-11-25 稳定线的 ToolAnnotations 行为提示
-// （readOnlyHint/destructiveHint/idempotentHint/openWorldHint/title）——
-// 规范明示它们是 UX 提示而非安全边界，客户端不得仅凭注解做安全决策，
-// 这里用松散 map 承载以跟随规范演进（本服务全部只读：readOnlyHint=true）。
+// Tool 是一个对外暴露的工具定义（service 层产出，本包转换成 SDK 类型）。
+// Annotations 是 ToolAnnotations 行为提示（readOnlyHint/openWorldHint/
+// title 等）——规范明示它们是 UX 提示而非安全边界，客户端不得仅凭注解
+// 做安全决策；松散 map 承载以跟随规范演进（本服务全部只读：readOnlyHint=true）。
 type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
@@ -34,7 +45,8 @@ type Executor interface {
 	Call(ctx context.Context, name string, args json.RawMessage) (any, error)
 }
 
-// Server 是 MCP 协议处理器。
+// Server 是 MCP 工具服务：service 层组装（Tools/Ex/OnCall），
+// Handler() 输出官方 SDK 的 HTTP 协议面。
 type Server struct {
 	Name    string
 	Version string
@@ -42,115 +54,132 @@ type Server struct {
 	Ex      Executor
 	// OnCall 是工具调用审计钩子（nil 表示不记录）。
 	OnCall func(name string, err error)
+
+	once    sync.Once
+	handler http.Handler
 }
 
-type rpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
+// mcpResultLimit 是单个工具结果回喂模型前的字节上限：防个别枚举端点
+// 在异常大主机上撑爆客户端上下文（服务端 shapeForModel 已先把绝大多数
+// 结果压进 48KB，这里是协议面最后防线）。
+const mcpResultLimit = 64 << 10
 
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type rpcResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Result  any             `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
-
-// protocolVersion 声明兼容的稳定线版本（2025-11-25 是当前客户端普遍支持的
-// 版本；2026-07-28 无状态线由后续 SDK 迁移时再协商）。
-const protocolVersion = "2025-11-25"
-
-// Handle 处理一个 JSON-RPC 请求体，返回响应体；通知类方法返回 nil。
-func (s *Server) Handle(ctx context.Context, body []byte) []byte {
-	var req rpcRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return mustJSON(rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "JSON 解析失败"}})
-	}
-	if req.JSONRPC != "2.0" || req.Method == "" {
-		return mustJSON(rpcResponse{JSONRPC: "2.0", Result: nil,
-			Error: &rpcError{Code: -32600, Message: "非法请求"}})
-	}
-
-	switch req.Method {
-	case "initialize":
-		return mustJSON(rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
-			"protocolVersion": protocolVersion,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": s.Name, "version": s.Version},
-		}})
-
-	case "notifications/initialized", "notifications/cancelled":
-		return nil // 通知无响应
-
-	case "ping":
-		return mustJSON(rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{}})
-
-	case "tools/list":
+// Handler 返回 MCP 协议的 HTTP 处理器（幂等，可并发）。
+// Stateless 模式对齐 2026-07-28 规范：无握手、无 session、每请求自包含，
+// 任意实例可挂普通轮询负载均衡——与本服务"POST /mcp 无状态"的原始
+// 设计完全同构。
+func (s *Server) Handler() http.Handler {
+	s.once.Do(func() {
+		sdk := sdkmcp.NewServer(&sdkmcp.Implementation{Name: s.Name, Version: s.Version},
+			&sdkmcp.ServerOptions{})
 		tools := make([]Tool, len(s.Tools))
 		copy(tools, s.Tools)
 		sort.SliceStable(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
-		return mustJSON(rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"tools": tools}})
+		for _, t := range tools {
+			sdk.AddTool(sdkTool(t), s.toolHandler(t.Name))
+		}
+		s.handler = sdkmcp.NewStreamableHTTPHandler(
+			func(*http.Request) *sdkmcp.Server { return sdk },
+			&sdkmcp.StreamableHTTPOptions{
+				Stateless: true,
+				// 纯 JSON 响应（规范 §2.1.5 允许服务端选择）：保持与自研版
+				// 相同的线形态，curl 调试与现有客户端零迁移
+				JSONResponse: true,
+			})
+	})
+	return s.handler
+}
 
-	case "tools/call":
-		var p struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
+// sdkTool 把本包 Tool 转成 SDK Tool。InputSchema 用 RawMessage 直传
+//（方法版 AddTool 不做 schema 推断，参数校验由本包 executor 的
+// json.Unmarshal 承担——service 层每个工具都是强类型入参）。
+func sdkTool(t Tool) *sdkmcp.Tool {
+	out := &sdkmcp.Tool{
+		Name:        t.Name,
+		Description: t.Description,
+		InputSchema: json.RawMessage(t.InputSchema),
+	}
+	if len(t.Annotations) == 0 {
+		return out
+	}
+	out.Annotations = &sdkmcp.ToolAnnotations{}
+	for k, v := range t.Annotations {
+		switch k {
+		case "title":
+			if s, ok := v.(string); ok {
+				out.Annotations.Title = s
+			}
+		case "readOnlyHint":
+			if b, ok := v.(bool); ok {
+				out.Annotations.ReadOnlyHint = b
+			}
+		case "openWorldHint":
+			if b, ok := v.(bool); ok {
+				out.Annotations.OpenWorldHint = &b
+			}
+		case "destructiveHint", "idempotentHint":
+			if b, ok := v.(bool); ok {
+				if k == "destructiveHint" {
+					out.Annotations.DestructiveHint = &b
+				} else {
+					out.Annotations.IdempotentHint = b
+				}
+			}
 		}
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.Name == "" {
-			return mustJSON(rpcResponse{JSONRPC: "2.0", ID: req.ID,
-				Error: &rpcError{Code: -32602, Message: "缺少工具名"}})
-		}
-		res, err := s.call(ctx, p.Name, p.Arguments)
-		if s.OnCall != nil {
-			s.OnCall(p.Name, err)
-		}
+	}
+	return out
+}
+
+// toolHandler 包装 Executor 成 SDK 工具处理函数。工具错误按 MCP 语义
+// 放 result.isError 回喂模型（模型可见并可自我修正），不转协议层错误。
+func (s *Server) toolHandler(name string) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		args, err := json.Marshal(req.Params.Arguments)
 		if err != nil {
-			// 工具错误按 MCP 语义放 result.isError（模型可见并可自我修正）
-			return mustJSON(rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
-				"content": []map[string]any{{"type": "text", "text": "工具错误：" + err.Error()}},
-				"isError": true,
-			}})
+			args = nil
 		}
-		raw, _ := json.MarshalIndent(res, "", "  ")
-		if len(raw) > 64*1024 {
-			raw = raw[:64*1024] // 结果上限：防止单个工具调用撑爆客户端上下文
+		out, callErr := s.Ex.Call(ctx, name, args)
+		if s.OnCall != nil {
+			s.OnCall(name, callErr)
 		}
-		return mustJSON(rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
-			"content": []map[string]any{{"type": "text", "text": string(raw)}},
-		}})
+		if callErr != nil {
+			return &sdkmcp.CallToolResult{
+				IsError: true,
+				Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "工具错误：" + callErr.Error()}},
+			}, nil
+		}
+		raw, mErr := json.MarshalIndent(out, "", "  ")
+		if mErr != nil {
+			return &sdkmcp.CallToolResult{
+				IsError: true,
+				Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "工具错误：结果序列化失败"}},
+			}, nil
+		}
+		// 结果上限：防单个工具调用撑爆客户端上下文。截断后 JSON 不再合法，
+		// StructuredContent 必须撤下（喂非法 JSON 给 SDK 会挂响应流）——
+		// 文本形式本就是字符串包装，不受影响。service 层 shapeForModel
+		// 正常会先整形到位，这里只是协议面最后防线。
+		if len(raw) > mcpResultLimit {
+			raw = raw[:mcpResultLimit]
+			return &sdkmcp.CallToolResult{
+				Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: string(raw) + "\n...(结果超限已截断)"}},
+			}, nil
+		}
+		// 规范建议：structuredContent 与文本形式同时返回——结构化给程序化
+		// 客户端，文本给模型（两端各取所需）
+		return &sdkmcp.CallToolResult{
+			Content:           []sdkmcp.Content{&sdkmcp.TextContent{Text: string(raw)}},
+			StructuredContent: json.RawMessage(raw),
+		}, nil
 	}
-
-	return mustJSON(rpcResponse{JSONRPC: "2.0", ID: req.ID,
-		Error: &rpcError{Code: -32601, Message: fmt.Sprintf("不支持的方法: %s", req.Method)}})
 }
 
-func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (any, error) {
+// toolNames 返回已注册工具名（测试与日志用）。
+func (s *Server) toolNames() string {
+	names := make([]string, 0, len(s.Tools))
 	for _, t := range s.Tools {
-		if t.Name != name {
-			continue
-		}
-		if s.Ex == nil {
-			return nil, fmt.Errorf("没有可用的工具执行器")
-		}
-		if len(args) > 0 && !json.Valid(args) {
-			return nil, fmt.Errorf("参数不是合法 JSON")
-		}
-		return s.Ex.Call(ctx, name, args)
+		names = append(names, t.Name)
 	}
-	return nil, fmt.Errorf("未知工具 %q", name)
-}
-
-func mustJSON(v any) []byte {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return []byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"内部错误"}}`)
-	}
-	return raw
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }

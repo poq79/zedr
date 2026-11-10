@@ -3,9 +3,9 @@ package api
 import (
 	"crypto/subtle"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // MCP 对外端点（POST /mcp）与 Skill 包（GET /mcp/skill.md）。
@@ -14,6 +14,13 @@ import (
 // MCP 客户端（Claude Code / Cursor）不参与管理台登录流程，也不能获得
 // 任何写权限。默认关闭，未配置 token 时端点不存在（404）。
 // 审计：每个工具调用记 mcp.tool.call（在 app 装配的 OnCall 钩子里）。
+//
+// Skill 包（skillMarkdown）对齐 Agent Skills 开放标准（SKILL.md，
+// agentskills.io）：YAML frontmatter（必填 name+description）+ Markdown
+// 正文。来源与查阅日期（AGENTS §5.5）：规范页 https://agentskills.io/
+// （2025-12 发布）；Anthropic 于 2026-10-22 将该标准捐给 Linux 基金会
+// AAIF（MCP 同属该基金会）。frontmatter 只写最大可移植口径允许的字段
+// （name/description/metadata/license，详见 skillMarkdown 注释）。
 
 func mcpAuth(d Deps, r *http.Request) bool {
 	if d.MCPToken == "" {
@@ -27,7 +34,8 @@ func mcpAuth(d Deps, r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(tok), []byte(d.MCPToken)) == 1
 }
 
-// mcpPost 处理 JSON-RPC 请求体。
+// mcpPost 处理 MCP 协议请求：协议面委托官方 SDK（internal/mcp.Handler()，
+// 2026-07-28 无状态核心），这里只负责 Bearer 鉴权。
 func mcpPost(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.MCP == nil {
@@ -41,19 +49,9 @@ func mcpPost(d Deps) http.HandlerFunc {
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32001,"message":"缺少或无效的 MCP Token（Authorization: Bearer <HG_SERVER_MCP_TOKEN>）"}}`))
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"读取请求体失败"}}`, http.StatusBadRequest)
-			return
-		}
-		out := d.MCP.Handle(r.Context(), body)
-		w.Header().Set("Content-Type", "application/json")
-		if out == nil {
-			w.WriteHeader(http.StatusAccepted) // 通知类请求：202 无响应体
-			return
-		}
-		_, _ = w.Write(out)
+		// 请求体上限由 SDK 协议面处理；SDK 的无状态模式对 GET/DELETE
+		// 返回 405，与 Go mux 的方法路由语义一致
+		d.MCP.Handler().ServeHTTP(w, r)
 	}
 }
 
@@ -71,8 +69,34 @@ func mcpSkill(d Deps) http.HandlerFunc {
 	}
 }
 
+// skillMarkdown 生成可下载的 SKILL.md（对齐 agentskills.io Agent Skills
+// 开放标准，2026-11-10 查阅：https://agentskills.io/ ；Anthropic 2026-10-22
+// 将该标准捐给 Linux 基金会 AAIF，MCP 同属该基金会）。
+//
+// frontmatter 字段口径：**最大可移植口径**（agentskills.io 规范 + Codex/
+// Gemini 严格平台限制，2026-11-10 查阅）——严格平台只接受 name/description/
+// metadata（license 等其余可选字段会被 Codex/Gemini CLI 拒绝），故：
+//   - name/description 必填照写（description 为单行双引号标量，规避
+//     YAML 冒号/换行解析歧义）；
+//   - version/generated-date 放进 metadata：metadata 是规范认可的自由
+//     键值对（spec-blessed），顶层写未知字段会在严格平台被整文件拒收；
+//   - license 按 spec 属可选字段，仓库无 LICENSE 文件故标 Proprietary；
+//     严格平台可能忽略或拒收该字段，属可接受的降级（告知许可证归属
+//     的价值大于可移植性损失）。
 func skillMarkdown(d Deps) []byte {
 	var b strings.Builder
+	b.WriteString("---\n")
+	b.WriteString("name: zedr-edr\n")
+	// 单行双引号标量：description 里没有裸冒号/换行/引号，双引号兜底
+	// YAML 解析歧义（agentskills.io 要求 ≤1024 字符、写清"做什么+何时用"）
+	b.WriteString("description: \"" + skillDescription + "\"\n")
+	b.WriteString("license: Proprietary\n")
+	b.WriteString("metadata:\n")
+	b.WriteString("  version: \"" + d.MCP.Version + "\"\n")
+	// 生成日期进 metadata 而非顶层：同 version 的理由——严格平台只认
+	// name/description/metadata，顶层日期字段会被拒收
+	b.WriteString("  generated-date: \"" + time.Now().UTC().Format("2006-01-02") + "\"\n")
+	b.WriteString("---\n\n")
 	b.WriteString("# Z-EDR Skill（MCP 工具包）\n\n")
 	b.WriteString("你是接入 Z-EDR（Windows 主机入侵检测与响应平台）的 AI 助手。\n")
 	b.WriteString("通过 MCP 工具查询告警、事件、威胁情报与主机资产；**所有工具只读**，\n")
@@ -80,7 +104,11 @@ func skillMarkdown(d Deps) []byte {
 	b.WriteString("## 连接方式\n\n")
 	b.WriteString("- 端点：`POST <控制台地址>/mcp`（JSON-RPC 2.0，stateless）\n")
 	b.WriteString("- 鉴权：`Authorization: Bearer <HG_SERVER_MCP_TOKEN>`\n")
-	b.WriteString("- 协议：initialize / tools/list / tools/call（2025-11-25 稳定线）\n\n")
+	b.WriteString("- 协议：initialize / tools/list / tools/call（2025-11-25 稳定线）\n")
+	// 2026-07-28 无状态规范新增的能力探测：客户端可一次拿到服务器能力，
+	// 请求需带 MCP-Protocol-Version 与 Mcp-Method 头
+	b.WriteString("- 能力探测：`POST /mcp` 支持 `server/discover`" +
+		"（2026-07-28 无状态规范的能力探测，请求带 `MCP-Protocol-Version` 与 `Mcp-Method` 头）\n\n")
 	b.WriteString("## 工具清单\n\n| 工具 | 用途 |\n|---|---|\n")
 	for _, t := range d.MCP.Tools {
 		b.WriteString(fmt.Sprintf("| `%s` | %s |\n", t.Name, t.Description))
@@ -103,11 +131,19 @@ func skillMarkdown(d Deps) []byte {
 	b.WriteString("- \"主机 WIN-XXX 现在有哪些计划任务和自启动服务？有没有可疑驻留？\"\n")
 	b.WriteString("- \"看看主机 WIN-XXX 的 C:\\Users\\Public 下最近落了什么文件（usn），可疑的话做 PE 分析（analyze）。\"\n")
 
-	// 附：JSON-RPC 示例（便于非 MCP 客户端直接 curl 调试）
+	// 附：JSON-RPC 示例（便于非 MCP 客户端直接 curl 调试）。
+	// Accept 头是 Streamable HTTP 规范要求：缺了会被官方 SDK 服务端 400 拒绝
+	//（协议迁移 SDK v1.8.0 时实测）。
 	b.WriteString("\n## 直接调用示例\n\n```bash\n")
 	b.WriteString("curl -s http://127.0.0.1:8080/mcp \\\n")
 	b.WriteString("  -H 'Authorization: Bearer $HG_SERVER_MCP_TOKEN' \\\n")
 	b.WriteString("  -H 'Content-Type: application/json' \\\n")
+	b.WriteString("  -H 'Accept: application/json, text/event-stream' \\\n")
 	b.WriteString("  -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}'\n```\n")
 	return []byte(b.String())
 }
+
+// skillDescription 是 SKILL.md frontmatter 的 description（浓缩自正文
+// 开头两段：做什么 + 何时用，agentskills.io 要求 ≤1024 字符）。
+// 措辞刻意避开 ASCII 冒号/引号/反斜杠，保证 YAML 双引号标量无需转义。
+const skillDescription = "通过 MCP 工具只读查询 Z-EDR（Windows 主机入侵检测与响应平台）的告警、事件、威胁情报与主机资产，处置动作只能作为建议输出并由分析师人工确认。当用户需要排查 Windows 主机安全告警、调查攻击链叙事、核对 IOC 命中或盘点主机实时资产时使用。"
