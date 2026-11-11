@@ -38,7 +38,10 @@ type App struct {
 	// notifiers 是全部告警通知渠道（webhook/syslog/飞书/钉钉/Slack/邮件），
 	// 统一以 notify.Channel 消费；启停与订阅循环见 New / Close。
 	notifiers []notify.Channel
-	stop      chan struct{}
+	// notifyWatch 轮询各渠道 Stats 增量判定连续失败（见 notify.Watchdog），
+	// 状态经 /api/v1/notify/health 与 /metrics 暴露。
+	notifyWatch *notify.Watchdog
+	stop        chan struct{}
 
 	// janitorTicks 是 janitor 循环的执行轮数（每轮 60s），用于触发每日备份
 	janitorTicks int
@@ -216,6 +219,30 @@ func New() (*App, error) {
 			"recipients", len(cfg.AlertEmailTo), "min_severity", cfg.WebhookMinSeverity)
 	}
 
+	// 通知看门狗：渠道名只能在装配点绑定（Channel 接口没有 Name），
+	// 与 channels 一一对应。判定窗口数默认 3（≈3 分钟连续失败才报
+	// degraded，排除单次网络抖动），可经 HG_SERVER_NOTIFY_FAIL_WINDOWS 调整。
+	named := make([]notify.NamedChannel, 0, len(channels))
+	if notifier != nil {
+		named = append(named, notify.NamedChannel{Name: "webhook", Channel: notifier})
+	}
+	if syslogger != nil {
+		named = append(named, notify.NamedChannel{Name: "syslog", Channel: syslogger})
+	}
+	if feishu != nil {
+		named = append(named, notify.NamedChannel{Name: "feishu", Channel: feishu})
+	}
+	if dingtalk != nil {
+		named = append(named, notify.NamedChannel{Name: "dingtalk", Channel: dingtalk})
+	}
+	if slack != nil {
+		named = append(named, notify.NamedChannel{Name: "slack", Channel: slack})
+	}
+	if mailer != nil {
+		named = append(named, notify.NamedChannel{Name: "email", Channel: mailer})
+	}
+	notifyWatch := notify.NewWatchdog(named, cfg.NotifyFailWindows)
+
 	if len(channels) > 0 {
 		if _, ch := svc.Bus.Subscribe(); ch != nil {
 			go func() {
@@ -333,6 +360,7 @@ func New() (*App, error) {
 		CookieSecure: cfg.CookieSecure,
 		Bus:          svc.Bus,
 		Notifier:     notifier,
+		NotifyReport: notifyWatch.Report,
 		UpgradeFile:    cfg.UpgradeFile,
 		UpgradeVersion: cfg.UpgradeVersion,
 		DeployPackage:  cfg.DeployPackage,
@@ -357,13 +385,14 @@ func New() (*App, error) {
 	}
 
 	return &App{
-		Cfg:       cfg,
-		Log:       log,
-		Server:    srv,
-		store:     store,
-		services:  svc,
-		notifiers: channels,
-		stop:      make(chan struct{}),
+		Cfg:         cfg,
+		Log:         log,
+		Server:      srv,
+		store:       store,
+		services:    svc,
+		notifiers:   channels,
+		notifyWatch: notifyWatch,
+		stop:        make(chan struct{}),
 	}, nil
 }
 
@@ -430,6 +459,18 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 				a.Log.Warn("alert_purge_failed", "err", err)
 			} else if n > 0 {
 				a.Log.Info("alerts_purged", "count", n)
+			}
+
+			// 通知看门狗观测：每窗推进一次连续失败判定，翻转即打日志。
+			// degraded 用 Error 级——"告警在发但没人收到"比看起来更危险；
+			// 恢复用 Info。状态本身走 /notify/health 与 /metrics 持续可见。
+			for _, tr := range a.notifyWatch.Observe() {
+				if tr.To == "degraded" {
+					a.Log.Error("notify_watchdog_degraded", "channel", tr.Channel,
+						"hint", "通知渠道连续失败，告警可能没有送达；详情见 GET /api/v1/notify/health")
+				} else {
+					a.Log.Info("notify_watchdog_recovered", "channel", tr.Channel)
+				}
 			}
 
 			// 每轮 janitor 计数，累计 24 轮（≈24 小时）做一次数据库备份。

@@ -11,6 +11,7 @@ import (
 	"zedr/internal/platform/httpx"
 	"zedr/internal/server/auth"
 	"zedr/internal/server/domain"
+	"zedr/internal/server/notify"
 )
 
 type adminHandler struct{ deps Deps }
@@ -594,6 +595,16 @@ func (h *adminHandler) verifyAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, rep)
+}
+
+// notifyHealth 通知看门狗快照：渠道级计数、连续失败窗数与整体状态。
+// viewer 可读——"通知坏没坏"应该被最多的人看到，静默故障才好遮丑。
+func (h *adminHandler) notifyHealth(w http.ResponseWriter, r *http.Request) {
+	if h.deps.NotifyReport == nil {
+		httpx.WriteJSON(w, r, http.StatusOK, notify.Report{State: "unconfigured"})
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, h.deps.NotifyReport())
 }
 
 func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {

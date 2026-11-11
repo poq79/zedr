@@ -50,6 +50,24 @@ func (h *adminHandler) metrics(w http.ResponseWriter, r *http.Request) {
 	gauge("zedr_webhook_failed_total", "webhook 通知失败数", failed)
 	gauge("zedr_webhook_dropped_total", "webhook 队列满丢弃数", dropped)
 
+	// 通知看门狗：渠道级累计计数 + 整体状态。degraded 意味着"告警在发
+	// 但没人收到"，监控侧应把 state=1 当作需要立即处理的事项。
+	if h.deps.NotifyReport != nil {
+		rep := h.deps.NotifyReport()
+		gauge("zedr_notify_channels_configured", "已配置的通知渠道数", rep.Configured)
+		for _, ch := range rep.Channels {
+			fmt.Fprintf(&b, "zedr_notify_channel_sent_total{channel=%q} %d\n", ch.Name, ch.Sent)
+			fmt.Fprintf(&b, "zedr_notify_channel_failed_total{channel=%q} %d\n", ch.Name, ch.Failed)
+		}
+		if rep.State != "unconfigured" {
+			v := 0
+			if rep.State == "degraded" {
+				v = 1
+			}
+			gauge("zedr_notify_watchdog_state", "通知看门狗状态（0=ok 1=degraded）", v)
+		}
+	}
+
 	// 版本分布：每个版本一条样本行。版本碎片化是升级管理的日常，
 	// SIEM/看板据此画"还有多少台没升上来"的趋势
 	if vd, err := h.deps.Services.Stats.Versions(r.Context()); err == nil {

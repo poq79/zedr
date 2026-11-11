@@ -47,6 +47,10 @@ type Config struct {
 	SMTPPass           string
 	SMTPFrom           string // 信封发件人（纯邮箱地址或 "Name <addr>"）
 	AlertEmailTo       []string
+	// NotifyFailWindows 是通知看门狗的判定窗口数：连续 N 个观测窗
+	// （60s/窗）"有失败且无成功"才报 degraded——3 窗 ≈3 分钟，排除
+	// 单次网络抖动；更敏感会拿瞬态抖动刷屏，更迟钝则偏离看门狗本意。
+	NotifyFailWindows int
 	// OpenAlertTTL 超期 open 告警自动归档时限；0=禁用（默认）
 	OpenAlertTTL time.Duration
 	// UpgradeFile/UpgradeVersion 探针自升级包路径与版本；空=升级端点不可用
@@ -160,6 +164,7 @@ func LoadConfig() (*Config, error) {
 	c.SMTPPass = l.Env("HG_SERVER_SMTP_PASS", "")
 	c.SMTPFrom = l.Env("HG_SERVER_SMTP_FROM", "")
 	c.AlertEmailTo = l.CSV("HG_SERVER_ALERT_EMAIL_TO", nil)
+	c.NotifyFailWindows = l.Int("HG_SERVER_NOTIFY_FAIL_WINDOWS", 3)
 	c.OpenAlertTTL = l.Duration("HG_SERVER_OPEN_ALERT_TTL", 0)
 	c.UpgradeFile = l.Env("HG_SERVER_UPGRADE_FILE", "")
 	c.UpgradeVersion = l.Env("HG_SERVER_UPGRADE_VERSION", "")
@@ -224,6 +229,8 @@ func LoadConfig() (*Config, error) {
 	l.Check(c.WebhookMinSeverity == "low" || c.WebhookMinSeverity == "medium" ||
 		c.WebhookMinSeverity == "high" || c.WebhookMinSeverity == "critical",
 		"HG_SERVER_WEBHOOK_MIN_SEVERITY 只能是 low/medium/high/critical")
+	l.Check(c.NotifyFailWindows >= 1,
+		"HG_SERVER_NOTIFY_FAIL_WINDOWS 至少为 1（连续失败窗数）")
 
 	// 后台配置加密密钥：显式配置必须是 64 位 hex；空值合法（从 JWTSecret 派生）
 	if ek := strings.TrimSpace(c.SettingEncKey); ek != "" {

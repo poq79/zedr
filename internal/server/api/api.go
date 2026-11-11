@@ -45,6 +45,9 @@ type Deps struct {
 	RuleSignKey []byte
 	// Notifier 是 webhook 告警通知器（nil 表示未启用），/metrics 读取其统计
 	Notifier *notify.Notifier
+	// NotifyReport 是通知看门狗快照函数（nil 表示未接线），/metrics 与
+	// /notify/health 读取其状态；覆盖全部渠道而不止 webhook。
+	NotifyReport func() notify.Report
 	// UpgradeFile/UpgradeVersion 是探针自升级包（新版本 agent exe）的
 	// 服务端配置；任一为空 = 升级端点按"未启用"返回 503
 	UpgradeFile    string
@@ -277,6 +280,7 @@ func Router(d Deps) http.Handler {
 
 	mux.Handle("GET /api/v1/audit", viewer(adminH.listAudit))
 	mux.Handle("GET /api/v1/audit/verify", viewer(adminH.verifyAudit))
+	mux.Handle("GET /api/v1/notify/health", viewer(adminH.notifyHealth))
 	mux.Handle("GET /api/v1/users", adminOnly(adminH.listUsers))
 	mux.Handle("POST /api/v1/users", adminOnly(adminH.createUser))
 
