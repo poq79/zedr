@@ -71,7 +71,14 @@ const mcpResultLimit = 64 << 10
 func (s *Server) Handler() http.Handler {
 	s.once.Do(func() {
 		sdk := sdkmcp.NewServer(&sdkmcp.Implementation{Name: s.Name, Version: s.Version},
-			&sdkmcp.ServerOptions{})
+			&sdkmcp.ServerOptions{
+				// 可缓存列表（2026-07-28 SEP-2549）：工具集只在换装/重启时
+				// 变化，5 分钟 TTL 让客户端缓存 tools/list，避免每次会话
+				// 重复拉全量目录；scope public（无会话差异，stateless）。
+				SetCacheable: func(_ context.Context, _ sdkmcp.Request, c *sdkmcp.Cacheable) {
+					c.TTLMs = 5 * 60 * 1000
+				},
+			})
 		tools := make([]Tool, len(s.Tools))
 		copy(tools, s.Tools)
 		sort.SliceStable(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
@@ -91,7 +98,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 // sdkTool 把本包 Tool 转成 SDK Tool。InputSchema 用 RawMessage 直传
-//（方法版 AddTool 不做 schema 推断，参数校验由本包 executor 的
+// （方法版 AddTool 不做 schema 推断，参数校验由本包 executor 的
 // json.Unmarshal 承担——service 层每个工具都是强类型入参）。
 func sdkTool(t Tool) *sdkmcp.Tool {
 	out := &sdkmcp.Tool{
