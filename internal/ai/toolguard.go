@@ -84,6 +84,15 @@ func scanToolOutput(s string) (int, []string) {
 	return len(hits), hits
 }
 
+// ScanToolOutput / GuardToolResult 是给评测框架（internal/ai/eval）用的导出
+// 包装：评测必须测**真实防线**而不是复刻一份检测逻辑，否则防线改了评测还绿。
+// GuardToolResult 与 runToolLoop 的调用点完全同口径（先截断后扫描）。
+func ScanToolOutput(s string) (int, []string) { return scanToolOutput(s) }
+
+func GuardToolResult(rec *AgentStep, result string) string {
+	return guardToolResult(rec, trimToolResult(result))
+}
+
 // guardToolResult 是两个工具循环（runToolLoop / AgentChatStream）共用的
 // 结果回喂闸：未命中时原样返回（字节级零变化）；命中时在步骤记录上打标、
 // 给回喂文本加声明头，数据本体一个字节都不动（取证证据不能失真）。

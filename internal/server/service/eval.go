@@ -97,6 +97,71 @@ func (s *AIService) runIncidentSuite(ctx context.Context, eng *ai.Engine, rr *ev
 	rr.Passed = len(rr.Violations) == 0
 }
 
+// loadToolInjectSamples 读取工具结果注入夹具（toolinject.go 套件：
+// 载荷埋在工具返回内容里，与 triage/injection 的告警输入通道互补）。
+func loadToolInjectSamples() ([]eval.ToolInjectSample, error) {
+	raw, err := evalFixtures.ReadFile("evaldata/toolinject.json")
+	if err != nil {
+		return nil, fmt.Errorf("读取工具注入夹具失败: %w", err)
+	}
+	var samples []eval.ToolInjectSample
+	if err := json.Unmarshal(raw, &samples); err != nil {
+		return nil, fmt.Errorf("解析工具注入夹具失败: %w", err)
+	}
+	if err := eval.ValidateToolInjectSamples(samples); err != nil {
+		return nil, fmt.Errorf("工具注入夹具校验失败: %w", err)
+	}
+	return samples, nil
+}
+
+// toolInjectExecutor 是工具注入套件的 canned ToolExecutor：只回放夹具的
+// tool_result 文本——llm 模式评测对象是"防线与模型如何处理这条结果"，
+// 不需要仓储访问（也避免评测流量碰生产数据）。
+type toolInjectExecutor struct{ sample *eval.ToolInjectSample }
+
+func (x *toolInjectExecutor) Execute(_ context.Context, name string, _ json.RawMessage) (string, error) {
+	if name != x.sample.Tool {
+		return `{"note":"评测夹具未提供该工具的数据"}`, nil
+	}
+	return x.sample.ToolResult, nil
+}
+
+// runToolInjectSuite 跑工具结果注入套件并把指标合并进总结果。
+// 确定性防线断言两种模式都跑（零 token）；llm 模式额外用 canned executor
+// 跑真实 AgentInvestigate，断言 verdict 未被工具内容改写、引用锚定真实 ID。
+func (s *AIService) runToolInjectSuite(ctx context.Context, eng *ai.Engine, rr *eval.RunResult) {
+	samples, err := loadToolInjectSamples()
+	if err != nil {
+		rr.Metrics.Errors++
+		rr.Failures = append(rr.Failures, eval.Failure{ID: "toolinject-suite", Suite: "toolinject", Expected: "加载夹具", Actual: "-", Why: err.Error()})
+		return
+	}
+	results := make([]eval.ToolInjectResult, len(samples))
+	for i := range samples {
+		// 与工具循环调用点同一条闸（ai.GuardToolResult 内部先截断后扫描）
+		results[i] = eval.CheckToolGuard(&samples[i])
+	}
+	if rr.Mode == "llm" {
+		tools := agentTools(eng.AgentToolTimeoutMs())
+		for i := range samples {
+			ex := &toolInjectExecutor{sample: &samples[i]}
+			rep := eng.AgentInvestigate(ctx, samples[i].Brief, tools, ex)
+			eval.FillToolInvestigation(&samples[i], &results[i], rep)
+		}
+	}
+	m, failures := eval.ScoreToolInject(samples, results)
+	rr.Metrics.ToolInjectTotal = m.ToolInjectTotal
+	rr.Metrics.ToolInjectIntercepted = m.ToolInjectIntercepted
+	rr.Metrics.ToolInjectFlips = m.ToolInjectFlips
+	rr.Metrics.ToolInjectControls = m.ToolInjectControls
+	rr.Metrics.ToolScannerFalsePos = m.ToolScannerFalsePos
+	rr.Metrics.ToolFakeCitations = m.ToolFakeCitations
+	rr.Failures = append(rr.Failures, failures...)
+	// 合并后重新过门禁（工具套件的指标参与判定）
+	rr.Violations = eval.Gate(rr.Mode, &rr.Metrics)
+	rr.Passed = len(rr.Violations) == 0
+}
+
 // RunEval 执行一次评测并返回结果（同步；heuristic 秒级，llm 分钟级）。
 func (s *AIService) RunEval(ctx context.Context, mode string) (*eval.RunResult, error) {
 	if mode != "heuristic" && mode != "llm" {
@@ -147,6 +212,9 @@ func (s *AIService) RunEval(ctx context.Context, mode string) (*eval.RunResult, 
 
 	// 事件叙事套件（L6）：同一引擎实例上跑，指标合并后统一门禁
 	s.runIncidentSuite(ctx, eng, rr)
+
+	// 工具结果注入套件（toolguard 防线的评测面）：同引擎实例，合并后统一门禁
+	s.runToolInjectSuite(ctx, eng, rr)
 
 	// 持久化最近一次结果（覆盖式）；失败不影响本次返回
 	if raw, err := json.Marshal(rr); err == nil {
