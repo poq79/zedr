@@ -80,6 +80,11 @@ type Category struct {
 	Title    string      `json:"title"`
 	Items    []AssetItem `json:"items"`
 	Findings []Finding   `json:"findings"`
+	// AgentFace 是端侧 AI 面清点子对象（agentface.go，2026-11-12 新增，
+	// 对标 SentinelOne Singularity ADR 的 Agent and MCP inventory）。
+	// 只挂在 ai 类：其他类目恒 nil，omitempty 下线协议完全向后兼容
+	// （只增不改——不认识该键的消费端自然忽略）。
+	AgentFace *AgentFace `json:"agent_face,omitempty"`
 	// Error 是该类侦查失败/超时的说明（前端 ReconCategory.error 可直接渲染）；
 	// 正常类目省略。单类失败不影响其他类。
 	Error string `json:"error,omitempty"`

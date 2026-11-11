@@ -52,8 +52,10 @@ type detectorFunc func(context.Context, *base) (Category, error)
 
 // detectorTable 把类目 key 映射到实现。新增类目只需在此登记。
 var detectorTable = map[string]detectorFunc{
-	"web":    detectWeb,
-	"ai":     detectAI,
+	"web": detectWeb,
+	// ai：detectAIFace = detectAI（既有 harness 识别）+ agent_face 端侧
+	// AI 面清点（agentface.go，2026-11-12），六类稳定面不变。
+	"ai":     detectAIFace,
 	"db":     detectDB,
 	"remote": detectRemote,
 	"dev":    detectDev,
