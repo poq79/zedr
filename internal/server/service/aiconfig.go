@@ -43,6 +43,12 @@ type storedProvider struct {
 	Temperature float64 `json:"temperature,omitempty"`
 	MaxTokens   int     `json:"max_tokens,omitempty"`
 	TimeoutSec  int     `json:"timeout_sec,omitempty"`
+	// Agent 循环预算（全局口径：调查循环是引擎级资源，不按任务槽位分）。
+	// 零值 = 跟随 env 引导基线，env 也没配则用引擎内置默认（6 步/10s，
+	// ApplyConfig 有钳制兜底）；`agent_max_tool_calls` 不开放——调用上限
+	// 与步数强耦合，单独放开只会造出配不平的组合。
+	AgentMaxSteps      int `json:"agent_max_steps,omitempty"`
+	AgentToolTimeoutMs int `json:"agent_tool_timeout_ms,omitempty"`
 }
 
 // storedAIConfig 是 settings.ai_config 里的 JSON 结构。
@@ -74,8 +80,12 @@ type ProviderView struct {
 	Temperature float64 `json:"temperature"`
 	MaxTokens   int     `json:"max_tokens"`
 	TimeoutSec  int     `json:"timeout_sec"`
-	HasKey      bool    `json:"has_key"`
-	KeyHint     string  `json:"key_hint,omitempty"`
+	// Agent 循环预算（展示层约定）：0 = 未配置（跟随 env 基线或引擎默认），
+	// 前端应显示"默认"而不是 0。
+	AgentMaxSteps      int    `json:"agent_max_steps"`
+	AgentToolTimeoutMs int    `json:"agent_tool_timeout_ms"`
+	HasKey             bool   `json:"has_key"`
+	KeyHint            string `json:"key_hint,omitempty"`
 	// Source：db（后台已保存）/ env（环境变量引导）/ none（未配置任何模型服务）
 	Source string `json:"source"`
 }
@@ -122,6 +132,11 @@ type SaveProviderInput struct {
 	MaxTokens   int     `json:"max_tokens"`
 	TimeoutSec  int     `json:"timeout_sec"`
 	ClearKey    bool    `json:"clear_key"`
+	// Agent 循环预算。指针语义（区别于上面的零值=不改）：nil = 不改动，
+	// 0 = 显式清除覆盖（回到 env 基线/引擎默认）——这两个旋钮必须有
+	// "改回默认"的出路，否则误配一次只能翻环境变量。
+	AgentMaxSteps      *int `json:"agent_max_steps,omitempty"`
+	AgentToolTimeoutMs *int `json:"agent_tool_timeout_ms,omitempty"`
 }
 
 // SaveSlotInput 是保存请求里的单个槽位差异。
@@ -161,10 +176,12 @@ var aiSlotTasks = []string{ai.SlotTriage, ai.SlotHunt, ai.SlotInvestigate, ai.Sl
 // env 引导基线 → DB Provider 覆盖 → 默认值兜底。
 func resolveProvider(bootstrap ai.Config, stored *storedAIConfig) storedProvider {
 	p := storedProvider{
-		Model:       bootstrap.Model,
-		Temperature: 0.1, // 安全研判要稳定，不要创造性
-		MaxTokens:   1400,
-		TimeoutSec:  int(bootstrap.Timeout.Seconds()),
+		Model:              bootstrap.Model,
+		Temperature:        0.1, // 安全研判要稳定，不要创造性
+		MaxTokens:          1400,
+		TimeoutSec:         int(bootstrap.Timeout.Seconds()),
+		AgentMaxSteps:      bootstrap.AgentMaxSteps,
+		AgentToolTimeoutMs: int(bootstrap.AgentToolTimeout.Milliseconds()),
 	}
 	if bootstrap.Provider == "openai" {
 		p.BaseURL = bootstrap.BaseURL
@@ -196,6 +213,21 @@ func resolveProvider(bootstrap ai.Config, stored *storedAIConfig) storedProvider
 		if sp.TimeoutSec > 0 {
 			p.TimeoutSec = sp.TimeoutSec
 		}
+		if sp.AgentMaxSteps > 0 {
+			p.AgentMaxSteps = sp.AgentMaxSteps
+		}
+		if sp.AgentToolTimeoutMs > 0 {
+			p.AgentToolTimeoutMs = sp.AgentToolTimeoutMs
+		}
+	}
+	// Agent 预算钳制与 ai.ApplyConfig 同口径：DB 里存不进越界值（保存时
+	// 校验），但 env 引导值不受控——展示值必须等于引擎生效值，否则 UI
+	// 会显示一个被引擎静默改掉的数字。0 保持 0（= 引擎默认，不回填）。
+	if p.AgentMaxSteps > 12 {
+		p.AgentMaxSteps = 12
+	}
+	if p.AgentToolTimeoutMs > 60000 {
+		p.AgentToolTimeoutMs = 60000
 	}
 	p.Effort = normalizeEffort(p.Effort)
 	return p
@@ -296,6 +328,7 @@ func (s *AIService) GetConfig(ctx context.Context) (*AIConfigView, error) {
 	view.Provider = ProviderView{
 		BaseURL: p.BaseURL, Model: p.Model, Effort: p.Effort,
 		Temperature: p.Temperature, MaxTokens: p.MaxTokens, TimeoutSec: p.TimeoutSec,
+		AgentMaxSteps: p.AgentMaxSteps, AgentToolTimeoutMs: p.AgentToolTimeoutMs,
 		HasKey: p.APIKey != "", KeyHint: s.keyHint(p.APIKey, "provider"),
 		Source: providerSource(s.bootstrap, stored),
 	}
@@ -434,6 +467,12 @@ func (s *AIService) SaveConfig(ctx context.Context, in *SaveAIConfigInput) (*AIC
 		if req.TimeoutSec > 0 {
 			base.TimeoutSec = req.TimeoutSec
 		}
+		if req.AgentMaxSteps != nil {
+			base.AgentMaxSteps = *req.AgentMaxSteps
+		}
+		if req.AgentToolTimeoutMs != nil {
+			base.AgentToolTimeoutMs = *req.AgentToolTimeoutMs
+		}
 		switch {
 		case req.ClearKey:
 			base.APIKey = ""
@@ -533,6 +572,16 @@ func validateProviderInput(in *SaveProviderInput) error {
 	}
 	if in.TimeoutSec != 0 && (in.TimeoutSec < 3 || in.TimeoutSec > 300) {
 		return apperr.Invalid("timeout_sec 需在 3-300 之间")
+	}
+	// Agent 预算越界直接拒绝（与 ApplyConfig 的静默钳制双保险）：这里拦住
+	// 是为了管理员当场看到配错，而不是保存成功后引擎悄悄改成别的值。
+	if in.AgentMaxSteps != nil && (*in.AgentMaxSteps < 0 || *in.AgentMaxSteps > 12) {
+		return apperr.Invalid("agent_max_steps 需在 0-12 之间（0 = 引擎默认）")
+	}
+	if in.AgentToolTimeoutMs != nil && (*in.AgentToolTimeoutMs < 0 ||
+		(*in.AgentToolTimeoutMs > 0 && *in.AgentToolTimeoutMs < 1000) ||
+		*in.AgentToolTimeoutMs > 60000) {
+		return apperr.Invalid("agent_tool_timeout_ms 需在 1000-60000 之间（0 = 引擎默认）")
 	}
 	return nil
 }
@@ -748,6 +797,12 @@ func (s *AIService) assembleEngineConfig(ctx context.Context) (ai.Config, map[st
 	if stored.CacheTTLSec > 0 {
 		cfg.CacheTTL = time.Duration(stored.CacheTTLSec) * time.Second
 	}
+	// Agent 循环预算：resolveProvider 已按"env 基线 → DB 覆盖"解析并钳制，
+	// 零值照传——ApplyConfig 会回填内置默认。这是全局口径（引擎级资源），
+	// 不随槽位走。
+	p := resolveProvider(s.bootstrap, stored)
+	cfg.AgentMaxSteps = p.AgentMaxSteps
+	cfg.AgentToolTimeout = time.Duration(p.AgentToolTimeoutMs) * time.Millisecond
 
 	prompts := map[string]string{}
 	for _, task := range PromptTasks {

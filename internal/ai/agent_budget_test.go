@@ -93,6 +93,20 @@ func TestAgentBudgetClamped(t *testing.T) {
 	}
 }
 
+// 配置中心的合法值必须原样通过（钳制只拦越界，不改合法配置）——
+// 服务层经 ApplyConfig 热更新后读引擎生效值的口径依赖这一点。
+func TestAgentBudgetPassthrough(t *testing.T) {
+	eng := NewEngine(Config{}, testLogger())
+	eng.ApplyConfig(Config{AgentMaxSteps: 10, AgentToolTimeout: 20 * time.Second}, nil, nil)
+	maxSteps, _, timeout := eng.agentBudget()
+	if maxSteps != 10 || timeout != 20*time.Second {
+		t.Fatalf("合法配置应原样生效: %d/%s", maxSteps, timeout)
+	}
+	if eng.AgentMaxSteps() != 10 || eng.AgentToolTimeoutMs() != 20000 {
+		t.Fatalf("导出口径应与 agentBudget 一致")
+	}
+}
+
 // 单工具超时可配：慢执行器在短预算下必须报错而不是挂满默认 10s。
 func TestAgentBudgetToolTimeout(t *testing.T) {
 	eng := NewEngine(Config{}, testLogger())
