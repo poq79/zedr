@@ -182,47 +182,6 @@ func (r *allowlistRepo) BumpHit(ctx context.Context, typ, value string) error {
 	return err
 }
 
-// ---------------------------------------------------------------- audit
-
-type auditRepo struct{ s *Store }
-
-func (r *auditRepo) Add(ctx context.Context, l *domain.AuditLog) error {
-	_, err := r.s.db.ExecContext(ctx,
-		`INSERT INTO audit_logs(user_id, username, action, target, detail, ip, created_at) VALUES(?,?,?,?,?,?,?)`,
-		l.UserID, l.Username, l.Action, l.Target, l.Detail, l.IP, millis(l.CreatedAt))
-	if err != nil {
-		return fmt.Errorf("写入审计日志失败: %w", err)
-	}
-	return nil
-}
-
-func (r *auditRepo) List(ctx context.Context, limit int) ([]domain.AuditLog, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 200
-	}
-	rows, err := r.s.db.QueryContext(ctx,
-		`SELECT id, user_id, username, action, target, detail, ip, created_at
-		 FROM audit_logs ORDER BY id DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("查询审计日志失败: %w", err)
-	}
-	defer rows.Close()
-
-	var out []domain.AuditLog
-	for rows.Next() {
-		var (
-			l       domain.AuditLog
-			created int64
-		)
-		if err := rows.Scan(&l.ID, &l.UserID, &l.Username, &l.Action, &l.Target, &l.Detail, &l.IP, &created); err != nil {
-			return nil, fmt.Errorf("解析审计日志失败: %w", err)
-		}
-		l.CreatedAt = fromMillis(created)
-		out = append(out, l)
-	}
-	return out, rows.Err()
-}
-
 // ---------------------------------------------------------------- commands
 
 type commandRepo struct{ s *Store }

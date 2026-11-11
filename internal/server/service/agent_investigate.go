@@ -30,14 +30,14 @@ const agentLiveBodyCap = 2 << 20
 // （模型接触不到 SQL，也写不了任何东西）。
 
 // agentLiveEndpoints 是 Agentic 调查可用的实时端点子集——**由
-// livecatalog 派生**（AI 开放 + 非内容出站 + 代理预算 ≤10s）：引擎工具
-// 循环有 10s 单工具硬顶（internal/ai），预算超限的 persistence/evtlog/
-// usn/analyze 等自然落选，留给 MCP host_live / 管理台。ping/_catalog
-// 对调查循环没有信息价值，排除。
-func agentLiveEndpoints() map[string]bool {
+// livecatalog 派生**（AI 开放 + 非内容出站 + 代理预算 ≤ 配置的工具
+// 超时）：引擎单工具超时可配（HG_AI_AGENT_TOOL_TIMEOUT，默认 10s），
+// 调大后 persistence/evtlog 等慢端点自动入列——子集与超时同源，才
+// 不会出现永远超时的工具。ping/_catalog 对调查循环没有信息价值，排除。
+func agentLiveEndpoints(maxToolTimeoutMs int) map[string]bool {
 	m := make(map[string]bool)
 	for _, ep := range livecatalog.All() {
-		if ep.AI && !ep.FileRead && !ep.Collect && ep.TimeoutMs <= 10000 &&
+		if ep.AI && !ep.FileRead && !ep.Collect && ep.TimeoutMs <= maxToolTimeoutMs &&
 			ep.Name != "_catalog" && ep.Name != "ping" {
 			m[ep.Name] = true
 		}
@@ -47,9 +47,9 @@ func agentLiveEndpoints() map[string]bool {
 
 // agentLiveSchema 生成 host_live 的参数 schema：endpoint 枚举直接从
 // livecatalog 派生子集（与执行白名单同一来源，永不漂移）。
-func agentLiveSchema() string {
-	names := make([]string, 0, len(agentLiveEndpoints()))
-	for n := range agentLiveEndpoints() {
+func agentLiveSchema(toolTimeoutMs int) string {
+	names := make([]string, 0, len(agentLiveEndpoints(toolTimeoutMs)))
+	for n := range agentLiveEndpoints(toolTimeoutMs) {
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -61,7 +61,7 @@ func agentLiveSchema() string {
 }
 
 // agentTools 返回给模型的工具定义（JSON Schema）。
-func agentTools() []ai.AgentTool {
+func agentTools(toolTimeoutMs int) []ai.AgentTool {
 	return []ai.AgentTool{
 		{Name: "host_recent_alerts", Description: "列出该主机最近 N 分钟的告警（默认 120 分钟，最多 50 条）",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"minutes":{"type":"integer","minimum":5,"maximum":1440},"limit":{"type":"integer","minimum":1,"maximum":50}}}`)},
@@ -77,8 +77,8 @@ func agentTools() []ai.AgentTool {
 			Parameters: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50}}}`)},
 		{Name: "inventory_changes", Description: "该主机近期资产变更事件（服务/任务/启动项新增）",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":20}}}`)},
-		{Name: "host_live", Description: "在该告警主机上实时现采（探针在线时；主机离线返回说明）。endpoint 枚举为快速子集（≤10s），参数经 params 传（如 {\"pid\":123}、{\"path\":\"HKLM\\\\...\"}），完整契约见工具描述或 endpoint 枚举",
-			Parameters: json.RawMessage(agentLiveSchema())},
+		{Name: "host_live", Description: "在该告警主机上实时现采（探针在线时；主机离线返回说明）。endpoint 枚举为快速子集（≤当前工具超时），参数经 params 传（如 {\"pid\":123}、{\"path\":\"HKLM\\\\...\"}），完整契约见工具描述或 endpoint 枚举",
+			Parameters: json.RawMessage(agentLiveSchema(toolTimeoutMs))},
 	}
 }
 
@@ -231,20 +231,37 @@ func (x *agentToolExec) Execute(ctx context.Context, name string, args json.RawM
 			return "", err
 		}
 		same := make([]map[string]any, 0, 8)
+		// 判定台账按告警 ID 建索引：同指纹的历史不只看"发生过"，还要看
+		// "当时 AI 怎么判、有没有被分析员改判"——复现告警不必从零调查。
+		// List 时间倒序，先到者新（同告警多来源只留最新一条）。
+		triage := map[string]domain.AITriageLog{}
+		if logs, err := x.s.repos.ATriage.List(ctx, 500); err == nil {
+			for _, l := range logs {
+				if _, ok := triage[l.AlertID]; !ok {
+					triage[l.AlertID] = l
+				}
+			}
+		}
 		for _, a := range items {
 			if a.Fingerprint != x.alert.Fingerprint || a.ID == x.alert.ID {
 				continue
 			}
-			same = append(same, map[string]any{
+			entry := map[string]any{
 				"id": a.ID, "hostname": a.Hostname, "status": string(a.Status),
 				"verdict": string(a.Verdict), "score": a.Score, "created_at": a.CreatedAt,
-			})
+			}
+			if l, ok := triage[a.ID]; ok {
+				entry["ai_triage"] = map[string]any{"source": l.Source, "verdict": l.Verdict,
+					"confidence": l.Confidence, "engine": l.Engine, "at": l.CreatedAt}
+			}
+			same = append(same, entry)
 			if len(same) >= in.Limit {
 				break
 			}
 		}
 		return marshalJSON(map[string]any{"fingerprint": x.alert.Fingerprint, "count": len(same),
-			"note": "仅统计本机历史（仓储无跨主机指纹过滤）", "history": same})
+			"note": "仅统计本机历史（仓储无跨主机指纹过滤）；ai_triage=该告警最近一次自动研判快照",
+			"history": same})
 
 	case "inventory_changes":
 		var in struct {
@@ -270,7 +287,7 @@ func (x *agentToolExec) Execute(ctx context.Context, name string, args json.RawM
 			Params   map[string]any `json:"params"`
 		}
 		_ = json.Unmarshal(args, &in)
-		if !agentLiveEndpoints()[in.Endpoint] {
+		if !agentLiveEndpoints(x.s.eng.AgentToolTimeoutMs())[in.Endpoint] {
 			return "", fmt.Errorf("endpoint 不在快速子集内（见工具 schema 枚举；慢端点走管理台或 MCP）")
 		}
 		if x.s.live == nil || !x.s.live.Enabled {
@@ -372,7 +389,8 @@ func (s *AIService) AgentInvestigate(ctx context.Context, alertID string) (*ai.A
 		return nil, apperr.NotFound("告警不存在")
 	}
 
-	rep := s.eng.AgentInvestigate(ctx, s.agentBrief(ctx, a), agentTools(), &agentToolExec{s: s, alert: a})
+	rep := s.eng.AgentInvestigate(ctx, s.agentBrief(ctx, a),
+		agentTools(s.eng.AgentToolTimeoutMs()), &agentToolExec{s: s, alert: a})
 	if rep.Degraded && len(rep.Findings) == 0 {
 		// 确定性五步兜底：报告结构与字段对齐，界面无需区分两种模式
 		if inv, err := s.Investigate(ctx, alertID); err == nil {

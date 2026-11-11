@@ -81,6 +81,31 @@ const (
 	agentToolPreviewBytes = 300
 )
 
+// agentBudget 返回当前生效的循环预算（cfg 可经配置中心热更新；
+// 零值防御性回退内置默认——NewEngine 直连路径可能未走 ApplyConfig 钳制）。
+func (e *Engine) agentBudget() (maxSteps, maxCalls int, toolTimeout time.Duration) {
+	e.mu.Lock()
+	cfg := e.cfg
+	e.mu.Unlock()
+	if cfg.AgentMaxSteps <= 0 {
+		cfg.AgentMaxSteps = agentMaxSteps
+	}
+	if cfg.AgentMaxToolCalls <= 0 {
+		cfg.AgentMaxToolCalls = agentMaxToolCalls
+	}
+	if cfg.AgentToolTimeout <= 0 {
+		cfg.AgentToolTimeout = agentToolTimeout
+	}
+	return cfg.AgentMaxSteps, cfg.AgentMaxToolCalls, cfg.AgentToolTimeout
+}
+
+// AgentToolTimeoutMs 暴露单工具超时（毫秒）：服务层的实时端点子集
+// 按"代理预算 ≤ 工具超时"派生，两边同源才不会出现永远超时的工具。
+func (e *Engine) AgentToolTimeoutMs() int {
+	_, _, t := e.agentBudget()
+	return int(t.Milliseconds())
+}
+
 // AgentAvailable 表示是否具备跑 Agent 循环的模型能力（供服务层决定主/旁路）。
 func (e *Engine) AgentAvailable() bool {
 	be := e.backend(SlotInvestigate)
@@ -163,7 +188,7 @@ func (e *Engine) AgentInvestigate(ctx context.Context, brief string, tools []Age
 }
 
 // execTool 执行一次白名单工具调用：未知工具/参数超限/超时都在这里兜住。
-func (e *Engine) execTool(ctx context.Context, index map[string]AgentTool, ex ToolExecutor, tc ToolCall) (result, errStr string) {
+func (e *Engine) execTool(ctx context.Context, index map[string]AgentTool, ex ToolExecutor, tc ToolCall, toolTimeout time.Duration) (result, errStr string) {
 	if _, ok := index[tc.Name]; !ok {
 		return "", fmt.Sprintf("未知工具 %q（可用工具见系统提示）", tc.Name)
 	}
@@ -173,7 +198,7 @@ func (e *Engine) execTool(ctx context.Context, index map[string]AgentTool, ex To
 	if !json.Valid([]byte(tc.Arguments)) {
 		return "", "参数不是合法 JSON"
 	}
-	cctx, cancel := context.WithTimeout(ctx, agentToolTimeout)
+	cctx, cancel := context.WithTimeout(ctx, toolTimeout)
 	defer cancel()
 	out, err := ex.Execute(cctx, tc.Name, json.RawMessage(tc.Arguments))
 	if err != nil {
@@ -292,8 +317,9 @@ func (e *Engine) runToolLoop(ctx context.Context, sys, user string, history []Ag
 		toolIndex[t.Name] = t
 	}
 
-	for step := 1; step <= agentMaxSteps; step++ {
-		forceText := step == agentMaxSteps || out.toolCalls >= agentMaxToolCalls
+	maxSteps, maxCalls, toolTimeout := e.agentBudget()
+	for step := 1; step <= maxSteps; step++ {
+		forceText := step == maxSteps || out.toolCalls >= maxCalls
 		reply, err := ob.AgentChat(ctx, msgs, tools, forceText)
 		if err != nil {
 			out.errReason = "模型调用失败：" + err.Error()
@@ -314,7 +340,7 @@ func (e *Engine) runToolLoop(ctx context.Context, sys, user string, history []Ag
 		for _, tc := range reply.ToolCalls {
 			out.toolCalls++
 			rec := AgentStep{Step: step, Tool: tc.Name, Args: truncate(tc.Arguments, agentToolArgsCap)}
-			result, errStr := e.execTool(ctx, toolIndex, ex, tc)
+			result, errStr := e.execTool(ctx, toolIndex, ex, tc, toolTimeout)
 			rec.ResultBytes = len(result)
 			rec.Err = errStr
 			rec.ResultPreview = truncate(result, agentToolPreviewBytes)
@@ -532,8 +558,9 @@ func (e *Engine) AgentChatStream(ctx context.Context, question string, history [
 	}
 
 	answer := ""
-	for step := 1; step <= agentMaxSteps; step++ {
-		forceText := step == agentMaxSteps || rep.ToolCalls >= agentMaxToolCalls
+	maxSteps, maxCalls, toolTimeout := e.agentBudget()
+	for step := 1; step <= maxSteps; step++ {
+		forceText := step == maxSteps || rep.ToolCalls >= maxCalls
 		sink := &ChatStreamSink{
 			OnDelta: func(text string) {
 				answer += text
@@ -569,7 +596,7 @@ func (e *Engine) AgentChatStream(ctx context.Context, question string, history [
 		for _, tc := range reply.ToolCalls {
 			rep.ToolCalls++
 			emit(ChatStreamEvent{Type: "tool_start", Step: step, Tool: tc.Name, Args: truncate(tc.Arguments, agentToolArgsCap)})
-			result, errStr := e.execTool(ctx, toolIndex, ex, tc)
+			result, errStr := e.execTool(ctx, toolIndex, ex, tc, toolTimeout)
 			rec := AgentStep{Step: step, Tool: tc.Name, Args: truncate(tc.Arguments, agentToolArgsCap),
 				ResultBytes: len(result), Err: errStr, ResultPreview: truncate(result, agentToolPreviewBytes)}
 			content := result

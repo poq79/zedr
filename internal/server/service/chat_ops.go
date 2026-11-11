@@ -195,9 +195,11 @@ func validReviewReason(r string) bool {
 
 var opsQueueMu sync.Mutex
 
-// AutoOps 是 critical 告警的自动值班路径：确定性五步调查 → 建议入队。
-// 刻意不做 LLM 自动调查：爆发时每条 critical 触发一次 agent 循环会烧穿预算，
-// 值班队列的价值在"人来了有东西看"，不在"没有人也要自动烧钱"。
+// AutoOps 是 critical 告警的自动值班路径。
+// 2026-11-10 升级（zero-click，用户裁决）：critical+malicious 且预算闸
+// 全开时走 Agentic 调查（带 host_live 实时取证），任何一道闸不过/模型
+// 降级回落确定性五步——原注释"刻意不用 LLM"的预算顾虑由三道闸承接
+// （指纹去重/每主机每小时上限/引擎 token 预算），见 zeroclick.go。
 func (s *AIService) AutoOps(ctx context.Context, alertID string) {
 	a, err := s.repos.Alerts.ByID(ctx, alertID)
 	if err != nil || a == nil {
@@ -207,6 +209,12 @@ func (s *AIService) AutoOps(ctx context.Context, alertID string) {
 	// 告警指针，不再重跑调查——告警风暴时队列保持 1 条代表 + ×N 计数，
 	// 也不再为每条重复告警付 4 次查询的调查成本。
 	if s.tryAggregateOps(ctx, a) {
+		return
+	}
+	if item, ran := s.zeroClickAgent(ctx, a); ran {
+		if err := s.enqueueOps(ctx, item); err != nil && s.log != nil {
+			s.log.WarnContext(ctx, "ai_ops_enqueue_failed", "alert_id", alertID, "err", err)
+		}
 		return
 	}
 	inv, err := s.Investigate(ctx, alertID)

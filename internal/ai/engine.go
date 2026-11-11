@@ -62,6 +62,13 @@ type Config struct {
 	// CacheTTL 是研判结果缓存时长。同一条告警短时间内被反复查看时，
 	// 没必要每次都调模型（既慢又费钱）。
 	CacheTTL time.Duration
+
+	// Agent 循环预算（零值 = 内置默认）。1M 上下文模型普及后，固定
+	// 6 步/8 次调用对复杂调查偏紧；放开成可配置，按部署的模型与预算
+	// 承受力调整。ApplyConfig 会做默认回填与范围钳制（防误配打爆预算）。
+	AgentMaxSteps     int
+	AgentMaxToolCalls int
+	AgentToolTimeout  time.Duration
 }
 
 // Incidents 是事件叙事统计（与 Triage 分列）。
@@ -280,6 +287,27 @@ func (e *Engine) ApplyConfig(cfg Config, prompts map[string]string, skills map[s
 	}
 	if cfg.CacheTTL <= 0 {
 		cfg.CacheTTL = 5 * time.Minute
+	}
+	// Agent 循环预算：零值回填内置默认，越界钳制（防误配打爆预算或
+	// 把单次调查饿死）。默认与历史硬编码一致（6 步/8 次/10s）——
+	// 未显式配置时行为零变化。
+	switch {
+	case cfg.AgentMaxSteps <= 0:
+		cfg.AgentMaxSteps = 6
+	case cfg.AgentMaxSteps > 12:
+		cfg.AgentMaxSteps = 12
+	}
+	switch {
+	case cfg.AgentMaxToolCalls <= 0:
+		cfg.AgentMaxToolCalls = 8
+	case cfg.AgentMaxToolCalls > 24:
+		cfg.AgentMaxToolCalls = 24
+	}
+	switch {
+	case cfg.AgentToolTimeout <= 0:
+		cfg.AgentToolTimeout = 10 * time.Second
+	case cfg.AgentToolTimeout > 60*time.Second:
+		cfg.AgentToolTimeout = 60 * time.Second
 	}
 
 	e.mu.Lock()

@@ -65,6 +65,19 @@ func New() (*App, error) {
 		return nil, err
 	}
 
+	// 审计防篡改链密钥：显式配置优先，未配置从 JWTSecret 派生专用子密钥。
+	// 启动即启用并回填历史行——回填发生在对外服务之前，避免链中途换语义。
+	auditKey := []byte(cfg.AuditSealKey)
+	if cfg.AuditSealKey == "" {
+		auditKey = rulehash.DeriveKey([]byte(cfg.JWTSecret), "audit-seal")
+	}
+	if n, err := repos.Audit.EnableSeal(ctx, auditKey); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("启用审计防篡改链失败: %w", err)
+	} else if n > 0 {
+		log.Info("audit_seal_backfilled", "rows", n)
+	}
+
 	tokens, err := auth.NewManager(cfg.JWTSecret, cfg.AccessTTL, cfg.RefreshTTL)
 	if err != nil {
 		_ = store.Close()
@@ -87,6 +100,8 @@ func New() (*App, error) {
 		Model:             cfg.AIModel,
 		Timeout:           cfg.AITimeout,
 		HourlyTokenBudget: cfg.AITokenBudget,
+		AgentMaxSteps:     cfg.AIAgentMaxSteps,
+		AgentToolTimeout:  cfg.AIAgentToolTimeout,
 	}
 	aiEngine := ai.NewEngine(aiCfg, log)
 
@@ -278,6 +293,7 @@ func New() (*App, error) {
 	liveSvc := service.NewLiveQueryService(tunnelReg, cfg.LiveQueryEnabled,
 		cfg.LiveQueryFileRead, cfg.LiveQueryCollect, svc.Audit)
 	svc.AI.SetLiveQuery(liveSvc)
+	svc.AI.SetZeroClick(cfg.AIZeroClick, cfg.AIZeroClickMaxPerHost)
 
 	// MCP 对外工具服务（只读）：独立 Token 鉴权、每工具调用进审计流。
 	// 默认关闭；SDK 转正前协议子集自研（internal/mcp，TRADEOFFS §3.14）。
@@ -432,6 +448,14 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 					a.Log.Warn("db_backup_failed", "err", err)
 				} else {
 					a.Log.Info("db_backup_done", "file", n)
+				}
+				// 审计链每日自检与备份同批：断链（篡改/误删）是必须立即
+				// 可见的安全事件，日志用 Error 级别；管理台 /audit/verify
+				// 可随时手动全量校验。
+				if rep, err := a.services.Audit.Verify(ctx); err != nil {
+					a.Log.Warn("audit_verify_failed", "err", err)
+				} else if !rep.OK {
+					a.Log.Error("audit_chain_broken", "seq", rep.BrokenAt, "reason", rep.Reason)
 				}
 			}
 		}

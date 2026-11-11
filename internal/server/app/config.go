@@ -80,9 +80,22 @@ type Config struct {
 	AIModel       string
 	AITimeout     time.Duration
 	AITokenBudget int
+	// AI Agent 循环预算（零值 = 引擎内置默认 6 步/8 次/10s）：
+	// 1M 上下文模型下可调大，配合 HG_AI_HOURLY_TOKEN_BUDGET 一起控成本。
+	AIAgentMaxSteps  int
+	AIAgentToolTimeout time.Duration
+	// Zero-click：critical+malicious 告警自动触发 Agentic 调查（带实时
+	// 取证），三道闸（指纹 30 分钟去重 / 每主机每小时上限 / token 预算）
+	// 全过才跑，任何一道不过回落确定性五步。默认开（2026-11-10 裁决）。
+	AIZeroClick         bool
+	AIZeroClickMaxPerHost int
 	// SettingEncKey 是后台配置敏感字段（模型 API Key）的静态加密密钥，
 	// 64 位 hex（32 字节）。空则从 JWTSecret 派生子密钥（与规则签名同策略）。
 	SettingEncKey string
+	// AuditSealKey 是审计防篡改链的 HMAC 密钥，至少 32 字节。
+	// 空则从 JWTSecret 派生专用子密钥。换密钥会使旧封印无法校验（轮换需重封印，
+	// 未提供工具），默认派生策略保证开箱即用且密钥不入库。
+	AuditSealKey string
 	// MCP 是对外 MCP 工具服务（只读，2026-11 方向 A）：默认关闭；
 	// 启用需独立 Bearer Token（>=16 字符），与 JWT/探针凭证完全分离。
 	MCPEnabled bool
@@ -166,9 +179,14 @@ func LoadConfig() (*Config, error) {
 	c.AIBaseURL = l.Env("HG_AI_BASE_URL", "")
 	c.AIAPIKey = l.Env("HG_AI_API_KEY", "")
 	c.AIModel = l.Env("HG_AI_MODEL", "")
+	c.AIAgentMaxSteps = l.Int("HG_AI_AGENT_MAX_STEPS", 0)          // 0 = 引擎默认（6）
+	c.AIAgentToolTimeout = l.Duration("HG_AI_AGENT_TOOL_TIMEOUT", 0) // 0 = 引擎默认（10s）
+	c.AIZeroClick = l.Bool("HG_AI_ZEROCLICK", true)
+	c.AIZeroClickMaxPerHost = l.Int("HG_AI_ZEROCLICK_MAX_PER_HOST", 3)
 	c.AITimeout = l.Duration("HG_AI_TIMEOUT", 45*time.Second)
 	c.AITokenBudget = l.Int("HG_AI_HOURLY_TOKEN_BUDGET", 200000)
 	c.SettingEncKey = l.Env("HG_SERVER_SETTING_ENC_KEY", "")
+	c.AuditSealKey = l.Env("HG_SERVER_AUDIT_SEAL_KEY", "")
 	c.MCPEnabled = l.Bool("HG_SERVER_MCP_ENABLED", false)
 	c.MCPToken = l.Env("HG_SERVER_MCP_TOKEN", "")
 	c.AccessTTL = l.Duration("HG_SERVER_ACCESS_TTL", 15*time.Minute)
@@ -213,6 +231,11 @@ func LoadConfig() (*Config, error) {
 		l.Check(err == nil && len(ek) == 64,
 			"HG_SERVER_SETTING_ENC_KEY 必须是 64 个 hex 字符（32 字节）")
 	}
+
+	// 审计防篡改链密钥：显式配置至少 32 字节；空值合法（从 JWTSecret 派生）。
+	// 换密钥会让旧封印无法校验——轮换需重封印工具，当前没有，别随手换。
+	l.Check(len(strings.TrimSpace(c.AuditSealKey)) == 0 || len(c.AuditSealKey) >= 32,
+		"HG_SERVER_AUDIT_SEAL_KEY 至少 32 字节")
 
 	// MCP 对外工具服务：启用必须配独立 Token（只读端点，防裸奔）
 	l.Check(!c.MCPEnabled || len(strings.TrimSpace(c.MCPToken)) >= 16,

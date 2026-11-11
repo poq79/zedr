@@ -33,6 +33,9 @@ type AIService struct {
 	// live 是实时查询业务核心（app 装配期注入）：Agentic 调查在主机
 	// 在线时取实时证据，AI 助手工具集（chat_ops）经 MCPExecutor 共用。
 	live *LiveQueryService
+
+	// zc 是 zero-click 自动调查的开关与预算闸状态（zeroclick.go）。
+	zc zeroclickState
 }
 
 // SetLiveQuery 注入实时查询服务（app 装配期调用一次；nil = 未接线）。
