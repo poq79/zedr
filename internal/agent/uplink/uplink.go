@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,6 +47,11 @@ type Client struct {
 	queue []model.AlertEnvelope
 	maxQueue int
 	dropped  int64
+
+	// fails 是批次重试的连败计数，键为批次的重试身份（spool 段路径 /
+	// 内存内容指纹，拆分子批派生子键）。连败 ≥2 次触发对半拆分——
+	// 只记内存：重启归零后重新数两次即可，不值得持久化。
+	fails map[string]int
 
 	// spool 是磁盘持久队列（离线/重启不丢告警）。为 nil 时退回内存队列：
 	// 数据目录不可写等异常不能阻断检测主链路。
@@ -91,6 +97,7 @@ func New(baseURL, enrollToken, dataDir string, maxQueue int) *Client {
 		},
 		queue:    make([]model.AlertEnvelope, 0, 256),
 		maxQueue: maxQueue,
+		fails:    make(map[string]int),
 	}
 	// 磁盘 spool 是主队列；创建失败（目录不可写/无权限）时保持 nil，
 	// Enqueue 自动落到上面的内存队列——降级要无声但可观测（QueueMode）。
@@ -291,7 +298,7 @@ func (c *Client) IOCVersion() int {
 func (c *Client) Flush(ctx context.Context) (int, error) {
 	sent := 0
 	if c.spool != nil {
-		n, err := c.spool.flush(ctx, c.sendChunk)
+		n, err := c.spool.flush(ctx, c.sendBatchWithPolicy)
 		sent += n
 		if err != nil {
 			return sent, err
@@ -328,10 +335,29 @@ func (c *Client) flushMemory(ctx context.Context) (int, error) {
 			n = 200
 		}
 		chunk := batch[:n]
-		if err := c.sendChunk(ctx, chunk); err != nil {
-			// 上报失败：把本批放回队列头部，等待下一轮重试
+		rej, err := c.sendBatchWithPolicy(ctx, memKey(chunk), chunk)
+		if len(rej) > 0 {
+			// 被服务端明确拒收的单条：重试只会得到同样的 4xx，
+			// 丢弃并计数（唯一允许的丢弃出口，与 spool 同口径）
 			c.mu.Lock()
-			c.queue = append(chunk, c.queue...)
+			c.dropped += int64(len(rej))
+			c.mu.Unlock()
+		}
+		if err != nil {
+			// 上报失败：把未送达部分放回队列头部，等待下一轮重试。
+			// 已送达的子批随整批重发，服务端按 fingerprint 去重兜底。
+			keep := make([]model.AlertEnvelope, 0, len(chunk))
+			rejected := make(map[int]bool, len(rej))
+			for _, i := range rej {
+				rejected[i] = true
+			}
+			for i, e := range chunk {
+				if !rejected[i] {
+					keep = append(keep, e)
+				}
+			}
+			c.mu.Lock()
+			c.queue = append(keep, c.queue...)
 			if len(c.queue) > c.maxQueue {
 				over := len(c.queue) - c.maxQueue
 				c.queue = c.queue[over:]
@@ -341,9 +367,162 @@ func (c *Client) flushMemory(ctx context.Context) (int, error) {
 			return sent, err
 		}
 		batch = batch[n:]
-		sent += len(chunk)
+		sent += n - len(rej)
 	}
 	return sent, nil
+}
+
+// ---------------------------------------------------------------- 批次重试策略
+
+// 连败拆分 + 抖动退避的参数。基础退避 500ms 起步、指数翻倍封顶 8s：
+// 服务端重启窗口（几十秒量级）内靠 5s flush 周期兜底，这里只约束
+// 同一轮 flush 内的拆分重试节奏，不再拉长。基础值做成变量仅为测试
+// 可以把退避调到毫秒级。
+var (
+	retryBaseDelay = 500 * time.Millisecond
+	retryMaxDelay  = 8 * time.Second
+)
+
+// fails 键空间上限：每个失败批最多派生 log2(200)+1 个子键，正常用量
+// 远达不到；超限整体重置，代价只是连败从头数。
+const retryFailsCap = 4096
+
+// sendBatchWithPolicy 发送一个批次，执行重试策略（磁盘 spool 与内存队列共用）：
+//
+//  1. 连败拆分：同一批连续失败 ≥2 次（跨 flush 轮次按 key 计数）→ 批内
+//     对半拆分再试（200→100→50…），把"一批太大永远过不去"（服务端曾因
+//     大批查重慢而 20s 超时 500）变成逐步收敛；首次失败整批留给下一轮，
+//     不因一次网络抖动就把批打碎。
+//  2. 抖动退避：每次拆分重试前退避 500ms*2^(连败-2)（±30% 抖动），
+//     避免服务端重启后众多探针的重试同步齐拍。
+//  3. 参数错误短路：400/422 说明请求内容本身非法，原样重试无意义——
+//     直接对半拆分定位坏记录；拆到单条仍被拒的记录以下标返回，由调用方
+//     单独处置（spool 段内清除 / 内存队列丢弃计数），不再阻塞队列。
+//
+// 除"单条且服务端明确拒收（400/422）"外绝不丢弃：其余失败一律保留，
+// 语义仍是 at-least-once，重复投递由服务端按 fingerprint 去重兜底。
+// rejected 返回批内被永久拒收记录的下标（相对 batch）。
+func (c *Client) sendBatchWithPolicy(ctx context.Context, key string, batch []model.AlertEnvelope) ([]int, error) {
+	if len(batch) == 0 {
+		return nil, nil
+	}
+	err := c.sendChunk(ctx, batch)
+	if err == nil {
+		c.clearBatchFails(key)
+		return nil, nil
+	}
+	if len(batch) == 1 {
+		if isParamRejection(err) {
+			// 服务端明确拒收且无兄弟记录可收敛：单独标记交还调用方
+			return []int{0}, nil
+		}
+		return nil, err // 瞬时失败：保留待下一轮
+	}
+	if !isParamRejection(err) {
+		streak := c.markBatchFail(key)
+		if streak < 2 {
+			return nil, err
+		}
+		if !sleepBackoff(ctx, backoffDelay(streak)) {
+			return nil, err // flush 预算耗尽/停机：剩余部分留给下一轮
+		}
+	}
+	// 对半拆分（400/422 时免退避——参数错误快速失败，二分定位坏记录）。
+	// 子键派生自父键：拆分后的连败按子批自身计数。
+	half := len(batch) / 2
+	rej, err2 := c.sendBatchWithPolicy(ctx, key+"\x00a", batch[:half])
+	if err2 != nil {
+		return rej, err2
+	}
+	rej2, err3 := c.sendBatchWithPolicy(ctx, key+"\x00b", batch[half:])
+	for _, i := range rej2 {
+		rej = append(rej, half+i)
+	}
+	return rej, err3
+}
+
+func (c *Client) markBatchFail(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.fails) >= retryFailsCap {
+		c.fails = make(map[string]int)
+	}
+	c.fails[key]++
+	return c.fails[key]
+}
+
+func (c *Client) clearBatchFails(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.fails, key)
+}
+
+// backoffDelay 拆分重试的指数退避：连败第 n 轮退 500ms*2^(n-2)，封顶 8s。
+func backoffDelay(streak int) time.Duration {
+	shift := streak - 2
+	if shift > 4 {
+		shift = 4
+	}
+	if shift < 0 {
+		shift = 0
+	}
+	d := retryBaseDelay << uint(shift)
+	if d <= 0 || d > retryMaxDelay {
+		d = retryMaxDelay
+	}
+	return jitter30(d)
+}
+
+// jitter30 给退避加 ±30% 抖动：重启风暴后众多探针的重试时刻不再齐拍，
+// 把同步重试洪峰摊成平滑到达。
+func jitter30(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	span := d * 3 / 10
+	return d - span + time.Duration(rand.Int64N(int64(2*span)+1))
+}
+
+// sleepBackoff 等待退避；ctx 取消（flush 预算耗尽/停机）返回 false。
+func sleepBackoff(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// memKey 内存批次的重试键：内容指纹（条数 + 首尾 fingerprint）。
+// 失败批在下一轮重放时内容不变（新告警只追加队尾），键稳定才能跨轮计连败。
+func memKey(chunk []model.AlertEnvelope) string {
+	return fmt.Sprintf("m:%d:%s:%s", len(chunk),
+		chunk[0].Fingerprint, chunk[len(chunk)-1].Fingerprint)
+}
+
+// statusError 携带 HTTP 状态码的错误：重试策略据此区分"请求本身非法
+// （400/422，重试无意义）"与"服务端/网络瞬时故障（值得重试）"。
+type statusError struct {
+	status int
+	msg    string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+// isParamRejection 判定服务端是否明确拒收了请求内容。保守起见只认
+// 400/422 类参数错误：401/403 可能因重新注册恢复，429 是限流要退避
+// 重试，413 等连败拆分后自愈——这些都不跳过。
+func isParamRejection(err error) bool {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.status == http.StatusBadRequest || se.status == http.StatusUnprocessableEntity
+	}
+	return false
 }
 
 // FetchRules 拉取规则整包；服务端版本未变时返回 notModified=true。
@@ -561,9 +740,9 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any, n
 func decodeError(status int, body []byte) error {
 	var eb model.ErrorBody
 	if err := json.Unmarshal(body, &eb); err == nil && eb.Error.Code != "" {
-		return fmt.Errorf("%s (HTTP %d, %s)", eb.Error.Message, status, eb.Error.Code)
+		return &statusError{status: status, msg: fmt.Sprintf("%s (HTTP %d, %s)", eb.Error.Message, status, eb.Error.Code)}
 	}
-	return fmt.Errorf("服务端返回 HTTP %d", status)
+	return &statusError{status: status, msg: fmt.Sprintf("服务端返回 HTTP %d", status)}
 }
 
 // TunnelCreds 返回隧道拨号用的凭证快照（供 tunnel.Options.Creds 使用）。

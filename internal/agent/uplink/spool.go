@@ -11,7 +11,9 @@ package uplink
 //     告警不是金融交易，掉电丢最后几条可接受，换来的是检测主循环零阻塞；
 //   - 段是删除单位：超限时整段淘汰最旧的，最多多丢半段（<=500 条）；
 //   - 发送成功才删段，失败保留，语义是 at-least-once；服务端按 fingerprint
-//     去重，重复投递不会产生重复告警；
+//     去重，重复投递不会产生重复告警。唯一例外见 purgeRecords：服务端
+//     明确判非法（400/422）且拆到单条仍被拒的记录，重试永远不会成功，
+//     留在段里只会以队头阻塞拖死整个重放，因此段内清除并计入 dropped；
 //   - 发送前先轮转活跃段，保证正在发送的段不再被写入，避免"边读边删"
 //     丢掉并发新到的告警。
 //
@@ -263,10 +265,16 @@ func (s *spool) droppedCount() int64 {
 	return s.dropped
 }
 
+// batchSender 是带重试策略的批次发送通道（Client 注入，磁盘/内存两条
+// 路径共用）。key 是批次的重试身份——spool 用段路径（段是不可变文件，
+// 重放期间头部批内容稳定），跨 flush 轮次稳定才能累计连败；rejected
+// 是批内被服务端明确拒收（400/422）记录的批内下标。
+type batchSender func(ctx context.Context, key string, batch []model.AlertEnvelope) (rejected []int, err error)
+
 // flush 按最旧优先发送已封存段。send 成功才删段。
 //
 // 返回已成功发送的条数。失败时保留当前段，下次重发该段（at-least-once）。
-func (s *spool) flush(ctx context.Context, send func(context.Context, []model.AlertEnvelope) error) (int, error) {
+func (s *spool) flush(ctx context.Context, send batchSender) (int, error) {
 	s.mu.Lock()
 	if s.flushing {
 		s.mu.Unlock()
@@ -296,7 +304,7 @@ func (s *spool) flush(ctx context.Context, send func(context.Context, []model.Al
 			s.removeSegment(seg)
 			continue
 		}
-		n, err := sendSegment(ctx, lines, send)
+		n, err := s.sendSegment(ctx, seg.path, lines, send)
 		sent += n
 		if err != nil {
 			flushErr = err
@@ -332,41 +340,132 @@ func readSegmentLines(path string) ([][]byte, error) {
 	return out, nil
 }
 
-func sendSegment(ctx context.Context, lines [][]byte, send func(context.Context, []model.AlertEnvelope) error) (int, error) {
-	sent := 0
-	var batch []model.AlertEnvelope
-	batchBytes := 0
+// spoolRecord 是段内一行与其解析出的信封的配对：拒收记录要能映射回
+// 源行做段内清除（purgeRecords），所以装配批次时不能丢掉行。
+type spoolRecord struct {
+	line []byte
+	env  model.AlertEnvelope
+}
 
-	flushBatch := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		if err := send(ctx, batch); err != nil {
-			return err
-		}
-		sent += len(batch)
-		batch = nil
-		batchBytes = 0
-		return nil
-	}
-
+// sendSegment 把段的行装配成批次并发送（条数/字节双上限）。行与信封
+// 保持配对：拒收记录要能映射回源行做段内清除。key 用段路径——段不可变，
+// 同一失败批跨 flush 轮次的重试身份稳定，Client 侧的连败计数才成立。
+func (s *spool) sendSegment(ctx context.Context, segPath string, lines [][]byte, send batchSender) (int, error) {
+	recs := make([]spoolRecord, 0, len(lines))
 	for _, line := range lines {
 		var env model.AlertEnvelope
 		if err := json.Unmarshal(line, &env); err != nil {
 			continue // 单行损坏只跳过该行
 		}
-		if len(batch) >= spoolBatchMaxRecords || batchBytes+len(line) > spoolBatchMaxBytes {
-			if err := flushBatch(); err != nil {
+		recs = append(recs, spoolRecord{line: line, env: env})
+	}
+
+	sent := 0
+	start := 0 // 当前批的起始下标
+	batchBytes := 0
+	flushRange := func(end int) error {
+		n, err := s.sendSlice(ctx, segPath, recs, start, end, send)
+		sent += n
+		start = end
+		batchBytes = 0
+		return err
+	}
+	for i := range recs {
+		if i-start >= spoolBatchMaxRecords || batchBytes+len(recs[i].line) > spoolBatchMaxBytes {
+			if err := flushRange(i); err != nil {
 				return sent, err
 			}
 		}
-		batch = append(batch, env)
-		batchBytes += len(line)
+		batchBytes += len(recs[i].line)
 	}
-	if err := flushBatch(); err != nil {
+	if err := flushRange(len(recs)); err != nil {
 		return sent, err
 	}
 	return sent, nil
+}
+
+// sendSlice 发送 recs[lo:hi] 并处置拒收记录：对半拆分重试在 sender 内部，
+// 这里只负责把"拆到单条仍被 400/422 拒收"的记录映射回源行，从段中清除
+// （拒收记录无论本轮其余部分是否失败都已定论，移除不破坏 at-least-once）。
+func (s *spool) sendSlice(ctx context.Context, segPath string, recs []spoolRecord, lo, hi int, send batchSender) (int, error) {
+	if lo >= hi {
+		return 0, nil
+	}
+	batch := make([]model.AlertEnvelope, hi-lo)
+	for i := lo; i < hi; i++ {
+		batch[i-lo] = recs[i].env
+	}
+	rej, err := send(ctx, segPath, batch)
+	if len(rej) > 0 {
+		drop := make([][]byte, len(rej))
+		for k, idx := range rej {
+			drop[k] = recs[lo+idx].line
+		}
+		s.purgeRecords(segPath, drop)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return hi - lo - len(rej), nil
+}
+
+// purgeRecords 把服务端明确拒收的记录从段中移除（整段重写，NDJSON 结构
+// 不变）。这是 spool 唯一的主动丢弃出口：这类记录重试永远不会成功，
+// 留在段里会以队头阻塞拖死整个重放。丢弃必须计数并持久化（与容量淘汰
+// 同口径）。重写失败时保持原段不动——下轮重放重新拒收，安全兜底。
+func (s *spool) purgeRecords(segPath string, drop [][]byte) {
+	if len(drop) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lines, err := readSegmentLines(segPath)
+	if err != nil {
+		return // 读失败：保持原样，下轮重放自然重试
+	}
+	var buf bytes.Buffer
+	kept := 0
+	var keptBytes int64
+	for _, line := range lines {
+		rejected := false
+		for _, d := range drop {
+			if bytes.Equal(line, d) {
+				rejected = true
+				break
+			}
+		}
+		if rejected {
+			continue
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+		kept++
+		keptBytes += int64(len(line)) + 1
+	}
+	if kept == len(lines) {
+		return // 没匹配到（防御）：不动文件
+	}
+	tmp := segPath + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, segPath); err != nil {
+		_ = os.Remove(tmp)
+		return
+	}
+	for i := range s.segs {
+		if s.segs[i].path == segPath {
+			removed := s.segs[i].count - kept
+			s.dropped += int64(removed)
+			s.total -= removed
+			s.bytes -= s.segs[i].bytes - keptBytes
+			s.segs[i].count = kept
+			s.segs[i].bytes = keptBytes
+			break
+		}
+	}
+	s.saveDroppedLocked()
 }
 
 func (s *spool) removeSegment(seg spoolSeg) {
@@ -374,12 +473,14 @@ func (s *spool) removeSegment(seg spoolSeg) {
 	defer s.mu.Unlock()
 	for i := range s.segs {
 		if s.segs[i].path == seg.path {
+			// 用登记表里的现值扣减而不是调用方快照：段可能在本轮 flush
+			// 中被 purgeRecords 清除过拒收记录，快照值已经偏大。
+			s.total -= s.segs[i].count
+			s.bytes -= s.segs[i].bytes
 			s.segs = append(s.segs[:i], s.segs[i+1:]...)
 			break
 		}
 	}
-	s.total -= seg.count
-	s.bytes -= seg.bytes
 	if s.total < 0 {
 		s.total = 0
 	}
