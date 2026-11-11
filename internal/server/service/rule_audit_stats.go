@@ -326,6 +326,11 @@ func (s *AuditService) List(ctx context.Context, limit int) ([]domain.AuditLog, 
 	return s.repos.Audit.List(ctx, limit)
 }
 
+// Verify 校验审计防篡改链。管理台校验端点与每日自检共用。
+func (s *AuditService) Verify(ctx context.Context) (domain.AuditChainReport, error) {
+	return s.repos.Audit.VerifyChain(ctx)
+}
+
 // ---------------------------------------------------------------- 统计
 
 // StatsService 提供仪表盘聚合。

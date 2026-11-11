@@ -585,6 +585,17 @@ func (h *adminHandler) listAudit(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
+// verifyAudit 全量校验审计防篡改链。只读操作，viewer 可见——
+// 断链状态本身就该被最多人看到，藏成 adminOnly 等于帮篡改者遮丑。
+func (h *adminHandler) verifyAudit(w http.ResponseWriter, r *http.Request) {
+	rep, err := h.deps.Services.Audit.Verify(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, rep)
+}
+
 func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 	items, err := h.deps.Services.Auth.ListUsers(r.Context())
 	if err != nil {

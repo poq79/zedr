@@ -276,6 +276,7 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("GET /metrics", adminH.metrics)
 
 	mux.Handle("GET /api/v1/audit", viewer(adminH.listAudit))
+	mux.Handle("GET /api/v1/audit/verify", viewer(adminH.verifyAudit))
 	mux.Handle("GET /api/v1/users", adminOnly(adminH.listUsers))
 	mux.Handle("POST /api/v1/users", adminOnly(adminH.createUser))
 

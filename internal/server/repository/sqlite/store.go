@@ -90,7 +90,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 	s.intel = intelRepo{s}
 	s.allowlist = allowlistRepo{s}
 	s.iocs = iocRepo{s}
-	s.audit = auditRepo{s}
+	s.audit = auditRepo{s: s}
 	s.commands = commandRepo{s}
 	s.stats = statsRepo{s}
 	s.inventory = inventoryRepo{s}
@@ -467,6 +467,26 @@ CREATE TABLE IF NOT EXISTS allow_observations (
   PRIMARY KEY (agent_id, obs_key)
 );
 CREATE INDEX IF NOT EXISTS idx_allow_obs_key ON allow_observations(obs_key);
+`,
+	},
+	{
+		name: "011_audit_seal",
+		sql: `
+-- 审计防篡改链（对标 OpenXDR auditchain，RESEARCH-OPENXDR §7 P0-1）：
+-- audit_logs.seq 全局单调序号 + seal = HMAC(前条seal ‖ 本条内容) 的哈希链，
+-- 密钥不入库（默认从 JWT_SECRET 派生子密钥），改一条/删中间行必然断链。
+-- audit_seal_anchor 单行锚点存链尾的带密钥 MAC：删掉末尾 N 行后锚点无法
+-- 用库内数据重算，尾删在校验时暴露（密钥在服务器进程内存里，纯 DB 攻击者伪造不出）。
+ALTER TABLE audit_logs ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE audit_logs ADD COLUMN seal TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_audit_seq ON audit_logs(seq);
+
+CREATE TABLE IF NOT EXISTS audit_seal_anchor (
+  id  INTEGER PRIMARY KEY CHECK (id = 1),
+  seq INTEGER NOT NULL DEFAULT 0,
+  mac TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO audit_seal_anchor(id, seq, mac) VALUES (1, 0, '');
 `,
 	},
 }

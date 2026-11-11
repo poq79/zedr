@@ -206,6 +206,11 @@ type IocRepo interface {
 type AuditRepo interface {
 	Add(ctx context.Context, l *domain.AuditLog) error
 	List(ctx context.Context, limit int) ([]domain.AuditLog, error)
+	// EnableSeal 注入防篡改链密钥并回填未封印的历史行（返回回填条数）。
+	// 幂等：重复调用只更新密钥，已封印行不动。
+	EnableSeal(ctx context.Context, key []byte) (int, error)
+	// VerifyChain 全链校验：逐行重算 HMAC、检查序号连续性与锚点一致性。
+	VerifyChain(ctx context.Context) (domain.AuditChainReport, error)
 }
 
 // CommandRepo 终端指令。

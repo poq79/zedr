@@ -211,6 +211,7 @@ type IntelItem struct {
 // AuditLog 是后台操作审计。
 type AuditLog struct {
 	ID        int64     `json:"id"`
+	Seq       int64     `json:"seq,omitempty"` // 防篡改链序号；0 = 封印未启用时的历史行
 	UserID    string    `json:"user_id"`
 	Username  string    `json:"username"`
 	Action    string    `json:"action"`
@@ -218,6 +219,21 @@ type AuditLog struct {
 	Detail    string    `json:"detail"`
 	IP        string    `json:"ip"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// AuditChainReport 是审计防篡改链的校验结果。
+// OK 不等于"绝对未篡改"：密钥不在库中，改写/中间删除必然断链；但删除
+// 末尾若干行同时把锚点一并改写仍需密钥才能瞒过校验——残余风险在 OPS.md 说明。
+type AuditChainReport struct {
+	OK         bool   `json:"ok"`
+	Total      int    `json:"total"`        // 全表行数
+	Sealed     int    `json:"sealed"`       // 已封印行数
+	Unsealed   int    `json:"unsealed"`     // 未封印行数（启用前的历史行，兼容期存在）
+	BrokenAt   int64  `json:"broken_at"`    // 断链位置（0 = 未断）
+	Reason     string `json:"reason"`       // seal_mismatch / seq_gap / anchor_missing / anchor_stale
+	HeadSeq    int64  `json:"head_seq"`     // 链尾序号
+	AnchorSeq  int64  `json:"anchor_seq"`   // 锚点记录的序号
+	VerifiedAt string `json:"verified_at"`  // RFC3339，便于把校验结果留档
 }
 
 // AgentCommand 是下发给终端的指令。
