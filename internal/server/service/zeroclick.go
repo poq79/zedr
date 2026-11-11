@@ -17,6 +17,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -113,6 +114,18 @@ func (s *AIService) zeroClickAgent(ctx context.Context, a *domain.Alert) (*OpsIt
 		s.log.InfoContext(ctx, "ai_zeroclick_run", "alert_id", a.ID, "hostname", a.Hostname,
 			"model", rep.Model, "tool_calls", rep.ToolCalls, "verdict", rep.Verdict,
 			"latency_ms", rep.LatencyMs, "steps", len(rep.Steps))
+	}
+	// 审计留痕：自动调查属于"机器代替人做了事"，必须进审计流与人工
+	// 操作同口径可查（谁/何时/对哪条告警/结论）。失败只记日志不阻断。
+	if s.repos.Audit != nil {
+		detail := fmt.Sprintf("zero-click 自动调查 model=%s tool_calls=%d verdict=%s confidence=%.0f%%",
+			rep.Model, rep.ToolCalls, rep.Verdict, rep.Confidence*100)
+		if err := s.repos.Audit.Add(ctx, &domain.AuditLog{
+			Username: "zero-click", Action: "ai.zeroclick", Target: a.ID,
+			Detail: detail, CreatedAt: time.Now(),
+		}); err != nil && s.log != nil {
+			s.log.WarnContext(ctx, "ai_zeroclick_audit_failed", "alert_id", a.ID, "err", err.Error())
+		}
 	}
 	return item, true
 }
