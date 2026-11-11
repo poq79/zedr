@@ -492,6 +492,8 @@ func (x *MCPExecutor) Call(ctx context.Context, name string, args json.RawMessag
 			"hosts_total": len(agents), "hosts_online": online,
 			"open_alerts": open, "ai_engine": st.Engine, "ai_model": st.Model,
 			"ai_budget_used": st.BudgetUsed, "ai_budget_cap": st.BudgetCap,
+			// 注入命中累计：突然升高 = AI 面被针对性攻击或误报恶化
+			"ai_tool_injection_hits": st.ToolInjectionHits,
 		}, nil
 	}
 	return nil, fmt.Errorf("未知工具 %q", name)

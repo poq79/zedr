@@ -106,6 +106,13 @@ func (e *Engine) AgentToolTimeoutMs() int {
 	return int(t.Milliseconds())
 }
 
+// AgentMaxSteps 暴露步数预算：服务层/配置中心要展示"当前生效值"，
+// 与 DB 里的配置值分开读引擎这份真值，避免展示一个会被钳制改掉的数字。
+func (e *Engine) AgentMaxSteps() int {
+	maxSteps, _, _ := e.agentBudget()
+	return maxSteps
+}
+
 // AgentAvailable 表示是否具备跑 Agent 循环的模型能力（供服务层决定主/旁路）。
 func (e *Engine) AgentAvailable() bool {
 	be := e.backend(SlotInvestigate)
@@ -351,6 +358,9 @@ func (e *Engine) runToolLoop(ctx context.Context, sys, user string, history []Ag
 			// 工具结果注入防线：喂什么扫什么（先截断后扫描），命中则加声明头
 			// + 步骤打标，数据本体不动（toolguard.go，纵深防御之一层）
 			fed := guardToolResult(&rec, trimToolResult(content))
+			if rec.InjectionHit {
+				e.stInjHits++
+			}
 			out.steps = append(out.steps, rec)
 			msgs = append(msgs, AgentMessage{Role: "tool", ToolCallID: tc.ID, Content: fed})
 		}
@@ -606,6 +616,9 @@ func (e *Engine) AgentChatStream(ctx context.Context, question string, history [
 			// 与 runToolLoop 同一条注入防线：先截断后扫描，命中只加声明头
 			// + 步骤打标（toolguard.go）
 			fed := guardToolResult(&rec, trimToolResult(content))
+			if rec.InjectionHit {
+				e.stInjHits++
+			}
 			rep.Steps = append(rep.Steps, rec)
 			emit(ChatStreamEvent{Type: "tool_end", Step: step, Tool: tc.Name,
 				ResultPreview: rec.ResultPreview, ResultBytes: rec.ResultBytes, Err: errStr})

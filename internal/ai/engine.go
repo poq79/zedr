@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-
 // 任务槽：一次 AI 能力调用走哪个槽位的模型。
 // 研判要快、狩猎要稳、调查与叙事要强——不同任务的成本/质量取舍不同，
 // 分槽配置是成本精细化的前提。investigate/narrative v1 预留，
@@ -25,10 +24,10 @@ const (
 type SlotConfig struct {
 	// Provider 当前仅 openai（OpenAI 兼容协议，覆盖 OpenAI/DeepSeek/通义/
 	// Kimi/vLLM/Ollama 等）。Anthropic 的 /v1/messages 协议列入 TODO。
-	Provider    string
-	BaseURL     string
-	APIKey      string
-	Model       string
+	Provider string
+	BaseURL  string
+	APIKey   string
+	Model    string
 	// Effort 是思考强度：off/low/medium/high。off 不发送 reasoning_effort
 	// 参数；其余原样透传，服务端不认时调用失败 → 自动降级启发式，
 	// 失败原因在研判面板与测试按钮里可见（诚实暴露，不做静默兼容）。
@@ -71,6 +70,7 @@ type Config struct {
 	AgentToolTimeout  time.Duration
 }
 
+// Stats 里的 ToolInjectionHits：见 Engine.stInjHits 注释。
 // Incidents 是事件叙事统计（与 Triage 分列）。
 type Incidents struct {
 	Narrated int64
@@ -87,14 +87,15 @@ type Stats struct {
 	BudgetUsed   int   `json:"budget_used"`
 	AvgLatencyMs int64 `json:"avg_latency_ms"`
 	// Narrated 是事件叙事调用次数（事件级检测的用量）。
-	Narrated int64 `json:"narrated"`
+	Narrated          int64 `json:"narrated"`
+	ToolInjectionHits int64 `json:"tool_injection_hits"`
 	// Slots 是按任务槽的调用分布（判断"钱花在哪个能力上"）。
 	Slots map[string]SlotStat `json:"slots,omitempty"`
 	// GroundedRate 是"结论全部带有效证据引用"的比例，
 	// 这是衡量 AI 输出可核查性的核心指标。
 	GroundedRate float64 `json:"grounded_rate"`
 	// ConflictCount 是模型结论与硬证据冲突、被护栏拦下的次数。
-	ConflictCount int64 `json:"conflict_count"`
+	ConflictCount int64  `json:"conflict_count"`
 	Engine        string `json:"engine"`
 	Model         string `json:"model"`
 }
@@ -142,9 +143,13 @@ type Engine struct {
 	cache      map[string]cacheEntry
 	// narrativeCache 是事件叙事的短时缓存（key: incidentID#ver）。
 	narrativeCache map[string]narrativeEntry
+	// stInjHits 是工具结果注入扫描的累计命中数（runToolLoop/AgentChatStream
+	// 回喂点计数）：公开给 system_status/周报——命中率突然升高 = 有针对性
+	// 的注入攻击在打 AI 面，或误报率恶化（toolguard.go）。
+	stInjHits int64
 	// ver 是配置版本：ApplyConfig 每次递增，缓存键携带版本号——
 	// 改模型/提示词/技能包后旧结论立即失效（此前要等 5 分钟 TTL）。
-	ver uint64
+	ver   uint64
 	slots map[string]*slotCounter
 
 	stTriaged   int64
@@ -594,16 +599,17 @@ func (e *Engine) Stats() Stats {
 	defer e.mu.Unlock()
 
 	st := Stats{
-		Triaged:       e.stTriaged,
-		LLMCalls:      e.stLLM,
-		Degraded:      e.stDegraded,
-		CacheHits:     e.stCacheHit,
-		TokensUsed:    e.stTokens,
-		BudgetCap:     e.cfg.HourlyTokenBudget,
-		BudgetUsed:    e.tokens,
-		Narrated:      e.stNarrated,
-		ConflictCount: e.stConflicts,
-		Engine:        "heuristic",
+		Triaged:           e.stTriaged,
+		LLMCalls:          e.stLLM,
+		Degraded:          e.stDegraded,
+		CacheHits:         e.stCacheHit,
+		TokensUsed:        e.stTokens,
+		BudgetCap:         e.cfg.HourlyTokenBudget,
+		BudgetUsed:        e.tokens,
+		Narrated:          e.stNarrated,
+		ConflictCount:     e.stConflicts,
+		ToolInjectionHits: e.stInjHits,
+		Engine:            "heuristic",
 	}
 	if len(e.slots) > 0 {
 		st.Slots = make(map[string]SlotStat, len(e.slots))
