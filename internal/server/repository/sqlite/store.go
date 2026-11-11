@@ -212,6 +212,12 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, severity);
 CREATE INDEX IF NOT EXISTS idx_alerts_fp ON alerts(fingerprint);
+-- 查重专用复合覆盖索引（2026-11-11 诊断：FindDuplicate 走单列 fp 索引后
+-- 每行回表 + created_at 排序，实测单次 56ms，500 条批 = 28s > agent 20s
+-- 上报超时，ctx 取消 → 500 → spool 重放死循环，累计 3121 次）。覆盖
+-- (fingerprint, agent_id, created_at) 后查询纯索引扫描。IF NOT EXISTS：
+-- 既有库 Open 时自动补建。
+CREATE INDEX IF NOT EXISTS idx_alerts_fp_agent_time ON alerts(fingerprint, agent_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alerts_agent ON alerts(agent_id);
 
 CREATE TABLE IF NOT EXISTS rules (

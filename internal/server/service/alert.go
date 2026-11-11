@@ -97,6 +97,29 @@ func (s *AlertService) Ingest(ctx context.Context, agent *domain.Agent, req mode
 	now := time.Now()
 	since := now.Add(-s.cfg.DupWindow)
 
+	// 批量查重（2026-11-11 诊断修复）：原实现逐条 FindDuplicate，
+	// 500 条批实测 28s（modernc 每查询 ~56ms），超过 agent 20s 上报
+	// 超时 → ctx 取消 → 500 → spool 重放同一批 → 慢性死循环（日志
+	// 3121 次）。改为批前一次分组查询 + 本地 map；批内语义不变：
+	// 同 fp 第二条起算 duplicate 并计数归首条。
+	fpSet := make([]string, 0, len(req.Alerts))
+	for _, in := range req.Alerts {
+		fp := in.Fingerprint
+		if fp == "" {
+			fp = deriveFingerprint(in)
+		}
+		fpSet = append(fpSet, fp)
+	}
+	existing, err := s.repos.Alerts.FindDuplicates(ctx, agent.ID, since, fpSet)
+	if err != nil {
+		if s.log != nil {
+			s.log.ErrorContext(ctx, "alerts_ingest_dupscan_failed",
+				"agent_id", agent.ID, "batch", len(req.Alerts), "err", err.Error())
+		}
+		return nil, err
+	}
+	processed := make(map[string]string, len(fpSet)) // fp → 本批首条告警 ID
+
 	for _, in := range req.Alerts {
 		if !in.Verdict.Valid() || !in.Severity.Valid() {
 			resp.Rejected++
@@ -114,15 +137,20 @@ func (s *AlertService) Ingest(ctx context.Context, agent *domain.Agent, req mode
 			fp = deriveFingerprint(in)
 		}
 
-		dup, err := s.repos.Alerts.FindDuplicate(ctx, fp, agent.ID, since)
-		if err != nil {
-			return nil, err
-		}
-		if dup != nil {
-			if err := s.repos.Alerts.BumpDuplicate(ctx, dup.ID, now); err != nil {
+		if dupID, ok := processed[fp]; ok {
+			// 批内重复：语义与原逐条查询一致——刚入库的同 fp 命中窗口
+			if err := s.repos.Alerts.BumpDuplicate(ctx, dupID, now); err != nil {
 				return nil, err
 			}
 			resp.Duplicates++
+			continue
+		}
+		if dupID, ok := existing[fp]; ok {
+			if err := s.repos.Alerts.BumpDuplicate(ctx, dupID, now); err != nil {
+				return nil, err
+			}
+			resp.Duplicates++
+			processed[fp] = dupID
 			continue
 		}
 
@@ -159,8 +187,16 @@ func (s *AlertService) Ingest(ctx context.Context, agent *domain.Agent, req mode
 			HostCount:   1,
 		}
 		if err := s.repos.Alerts.Create(ctx, a); err != nil {
+			if s.log != nil {
+				// 此前 500 静默无痕（只有 http_request 行），排障的人
+				// 只能靠猜；入库失败必须留第一现场。
+				s.log.ErrorContext(ctx, "alerts_ingest_create_failed",
+					"agent_id", agent.ID, "batch", len(req.Alerts),
+					"accepted_so_far", resp.Accepted, "err", err.Error())
+			}
 			return nil, err
 		}
+		processed[fp] = a.ID
 		resp.Accepted++
 
 		if s.bus != nil {

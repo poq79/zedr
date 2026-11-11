@@ -103,6 +103,8 @@ type AgentRepo interface {
 type AlertRepo interface {
 	Create(ctx context.Context, a *domain.Alert) error
 	FindDuplicate(ctx context.Context, fingerprint, agentID string, since time.Time) (*domain.Alert, error)
+	// FindDuplicates 批量查重（上报路径优化，见 sqlite/alerts.go 注释）。
+	FindDuplicates(ctx context.Context, agentID string, since time.Time, fingerprints []string) (map[string]string, error)
 	BumpDuplicate(ctx context.Context, id string, at time.Time) error
 	ByID(ctx context.Context, id string) (*domain.Alert, error)
 	List(ctx context.Context, f domain.AlertFilter) ([]domain.Alert, int, error)
