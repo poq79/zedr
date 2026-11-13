@@ -1,10 +1,11 @@
-package recon
+//go:build windows
 
 // agentface_test.go：agent_face 三块清点的夹具测试。
 // 夹具全部落在 t.TempDir + t.Setenv 重定向 APPDATA/USERPROFILE，不碰
 // 真实用户目录；真机冒烟是显式 opt-in 的独立测试（ZEDR_RECON_SMOKE=1）。
 // 脱敏红线断言（env value / URL userinfo 不出现在线协议）在每个相关
 // 测试里都做——这是本文件最重要的断言。
+package recon
 
 import (
 	"context"

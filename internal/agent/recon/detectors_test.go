@@ -1,8 +1,9 @@
-package recon
+//go:build windows
 
 // detectors_test.go：六类 detector 的合成数据测试。
 // AI/db 用 httptest/真实回环 TCP 在随机端口模拟产品；Netstat 行由测试
 // 合成（端口 = 测试服务器实际端口），走完整 detect→probe→finding 链路。
+package recon
 
 import (
 	"context"

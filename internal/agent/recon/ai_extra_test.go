@@ -1,7 +1,8 @@
-package recon
+//go:build windows
 
 // ai_extra_test.go：2026-11 追加产品表（Hermes/dsh/OpenHands/CrewAI/
 // LangServe/终端 Agent）的关键判定。
+package recon
 
 import (
 	"context"

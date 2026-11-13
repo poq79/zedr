@@ -1,3 +1,5 @@
+//go:build windows
+
 package recon
 
 // recon_test.go：入口/分类过滤/并发编排/panic 兜底/超时截断，
