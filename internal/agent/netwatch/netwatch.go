@@ -774,7 +774,7 @@ func (w *Watch) evaluate(pid uint32, st *procState, now time.Time) []Finding {
 		})
 	}
 
-	// NW-002 主机扫探：非常见端口的 IP 扇出
+	// NW-002 主机扫探：非常见端口的 IP 扇出。
 	thr = w.cfg.HostSweepIPs * scale
 	if len(uncommonIPs) >= thr {
 		out = append(out, Finding{

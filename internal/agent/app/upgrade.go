@@ -232,7 +232,7 @@ func applyPendingUpgrade(cfg *Config, log *slog.Logger) {
 	// 才删得掉，能活到这里的 .old 已无人持有
 	if exe, err := os.Executable(); err == nil {
 		if err := os.Remove(exe + upgradeOldSuffix); err == nil {
-			log.Info("self_upgrade_old_cleaned", "old", exe + upgradeOldSuffix)
+			log.Info("self_upgrade_old_cleaned", "old", exe+upgradeOldSuffix)
 		}
 	}
 
