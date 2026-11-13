@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // drivers_test.go：内核驱动枚举真机冒烟。

@@ -3,7 +3,7 @@
 // 规则设计纪律（调研报告 §设计建议，2026-11-06 联网核实）：
 //   - 只消费已有信号，不新增采集面；
 //   - 全部环节确定性判定（签名/路径/事件类型），弱信号不独立成链
-//    （ATLASv2 审计教训：词汇新颖性之外的时序泛化是误报放大器）；
+//     （ATLASv2 审计教训：词汇新颖性之外的时序泛化是误报放大器）；
 //   - 首批 4 条覆盖最高价值链：落地→执行→C2、暴破→成功→执行工具、
 //     持久化→执行、注入→外联。勒索链不在此重复——既有"critical 只能
 //     由诱饵命中关联升级"的两级防线（FILE-RANSOM）已覆盖。
@@ -42,8 +42,8 @@ type rule struct {
 // allRules 是链规则表（顺序即 Feed 时的评估顺序，无逻辑影响）。
 var allRules = [...]rule{
 	{
-		id:  "CHAIN-DROP-EXEC-C2",
-		title: "攻击链：落地程序执行后外联",
+		id:     "CHAIN-DROP-EXEC-C2",
+		title:  "攻击链：落地程序执行后外联",
 		length: 2, span: procChainMaxSpan,
 		score: 75, verdict: model.VerdictSuspicious, severity: model.SeverityHigh,
 		mitre: []string{"T1105"},
@@ -65,8 +65,8 @@ var allRules = [...]rule{
 		},
 	},
 	{
-		id:  "CHAIN-BRUTE-SUCCESS",
-		title: "攻击链：暴破成功后执行落地程序",
+		id:     "CHAIN-BRUTE-SUCCESS",
+		title:  "攻击链：暴破成功后执行落地程序",
 		length: 3, span: hostChainMaxSpan,
 		score: 85, verdict: model.VerdictSuspicious, severity: model.SeverityCritical,
 		mitre: []string{"T1110", "T1078"},
@@ -106,8 +106,8 @@ var allRules = [...]rule{
 		},
 	},
 	{
-		id:  "CHAIN-PERSIST-RUN",
-		title: "攻击链：新增持久化项被执行",
+		id:     "CHAIN-PERSIST-RUN",
+		title:  "攻击链：新增持久化项被执行",
 		length: 2, span: hostChainMaxSpan,
 		score: 72, verdict: model.VerdictSuspicious, severity: model.SeverityHigh,
 		mitre: []string{"T1547.001"}, // 链首阶段自带 MITRE 时覆盖
@@ -138,8 +138,8 @@ var allRules = [...]rule{
 		},
 	},
 	{
-		id:  "CHAIN-INJECT-OUT",
-		title: "攻击链：注入残留进程外联",
+		id:     "CHAIN-INJECT-OUT",
+		title:  "攻击链：注入残留进程外联",
 		length: 2, span: procChainMaxSpan,
 		score: 85, verdict: model.VerdictSuspicious, severity: model.SeverityCritical,
 		mitre: []string{"T1055", "T1071"},

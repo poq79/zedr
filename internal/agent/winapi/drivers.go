@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // drivers.go：已加载内核驱动枚举（psapi 只读面）。

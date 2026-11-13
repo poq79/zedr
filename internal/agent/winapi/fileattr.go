@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // fileattr.go：Windows 文件属性查询封装（liveapi /fs 与 /fs/stat 的属性来源）。

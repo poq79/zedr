@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // shares.go：本地 SMB 共享枚举（资产侦查 remote 类）。

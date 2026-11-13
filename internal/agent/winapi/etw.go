@@ -41,19 +41,19 @@ import (
 )
 
 var (
-	procStartTraceW     = modAdvapi32.NewProc("StartTraceW")
-	procControlTraceW   = modAdvapi32.NewProc("ControlTraceW")
-	procEnableTraceEx2  = modAdvapi32.NewProc("EnableTraceEx2")
-	procOpenTraceW      = modAdvapi32.NewProc("OpenTraceW")
-	procProcessTrace    = modAdvapi32.NewProc("ProcessTrace")
-	procCloseTrace      = modAdvapi32.NewProc("CloseTrace")
-	procTraceSetInfo    = modAdvapi32.NewProc("TraceSetInformation")
+	procStartTraceW    = modAdvapi32.NewProc("StartTraceW")
+	procControlTraceW  = modAdvapi32.NewProc("ControlTraceW")
+	procEnableTraceEx2 = modAdvapi32.NewProc("EnableTraceEx2")
+	procOpenTraceW     = modAdvapi32.NewProc("OpenTraceW")
+	procProcessTrace   = modAdvapi32.NewProc("ProcessTrace")
+	procCloseTrace     = modAdvapi32.NewProc("CloseTrace")
+	procTraceSetInfo   = modAdvapi32.NewProc("TraceSetInformation")
 )
 
 const (
-	eventTraceControlStop   = 0
-	eventControlCodeEnable  = 1
-	eventTraceRealTimeMode  = 0x00000100
+	eventTraceControlStop       = 0
+	eventControlCodeEnable      = 1
+	eventTraceRealTimeMode      = 0x00000100
 	processTraceModeRealTime    = 0x00000100
 	processTraceModeEventRecord = 0x10000000
 	traceLevelInformation       = 4
@@ -159,21 +159,21 @@ type eventRecord struct {
 
 // ProcEvent 是一条进程创建事件。
 type ProcEvent struct {
-	PID      uint32
-	PPID     uint32
-	Image    string // 完整镜像路径
-	CmdLine  string
-	Time     time.Time
+	PID               uint32
+	PPID              uint32
+	Image             string // 完整镜像路径
+	CmdLine           string
+	Time              time.Time
 	EventsLostOnStart uint64
 }
 
 // ETWProcessWatcher 订阅内核进程创建事件。
 type ETWProcessWatcher struct {
-	name  string
-	ch    chan ProcEvent
-	done  chan struct{}
+	name string
+	ch   chan ProcEvent
+	done chan struct{}
 
-	traceHandle uint64 // StartTrace 得到的控制句柄
+	traceHandle   uint64 // StartTrace 得到的控制句柄
 	consumeHandle uint64 // OpenTrace 得到的消费句柄
 
 	// lf 与 namePtr 必须比 ProcessTrace 活得久：
@@ -191,9 +191,9 @@ type ETWProcessWatcher struct {
 	diagEventID  atomic.Int64 // EventID==1 次数
 	diagNoData   atomic.Int64 // UserData 为空次数
 	diagParsed   atomic.Int64 // 解析成功次数
-	lostCount uint64
-	errOnce   sync.Once
-	lastErr   error
+	lostCount    uint64
+	errOnce      sync.Once
+	lastErr      error
 }
 
 // NewETWProcessWatcher 创建并启动实时订阅。

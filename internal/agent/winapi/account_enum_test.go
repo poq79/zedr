@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // account_enum_test.go：本地账户/管理员组/密码策略真机冒烟。

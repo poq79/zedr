@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // evtquery_test.go：EvtReadLatest 反向查询测试。
 //
 // 真机通道冒烟（管理员权限下 System 通道可读），断言以方向/钳制/过滤

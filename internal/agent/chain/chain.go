@@ -39,14 +39,14 @@ import (
 
 // 阶段种类：与馈送方（app 接线层）的信号源一一对应。
 const (
-	KindProc    = "proc"    // 新进程首次被观察（含"落地即执行"标记）
-	KindConn    = "conn"    // 进程对外连接（非回环）
-	KindNet     = "net"     // netwatch NW-* 行为命中
-	KindBrute   = "brute"   // 4625 聚合超阈（EVT-BRUTE 触发点）
+	KindProc    = "proc"     // 新进程首次被观察（含"落地即执行"标记）
+	KindConn    = "conn"     // 进程对外连接（非回环）
+	KindNet     = "net"      // netwatch NW-* 行为命中
+	KindBrute   = "brute"    // 4625 聚合超阈（EVT-BRUTE 触发点）
 	KindLogonOK = "logon_ok" // 暴破成功序列（EVT-BRUTE-SUCCESS 触发点）
 	KindSvcInst = "svc_inst" // 新服务安装（7045）
 	KindPersist = "persist"  // 持久化项新增/改写（P-001）
-	KindMem     = "mem"     // 内存威胁巡检命中（MEM-1055）
+	KindMem     = "mem"      // 内存威胁巡检命中（MEM-1055）
 )
 
 const (
@@ -154,10 +154,10 @@ type Options struct {
 type Engine struct {
 	opts Options
 
-	mu       sync.Mutex
-	machines map[string]*machine // ruleID \x00 key -> machine
-	ignores  map[string]time.Time
-	dropped  int64 // 超上限淘汰的链数（mu 保护）
+	mu        sync.Mutex
+	machines  map[string]*machine // ruleID \x00 key -> machine
+	ignores   map[string]time.Time
+	dropped   int64 // 超上限淘汰的链数（mu 保护）
 	lastSweep time.Time
 
 	fired       atomic.Int64
@@ -189,10 +189,10 @@ func New(opts Options) *Engine {
 
 // Stats 是引擎健康度快照（本地面板/心跳可见）。
 type Stats struct {
-	Active  int               // 当前活跃链数
-	Fired   int64             // 累计完成的链数
-	Dropped int64             // 超上限淘汰的链数
-	ByRule  map[string]int64  // 按规则累计完成数（运营视角"哪条链在响"）
+	Active  int              // 当前活跃链数
+	Fired   int64            // 累计完成的链数
+	Dropped int64            // 超上限淘汰的链数
+	ByRule  map[string]int64 // 按规则累计完成数（运营视角"哪条链在响"）
 }
 
 // Stats 返回健康度快照。

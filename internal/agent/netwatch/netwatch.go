@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"zedr/internal/agent/winapi"
+	"zedr/internal/agent/nettypes"
 	"zedr/internal/model"
 )
 
@@ -119,7 +119,7 @@ type Tick struct {
 	// 单测可以合成时间线，回放诊断也可复现。
 	TakenAt time.Time
 	// Conns 是全系统 TCP 连接表（快照），按 PID 分组。
-	Conns map[uint32][]winapi.TCPConn
+	Conns map[uint32][]nettypes.TCPConn
 	// Procs 是当前存活进程的标识信息；不在表里的 PID（刚退出）沿用
 	// netwatch 内部记住的最后一次身份。
 	Procs map[uint32]ProcIdent

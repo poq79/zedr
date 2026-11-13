@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // registry.go：只读注册表值读取（资产侦查 remote 类读 RDP 的 NLA 配置）。

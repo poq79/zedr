@@ -42,9 +42,9 @@ const hubFanout = 15
 // Load 从磁盘加载基线；文件不存在时返回空模型。
 func Load(path string) *Model {
 	m := &Model{
-		path:       path,
-		Pairs:      make(map[string]map[string]int),
-		ParentTotal: make(map[string]int),
+		path:         path,
+		Pairs:        make(map[string]map[string]int),
+		ParentTotal:  make(map[string]int),
 		ChildrenSeen: make(map[string]map[string]struct{}),
 	}
 	raw, err := os.ReadFile(path)
@@ -201,8 +201,8 @@ func (m *Model) Save() error {
 // ---------------------------------------------------------------- helpers
 
 var (
-	officeApps = []string{"winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "onenote.exe", "mspub.exe", "visio.exe"}
-	shells     = []string{"cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe"}
+	officeApps  = []string{"winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "onenote.exe", "mspub.exe", "visio.exe"}
+	shells      = []string{"cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe"}
 	commonChild = []string{
 		"svchost.exe", "conhost.exe", "runtimebroker.exe", "dllhost.exe", "taskhostw.exe",
 		"searchindexer.exe", "backgroundtaskhost.exe", "ctfmon.exe", "msedgewebview2.exe",

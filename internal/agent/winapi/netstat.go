@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // netstat.go：带归属 PID 的 TCP/UDP 连接表枚举（liveapi /netstat 的数据源）。
@@ -17,18 +20,13 @@ import (
 	"fmt"
 	"net"
 	"unsafe"
+
+	"zedr/internal/agent/nettypes"
 )
 
-// NetRow 是一条带归属 PID 的连接行；JSON 字段名即 liveapi /netstat 线协议。
-type NetRow struct {
-	Proto      string `json:"proto"`
-	LocalIP    string `json:"local_ip"`
-	LocalPort  uint16 `json:"local_port"`
-	RemoteIP   string `json:"remote_ip"`
-	RemotePort uint16 `json:"remote_port"`
-	State      string `json:"state"`
-	PID        uint32 `json:"pid"`
-}
+// NetRow 是一条带归属 PID 的连接行（nettypes 单一事实源）；JSON 字段名
+// 即 liveapi /netstat 线协议。Linux 侧由 /proc/net/tcp 投影同形状。
+type NetRow = nettypes.NetRow
 
 // GetNetstat 一次拉取全系统 TCP（v4+v6）与 UDP（v4+v6）端点表。
 //

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // securitycheck.go：安全基线检查用的只读注册表 DWORD 读取（LIVE-TUNNEL §13.2）。

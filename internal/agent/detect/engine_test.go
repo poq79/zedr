@@ -1,8 +1,8 @@
 package detect
 
 import (
-	"testing"
 	"strings"
+	"testing"
 
 	"zedr/internal/agent/allow"
 	"zedr/internal/agent/baseline"

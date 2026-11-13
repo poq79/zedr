@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // threads.go：进程线程枚举 + 起始地址 + 模块归属 + 匿名可执行内存判定。

@@ -9,8 +9,8 @@ package detect
 
 import (
 	"fmt"
-	"zedr/internal/model"
 	"strings"
+	"zedr/internal/model"
 )
 
 // ruleGuidance 是高危规则的定向解释。只覆盖用户最可能遇到的十来条；

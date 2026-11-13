@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 import (
@@ -80,7 +83,9 @@ type wintrustData struct {
 	DwUIContext         uint32
 }
 
-// SignatureResult 是 Authenticode 校验结果。
+// SignatureResult 是 Authenticode 校验结果。Windows 专属形状（WinVerifyTrust
+// 原始码等字段只有这里有）；跨平台调用方（enrich）用逐字段转换，避免
+// winapi↔enrich import 成环。
 type SignatureResult struct {
 	Valid   bool   // 签名链是否可信通过
 	Signed  bool   // 文件是否带有签名（即便不受信）

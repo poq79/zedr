@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // ads_test.go：流枚举与 Zone.Identifier 解析。

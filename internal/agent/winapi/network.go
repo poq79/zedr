@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 import (
@@ -7,6 +10,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"zedr/internal/agent/nettypes"
 )
 
 var (
@@ -16,23 +21,17 @@ var (
 )
 
 const (
-	afInet         = 2
-	afInet6        = 23
+	afInet              = 2
+	afInet6             = 23
 	tcpTableOwnerPIDAll = 5
 
 	tcpStateEstablished = 5
 )
 
-// TCPConn 是一条 TCP 连接（含归属 PID）。
-type TCPConn struct {
-	Proto      string
-	LocalIP    string
-	LocalPort  uint16
-	RemoteIP   string
-	RemotePort uint16
-	State      string
-	PID        uint32
-}
+// TCPConn 是一条 TCP 连接（含归属 PID）的跨平台形状（nettypes 单一事实
+// 源）：Windows 由 GetExtendedTcpTable 生产，Linux 由 /proc/net/tcp +
+// inode→PID 映射生产同形状数据，netwatch 检测逻辑零分叉。
+type TCPConn = nettypes.TCPConn
 
 // tcpStateNames 把 MIB_TCP_STATE 映射成可读文本。
 var tcpStateNames = map[uint32]string{
@@ -101,18 +100,19 @@ func collectTCP4(out map[uint32][]TCPConn) error {
 }
 
 // MIB_TCP6ROW_OWNER_PID:
-//   UCHAR localAddr[16]; DWORD dwLocalScopeId; DWORD dwLocalPort;
-//   UCHAR remoteAddr[16]; DWORD dwRemoteScopeId; DWORD dwRemotePort;
-//   DWORD dwState; DWORD dwOwningPid;
+//
+//	UCHAR localAddr[16]; DWORD dwLocalScopeId; DWORD dwLocalPort;
+//	UCHAR remoteAddr[16]; DWORD dwRemoteScopeId; DWORD dwRemotePort;
+//	DWORD dwState; DWORD dwOwningPid;
 type tcp6Row struct {
-	LocalAddr      [16]byte
-	LocalScopeID   uint32
-	LocalPort      uint32
-	RemoteAddr     [16]byte
-	RemoteScopeID  uint32
-	RemotePort     uint32
-	State          uint32
-	OwningPID      uint32
+	LocalAddr     [16]byte
+	LocalScopeID  uint32
+	LocalPort     uint32
+	RemoteAddr    [16]byte
+	RemoteScopeID uint32
+	RemotePort    uint32
+	State         uint32
+	OwningPID     uint32
 }
 
 func collectTCP6(out map[uint32][]TCPConn) error {

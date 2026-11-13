@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // handles.go：系统句柄表枚举、对象类型名缓存、句柄名解析、盘符→设备路径映射。

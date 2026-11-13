@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // verinfo_test.go：版本资源读取。真机冒烟：用系统自带文件验证

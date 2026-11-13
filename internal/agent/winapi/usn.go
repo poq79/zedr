@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package winapi 的 USN Journal 断点补采。
 //
 // 解决什么问题：ReadDirectoryChangesW 只在进程存活时收事件。探针升级、

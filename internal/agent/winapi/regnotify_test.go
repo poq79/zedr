@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // regnotify_test.go：RegWatch 的真实通知验证。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package winapi 的文件落地监控。
 //
 // 检测价值：绝大多数入侵都有一个"文件被写进磁盘，随后被执行"的环节。
@@ -18,8 +21,10 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
 	"unicode/utf16"
 	"unsafe"
+	"zedr/internal/agent/nettypes"
 
 	"golang.org/x/sys/windows"
 )
@@ -78,12 +83,10 @@ var interestingExt = map[string]bool{
 //   - 回调在 watchLoop goroutine 里同步触发（每个监控目录一个 goroutine），
 //     消费方自保证线程安全；回调内可以查询 FileWatcher（互不持锁），
 //     但不要做耗时操作——会拖住所有目录的事件流。
-type FileEvent struct {
-	Kind    string // "added"/"removed"/"modified"/"renamed"/"renamed_old"
-	Path    string // 完整路径（监控目录 + 相对名）
-	OldPath string // 仅 renamed：配对到的旧路径；配对失败为空
-	When    time.Time
-}
+//
+// FileEvent 是文件事件的跨平台形状（nettypes 单一事实源）。
+// Windows 实现由 RDCW 生产；Linux 侧由 inotify 生产同形状数据。
+type FileEvent = nettypes.FileEvent
 
 // FileWatcher 监控若干目录的文件落地事件。
 type FileWatcher struct {
@@ -111,7 +114,7 @@ type FileWatcher struct {
 	// overflow 是 RDCW 缓冲溢出（丢整批）的诚实计数：溢出说明该目录
 	// 的变更速率超过 64KB/批的缓冲设计，暴露给状态页供运维判断。
 	overflow atomic.Int64
-	watched []string
+	watched  []string
 }
 
 // SetOnFileEvent 设置全量事件回调（含删除/改名旧名，不受落地扩展名过滤）。

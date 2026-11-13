@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // memscan_test.go：地址空间元数据扫描真机冒烟。

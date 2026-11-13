@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // memscan.go：进程地址空间元数据扫描（liveapi /memscan 的数据源）。

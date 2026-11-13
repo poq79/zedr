@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // evtquery.go：反向事件查询原语（"取某通道最近 N 条"，交互式调查用）。

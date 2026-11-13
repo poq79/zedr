@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // logonsession_test.go：LSA 登录会话枚举真机冒烟。

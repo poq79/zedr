@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // usnsnapshot.go：USN journal 定点回溯扫描（liveapi /usn 调查端点专用）。

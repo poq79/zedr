@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // evtlog.go：Windows 事件日志读取层（wevtapi.dll，轮询模式，E1 骨架）。
 //
 // 为什么是轮询而不是 EvtSubscribe 推模式：推模式的回调绑定发起线程，

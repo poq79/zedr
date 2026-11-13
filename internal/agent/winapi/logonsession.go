@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // logonsession.go：登录会话枚举（secur32 LSA 只读面）。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package winapi 的持久化项枚举。
 //
 // 为什么需要它：现有检测只看"进程创建"这一个时刻，而入侵的实质是"驻留"。
@@ -17,7 +20,9 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// PersistItem 是一个持久化（自启动）项。
+// PersistItem 是一个持久化（自启动）项。Windows 专属实现；跨平台形状
+// 归 persist 包所有（本包结果经 persist_windows.go 逐字段转换，避免
+// winapi↔persist 经 enrich 成环）。
 type PersistItem struct {
 	// Key 是跨采集周期稳定的唯一标识：同一位置同名项才视为同一对象。
 	Key string
@@ -95,7 +100,7 @@ func EnumeratePersistence() (items []PersistItem, errs []string) {
 }
 
 // EnumeratePersistenceRegistry 只枚举注册表类自启动位置
-//（Run/RunOnce + Winlogon + IFEO），供 persist 的定向重扫使用。
+// （Run/RunOnce + Winlogon + IFEO），供 persist 的定向重扫使用。
 //
 // 为什么单独存在：实时事件路径（regwatch）只需要"注册表三节"，全量
 // 枚举里服务/计划任务占大头（本机实测全量 ~160ms、三节 ~40ms）——
@@ -420,10 +425,10 @@ type taskXMLSchema struct {
 		Author      string `xml:"Author"`
 	} `xml:"RegistrationInfo"`
 	Triggers struct {
-		Boot      []struct{} `xml:"BootTrigger"`
-		Logon     []struct{} `xml:"LogonTrigger"`
-		Time      []struct{} `xml:"TimeTrigger"`
-		Calendar  []struct{} `xml:"CalendarTrigger"`
+		Boot     []struct{} `xml:"BootTrigger"`
+		Logon    []struct{} `xml:"LogonTrigger"`
+		Time     []struct{} `xml:"TimeTrigger"`
+		Calendar []struct{} `xml:"CalendarTrigger"`
 	} `xml:"Triggers"`
 	Principals struct {
 		Principal struct {
@@ -533,7 +538,6 @@ func TaskCommandPath(taskName string) string {
 	return def.Command
 }
 
-//
 // 自启动项的命令行格式五花八门：带引号、带参数、以环境变量开头、
 // 只有裸程序名（依赖 PATH）。这里尽量还原出磁盘路径，供信誉判定使用。
 func PersistCommandPath(cmd string) string {

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // ads.go：NTFS 备用数据流（ADS）枚举与 Zone.Identifier（MotW）读取。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // netinfo.go：ARP 表 / IPv4 路由表 / DNS 解析缓存（只读快照）。

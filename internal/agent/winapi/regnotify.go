@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // regnotify.go：自启动注册表键的实时变更通知（RegNotifyChangeKeyValue）。
 //
 // 为什么需要它：persist.go 的持久化监控是周期轮询 diff，攻击者从写入

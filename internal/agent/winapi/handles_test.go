@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // handles_test.go：句柄表枚举/类型缓存/名称解析/设备映射的真机冒烟。

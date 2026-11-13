@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package winapi 的资产盘点采集（inventory）。
 //
 // 为什么需要它：告警只有进程上下文时研判空间有限——"svchost.exe 连公网"

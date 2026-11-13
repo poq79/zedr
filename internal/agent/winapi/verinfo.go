@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // verinfo.go：PE 版本资源（VS_VERSIONINFO）读取。

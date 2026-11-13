@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // netinfo_test.go：ARP/路由/DNS 缓存真机冒烟。

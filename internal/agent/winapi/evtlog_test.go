@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // evtlog_test.go：事件日志读取层测试。
 //
 // 两部分：

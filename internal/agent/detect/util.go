@@ -1,30 +1,41 @@
 package detect
 
 import (
-	"os"
-	"strings"
+	"net"
 	"sync"
-
-	"zedr/internal/agent/winapi"
 )
 
-var (
-	rootOnce sync.Once
-	rootPath string
-)
-
-// systemRoot 返回 Windows 目录（小写），用于判断模块是否来自系统目录。
-func systemRoot() string {
-	rootOnce.Do(func() {
-		rootPath = strings.ToLower(strings.TrimRight(os.Getenv("SystemRoot"), `\`))
-		if rootPath == "" {
-			rootPath = `c:\windows`
+// isPublic 判断远端地址是否为公网。原实现调 winapi.IsPublicRemote——
+// 那是纯 net 逻辑，为解掉 detect→winapi 的 Linux 构建耦合移入本包
+// （语义与 winapi 版本保持逐行一致）。
+func isPublic(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return false
+	}
+	privateOnce.Do(func() {
+		for _, cidr := range []string{
+			"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+			"127.0.0.0/8", "fc00::/7", "fe80::/10",
+		} {
+			_, ipNet, err := net.ParseCIDR(cidr)
+			if err == nil {
+				privateNets = append(privateNets, ipNet)
+			}
 		}
 	})
-	return rootPath
+	for _, ipNet := range privateNets {
+		if ipNet.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
-// isPublic 判断远端地址是否为公网。
-func isPublic(ip string) bool {
-	return winapi.IsPublicRemote(ip)
-}
+var (
+	privateOnce sync.Once
+	privateNets []*net.IPNet
+)

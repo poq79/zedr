@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"zedr/internal/agent/winapi"
 )
 
 // Meta 是进程镜像的富化结果。
@@ -48,7 +46,7 @@ type fileCacheEntry struct {
 	size    int64
 	modTime time.Time
 	hash    string
-	sig     winapi.SignatureResult
+	sig     SignatureResult
 	sigDone bool
 }
 
@@ -123,7 +121,7 @@ func (e *Enricher) Describe(path string) Meta {
 
 	// 签名单独 lazy 计算：只有需要时才算（例如哈希未命中白名单）
 	if !entry.sigDone {
-		entry.sig = winapi.VerifySignature(path)
+		entry.sig = verifySignature(path)
 		entry.sigDone = true
 	}
 	e.fill(&m, entry)

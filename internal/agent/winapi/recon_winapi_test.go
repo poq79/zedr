@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // recon_winapi_test.go：资产侦查新增的只读 WinAPI 封装测试。

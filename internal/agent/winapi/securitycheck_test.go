@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // securitycheck_test.go：RegDWORD 的三态语义（存在/不存在/读取失败）。

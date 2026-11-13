@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // 计划任务定义（Task Scheduler 2.0 XML）的富解析，供资产盘点使用。
 //
 // 为什么单独一个文件：persist.go 里已有一个 parseTaskXML，但它只服务

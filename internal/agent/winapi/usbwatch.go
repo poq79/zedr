@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package winapi 的 USB/可移动介质采集（摆渡攻击 T1091 检测的采集层）。
 //
 // 主线方案（usbwatch）：周期 diff 可移动卷 → 新卷到达告警 + 该卷根目录

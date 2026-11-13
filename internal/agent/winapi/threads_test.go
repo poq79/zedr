@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // threads_test.go：线程枚举/起始地址/模块归属/匿名执行判定真机冒烟。

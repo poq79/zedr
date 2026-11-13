@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package winapi 封装探针所需的 Win32 / NT 原生接口。
 //
 // 全部通过 syscall 动态调用，不依赖 CGO，编译产物是单文件静态 exe，
@@ -29,18 +32,18 @@ var (
 	procGetProcessTimes          = modKernel32.NewProc("GetProcessTimes")
 	procGetSystemTimes           = modKernel32.NewProc("GetSystemTimes")
 
-	procOpenProcessToken   = modAdvapi32.NewProc("OpenProcessToken")
+	procOpenProcessToken    = modAdvapi32.NewProc("OpenProcessToken")
 	procGetTokenInformation = modAdvapi32.NewProc("GetTokenInformation")
-	procLookupAccountSidW  = modAdvapi32.NewProc("LookupAccountSidW")
+	procLookupAccountSidW   = modAdvapi32.NewProc("LookupAccountSidW")
 
 	procNtQueryInformationProcess = modNtdll.NewProc("NtQueryInformationProcess")
 )
 
 const (
-	th32csSnapProcess     = 0x00000002
-	th32csSnapModule      = 0x00000008
-	th32csSnapModule32    = 0x00000010
-	invalidHandleValue    = ^uintptr(0)
+	th32csSnapProcess  = 0x00000002
+	th32csSnapModule   = 0x00000008
+	th32csSnapModule32 = 0x00000010
+	invalidHandleValue = ^uintptr(0)
 
 	processQueryLimitedInformation = 0x1000
 	processQueryInformation        = 0x0400
@@ -54,11 +57,11 @@ const (
 
 // ProcessEntry 是 Toolhelp32 快照中的一条进程记录。
 type ProcessEntry struct {
-	PID       uint32
-	PPID      uint32
-	Name      string
-	Threads   uint32
-	PriClass  int32
+	PID      uint32
+	PPID     uint32
+	Name     string
+	Threads  uint32
+	PriClass int32
 }
 
 type processEntry32 struct {

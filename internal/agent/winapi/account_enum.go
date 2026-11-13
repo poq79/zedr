@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package winapi
 
 // account_enum.go：本地账户与密码策略枚举（NetAPI，LIVE-TUNNEL §13.3）。
