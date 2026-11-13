@@ -1,16 +1,27 @@
+// Package collect 实现进程采集（跨平台）。
+//
+// 采集策略（对应报告第 5 章"性能工程"）：
+//   - 用"进程表来源"(Source) 做增量比对，只对"新出现的 PID"做昂贵富化；
+//   - 网络连接用单次全量拉取（Windows: GetExtendedTcpTable；
+//     Linux: /proc/net/tcp + inode→PID 映射），避免每进程一次系统调用；
+//   - 已退出进程保留在历史表中，用于还原"父进程已退出"的孤儿链路；
+//   - 定期做一次全量深度扫描（补模块信息），频率远低于增量轮询。
+//
+// 来源可插拔（AGENTS §3.3 纪律）：Windows 有 ntquery/toolhelp 两实现，
+// Linux 是 procfs——按 GOOS 各自提供 NewSource 分派，检测层消费同一
+// Table/ProcessInfo 形状，零分叉。
 package collect
 
 import (
-	"fmt"
 	"time"
 
-	"zedr/internal/agent/winapi"
+	"zedr/internal/agent/nettypes"
 )
 
 // Source 是"进程表来源"的抽象。
 //
 // 之所以做成可插拔：进程采集是整个探针里最依赖操作系统实现细节的一层，
-// 不同 Windows 版本、不同安全软件干预下，某一种枚举方式可能失效。
+// 不同 OS 版本、不同安全软件干预下，某一种枚举方式可能失效。
 // 保留多个实现并支持运行时切换，可以在出问题时立刻退回已验证的旧引擎，
 // 而不必重新发版——这对需要覆盖大量异构终端的场景很关键。
 type Source interface {
@@ -23,110 +34,31 @@ type Source interface {
 // Table 是一轮采集的原始结果。
 type Table struct {
 	Procs   map[uint32]rawProc
-	Conns   map[uint32][]winapi.TCPConn
+	Conns   map[uint32][]nettypes.TCPConn
 	TakenAt time.Time
 	Count   int
 }
 
 // rawProc 是采集层内部的进程摘要。
 type rawProc struct {
-	PID   uint32
-	PPID  uint32
-	Name  string
-	// CreateTime 为 FILETIME 计数，0 表示该来源不提供（Toolhelp32 就没有）。
+	PID  uint32
+	PPID uint32
+	Name string
+	// CreateTime 是进程创建时刻（Unix 纳秒；0 表示该来源不提供）。
 	// 有它就能准确识别 PID 复用：同名但创建时间不同 = 新进程。
+	// Windows 的 NtQuery 来源把 FILETIME 在采集层换算成本口径；
+	// Linux 的 procfs 来源由 /proc/[pid]/stat 的 btime 换算。
 	CreateTime int64
 }
 
+// 采集源名称。Windows：auto（ntquery 优先、失败回退 toolhelp）/ntquery/
+// toolhelp；Linux：auto/procfs。
 const (
-	// SourceAuto 优先使用 NtQuerySystemInformation，失败自动回退 Toolhelp32。
 	SourceAuto = "auto"
-	// SourceNTQuery 强制使用 NtQuerySystemInformation。
+	// SourceNTQuery 强制使用 NtQuerySystemInformation（仅 Windows）。
 	SourceNTQuery = "ntquery"
-	// SourceToolhelp 强制使用 Toolhelp32（兼容性最好，旧引擎）。
+	// SourceToolhelp 强制使用 Toolhelp32（兼容性最好，旧引擎，仅 Windows）。
 	SourceToolhelp = "toolhelp"
+	// SourceProcfs 是 Linux 的 procfs 采集源。
+	SourceProcfs = "procfs"
 )
-
-// NewSource 按名字构造采集源；auto 会做一次可用性探测后择优。
-func NewSource(name string) (Source, string, error) {
-	switch name {
-	case SourceToolhelp:
-		return toolhelpSource{}, "显式指定 Toolhelp32 采集", nil
-
-	case SourceNTQuery:
-		if err := winapi.ProbeNT(); err != nil {
-			return nil, "", fmt.Errorf("NtQuerySystemInformation 不可用: %w", err)
-		}
-		return ntSource{}, "显式指定 NtQuerySystemInformation 采集", nil
-
-	case "", SourceAuto:
-		if err := winapi.ProbeNT(); err == nil {
-			return ntSource{}, "自动选择：NtQuerySystemInformation 探测通过", nil
-		} else {
-			return toolhelpSource{}, "自动回退：NtQuerySystemInformation 不可用（" + err.Error() + "），改用 Toolhelp32", nil
-		}
-
-	default:
-		return nil, "", fmt.Errorf("未知的采集源 %q，可选 auto/ntquery/toolhelp", name)
-	}
-}
-
-// ---------------------------------------------------------------- Toolhelp32
-
-type toolhelpSource struct{}
-
-func (toolhelpSource) Name() string { return SourceToolhelp }
-
-func (toolhelpSource) Table() (*Table, error) {
-	start := time.Now()
-	list, err := winapi.SnapshotProcesses()
-	if err != nil {
-		return nil, err
-	}
-	conns, err := winapi.TCPConnections()
-	if err != nil {
-		conns = map[uint32][]winapi.TCPConn{} // 网络信息失败不影响进程采集
-	}
-
-	t := &Table{
-		Procs:   make(map[uint32]rawProc, len(list)),
-		Conns:   conns,
-		TakenAt: start,
-		Count:   len(list),
-	}
-	for _, p := range list {
-		t.Procs[p.PID] = rawProc{PID: p.PID, PPID: p.PPID, Name: p.Name}
-	}
-	return t, nil
-}
-
-// ---------------------------------------------------------------- NtQuery
-
-type ntSource struct{}
-
-func (ntSource) Name() string { return SourceNTQuery }
-
-func (ntSource) Table() (*Table, error) {
-	start := time.Now()
-	list, err := winapi.SnapshotProcessesNT()
-	if err != nil {
-		return nil, err
-	}
-	conns, err := winapi.TCPConnections()
-	if err != nil {
-		conns = map[uint32][]winapi.TCPConn{}
-	}
-
-	t := &Table{
-		Procs:   make(map[uint32]rawProc, len(list)),
-		Conns:   conns,
-		TakenAt: start,
-		Count:   len(list),
-	}
-	for _, p := range list {
-		t.Procs[p.PID] = rawProc{
-			PID: p.PID, PPID: p.PPID, Name: p.Name, CreateTime: p.CreateTime,
-		}
-	}
-	return t, nil
-}

@@ -18,7 +18,7 @@ func TestAncestryFromHistoryKeepsFullIdentity(t *testing.T) {
 		rawProc: rawProc{PID: 7, PPID: 4, Name: "powershell.exe"},
 		Info: ProcessInfo{
 			PID: 7, PPID: 4, Name: "powershell.exe",
-			Path: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			Path:    `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 			CmdLine: `powershell.exe -nop -enc SQBFAFgA`, StartTime: exited.Add(-time.Minute),
 		},
 		ExitedAt: exited,

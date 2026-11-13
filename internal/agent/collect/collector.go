@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"zedr/internal/agent/winapi"
 	"zedr/internal/model"
 )
 
@@ -133,8 +132,8 @@ func (c *Collector) Poll(forceDeep bool) ([]ProcessInfo, *Snapshot, error) {
 
 // isNewProcess 判断同一 PID 是否已被新进程复用。
 //
-// 优先用 CreateTime 比对（NtQuery 来源提供）；Toolhelp32 不提供创建时间，
-// 退化为进程名比对——这正是引入创建时间字段的意义。
+// 优先用 CreateTime 比对（NtQuery/procfs 来源提供）；Toolhelp32 不提供
+// 创建时间，退化为进程名比对——这正是引入创建时间字段的意义。
 func isNewProcess(old, cur rawProc) bool {
 	if old.Name != cur.Name {
 		return true
@@ -145,51 +144,12 @@ func isNewProcess(old, cur rawProc) bool {
 	return false
 }
 
-// describe 对单个进程做完整富化。
-func (c *Collector) describe(rp rawProc) ProcessInfo {
-	pi := ProcessInfo{
-		PID:  rp.PID,
-		PPID: rp.PPID,
-		Name: rp.Name,
-	}
-	if pi.Name == "" {
-		if n, err := winapi.ImageNameOf(rp.PID); err == nil {
-			pi.Name = n
-		}
-	}
-
-	if path, err := winapi.ImagePath(rp.PID); err == nil {
-		pi.Path = path
-	}
-	if cmd, err := winapi.CommandLine(rp.PID); err == nil {
-		pi.CmdLine = cmd
-	}
-	if user, err := winapi.ProcessUser(rp.PID); err == nil {
-		pi.User = user
-	}
-	if sid, err := winapi.SessionID(rp.PID); err == nil {
-		pi.SessionID = sid
-	}
-	pi.Elevated = winapi.IsElevated(rp.PID)
-	pi.IsWow64 = winapi.IsWow64(rp.PID)
-
-	// 优先用内核给出的创建时间，避免再发起一次系统调用
-	if rp.CreateTime > 0 {
-		pi.StartTime = filetimeToTime(rp.CreateTime)
-	} else if ts, err := winapi.ProcessStartTime(rp.PID); err == nil && ts > 0 {
-		pi.StartTime = time.Unix(ts, 0).UTC()
-	}
-	return pi
-}
-
-// filetimeToTime 把 FILETIME 计数（1601 起 100ns）转换为 UTC 时间。
-func filetimeToTime(ft int64) time.Time {
-	const epochDiff = 116444736000000000
-	ns := (ft - epochDiff) * 100
-	if ns <= 0 {
+// createAt 把 rawProc.CreateTime（Unix 纳秒，0=未知）转为启动时间。
+func createAt(ct int64) time.Time {
+	if ct <= 0 {
 		return time.Time{}
 	}
-	return time.Unix(0, ns).UTC()
+	return time.Unix(0, ct).UTC()
 }
 
 // ProcessInfo 是采集层输出（与检测引擎入参保持一致）。
@@ -265,7 +225,7 @@ func (c *Collector) Ancestry(snap *Snapshot, pid uint32) ([]model.AncestorLink, 
 				name = parentRaw.Name
 			}
 			if parentStart.IsZero() && parentRaw.CreateTime > 0 {
-				parentStart = filetimeToTime(parentRaw.CreateTime)
+				parentStart = createAt(parentRaw.CreateTime)
 			}
 		} else {
 			h, ok := c.history[ppid]
@@ -300,9 +260,7 @@ func (c *Collector) Ancestry(snap *Snapshot, pid uint32) ([]model.AncestorLink, 
 		}
 		// 只对第一层父进程做现场路径兜底（其余层开销大且价值低）。
 		if i == 0 && path == "" {
-			if p, err := winapi.ImagePath(ppid); err == nil {
-				path = p
-			}
+			path = c.pathOfLive(ppid)
 		}
 
 		chain = append(chain, model.AncestorLink{
@@ -326,7 +284,7 @@ func (c *Collector) startTimeOfLocked(snap *Snapshot, pid uint32) time.Time {
 		return info.StartTime
 	}
 	if raw, ok := snap.Procs[pid]; ok && raw.CreateTime > 0 {
-		return filetimeToTime(raw.CreateTime)
+		return createAt(raw.CreateTime)
 	}
 	if h, ok := c.history[pid]; ok {
 		return h.Info.StartTime
@@ -361,18 +319,10 @@ func (c *Collector) IdentOf(snap *Snapshot, pid uint32) (string, time.Time) {
 }
 
 // Modules 采集指定进程的模块列表（仅对可疑进程调用，成本较高）。
+// Linux 没有等价的"单进程模块枚举"用户态 API（/proc/[pid]/maps 是
+// 内存映射不是装载模块），语义不同不硬凑——v1 返回 nil，诚实边界。
 func (c *Collector) Modules(pid uint32) []model.ModuleInfo {
-	mods, err := winapi.ProcessModules(pid)
-	if err != nil {
-		return nil
-	}
-	out := make([]model.ModuleInfo, 0, len(mods))
-	for _, m := range mods {
-		out = append(out, model.ModuleInfo{
-			Name: m.Name, Path: m.Path, BaseAddr: m.BaseAddr, Size: m.Size,
-		})
-	}
-	return out
+	return c.modulesOf(pid)
 }
 
 // ConnectionsOf 把系统级连接表投影成某进程的连接列表。
@@ -395,13 +345,8 @@ func (c *Collector) ConnectionsOf(snap *Snapshot, pid uint32) []model.NetConn {
 	return out
 }
 
-// KnownMachineProcesses 是一批"几乎总在运行"的系统进程名。
-var KnownMachineProcesses = map[string]struct{}{
-	"system": {}, "smss.exe": {}, "csrss.exe": {}, "wininit.exe": {}, "winlogon.exe": {},
-	"services.exe": {}, "lsass.exe": {}, "svchost.exe": {}, "explorer.exe": {},
-	"spoolsv.exe": {}, "dwm.exe": {}, "fontdrvhost.exe": {}, "ctfmon.exe": {},
-	"taskhostw.exe": {}, "sihost.exe": {}, "runtimebroker.exe": {}, "searchindexer.exe": {},
-}
+// KnownMachineProcesses 是一批"几乎总在运行"的系统进程名（按 OS 各自
+// 提供，见 collector_windows.go / collector_linux.go）。
 
 // IsKnownMachineProcess 判断是否为常见系统进程。
 func IsKnownMachineProcess(name string) bool {
