@@ -139,9 +139,10 @@ def _eicar():
 def _port_scan():
     """受控端口扫描模拟：zedr-diag 自身改名后向 RFC5737 测试网段
     （203.0.113.0/24，不可路由，SYN 在网关侧消亡，不触碰任何真实服务）
-    发 16 个端口的连接尝试。SYN 无响应 → 停留 SYN_SENT 供快照采样。"""
+    发 48 个端口的连接尝试（2026-11-14 NW-001 阈值 12→40，样本同步加量，
+    两轮 15s 间隔共 96 个端口）。SYN 无响应 → 停留 SYN_SENT 供快照采样。"""
     dst = copy_as("portscan.exe")
-    return spawn(dst, "-netburst", "203.0.113.9:16", "-hold", "25s")
+    return spawn(dst, "-netburst", "203.0.113.9:48", "-hold", "25s")
 
 
 def _chain_enabled():
@@ -259,7 +260,7 @@ SCENARIOS = [
     # 注意：该场景必须在探针启动 ≥5 分钟后运行（引擎冷启动静默期同样
     # 作用于网络行为告警），矩阵里排在最后正是为此；且 bin/zedr-diag.exe
     # 必须是含 -netburst 的新版（旧版 flag 报错直接退出、零连接）。
-    dict(id="S17", name="端口扫描行为（16 端口 SYN 扇出，NW-001）",
+    dict(id="S17", name="端口扫描行为（48 端口 SYN 扇出，NW-001）",
          run=lambda: _port_scan(),
          probe=("portscan.exe", "", WORK_MARK), expect=["NW-001"]),
 
