@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package hygiene
 
 import (
@@ -49,8 +52,8 @@ var riskyChromiumPerms = map[string]bool{
 
 // chromiumBrowsers 声明要扫的 Chromium 系浏览器及其用户数据目录。
 var chromiumBrowsers = []struct {
-	id   string
-	dir  string // 相对 %LOCALAPPDATA%
+	id  string
+	dir string // 相对 %LOCALAPPDATA%
 }{
 	{"chrome", `Google\Chrome\User Data`},
 	{"edge", `Microsoft\Edge\User Data`},
@@ -232,8 +235,8 @@ func scanFirefox(firefoxRoot string) []BrowserExt {
 			Version string `json:"version"`
 			Active  bool   `json:"active"`
 			// userDisabled 区分用户手动停用与默认启用
-			UserDisabled bool `json:"userDisabled"`
-			Visible      bool `json:"visible"`
+			UserDisabled  bool `json:"userDisabled"`
+			Visible       bool `json:"visible"`
 			DefaultLocale struct {
 				Name string `json:"name"`
 			} `json:"defaultLocale"`

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package main
 
 import (
@@ -62,7 +65,6 @@ func setServiceRecovery(h windows.Handle) error {
 	}
 	return nil
 }
-
 
 // SERVICE_CONFIG_DELAYED_AUTO_START_INFO = 3（Win32 文档值）。
 type delayedAutoStartInfo struct {

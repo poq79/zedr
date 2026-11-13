@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Command zedr-agent 是 Z-EDR 终端探针。
 //
 // 用法：

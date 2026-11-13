@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // netinfo.go：/netinfo 网络面实时快照（ARP/路由/DNS 缓存/网卡/SMB 共享）。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // sessions_test.go：/sessions 真机冒烟。

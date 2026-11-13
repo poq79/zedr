@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // fs.go：/fs、/fs/stat、/fs/read、/fs/hash 四个端点（契约 §5.2）。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // peers.go：外联对端聚合（契约 §16.2，"谁在跟这台机器说话"）。

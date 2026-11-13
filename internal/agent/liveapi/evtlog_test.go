@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // evtlog_test.go：/evtlog 端点契约测试。

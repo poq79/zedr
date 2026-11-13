@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package main
 
 // 无边框窗口：去掉 Windows 默认标题栏，面板顶栏自己当标题栏。

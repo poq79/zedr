@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // accounts.go：账户与会话 Tab 的只读枚举端点（契约 §13.3）。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package main
 
 // Notifier 进程（zedr-ui -tray）：对标 Portmaster 的 Tray Notifier——

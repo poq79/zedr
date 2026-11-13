@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // fs_grep_test.go：/fs/grep 端点。真实临时文件走默认 OSFS（先例同
@@ -72,7 +75,7 @@ func TestGrepBasicMultiLine(t *testing.T) {
 	p := filepath.Join(root, "app.log")
 	lines := []string{
 		"2026-11-09 10:00:00 [INFO] service boot ok", // 不命中
-		"第一行发现 token=abc123 凭据泄露",                 // 命中（含中文）
+		"第一行发现 token=abc123 凭据泄露",                    // 命中（含中文）
 		"普通填充行，没有线索",                                 // 不命中
 		"again token=def456 at the end",              // 命中
 		"尾部行 token= 不是命中",                            // "token=" 后无 \w，不命中

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package main
 
 // 桌面宿主所需的 Win32 声明（user32/shell32/dwmapi/gdi32 最小子集）。

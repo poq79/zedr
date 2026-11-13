@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package main
 
 // 窗口形态记忆：位置/大小/最大化存 HKCU，下次打开原样恢复。

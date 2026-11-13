@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // persistence.go：持久化总览（Autoruns 风格，契约 §16.1）。

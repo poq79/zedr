@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package hygiene 提供本地面板的"泛安全体检"数据：已安装软件、安全配置
 // 姿势、网络暴露面、浏览器扩展、自启动项审计。
 //

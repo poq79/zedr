@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // registry.go：/registry 注册表只读查询端点（隧道内调查面，LiveFS 之外

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // persistence_test.go：/persistence 的聚合逻辑（桩数据）+ 真机冒烟。

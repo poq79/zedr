@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package agentapp
 
 // USN Journal 断点补采（应用层编排）。

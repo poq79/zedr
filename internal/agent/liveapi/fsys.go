@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // fsys.go：FSys 抽象与默认 OSFS 实现。

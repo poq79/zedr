@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // catalog_lock_test.go：注册表与实现的启动期双向锁的测试面。

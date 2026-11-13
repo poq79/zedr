@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package agentapp
 
 // 安全姿态三节的清单 builder（defender/firewall/accounts）。

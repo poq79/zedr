@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // collect_test.go：/collect 端点。FS 一律用内存桩（memFS）注入——

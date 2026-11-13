@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // peers_test.go：/peers 的聚合口径（桩连接表）+ 真机结构冒烟。

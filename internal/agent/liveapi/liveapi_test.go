@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // liveapi_test.go：/ping、/processes、/netstat 与真实 winapi 冒烟。

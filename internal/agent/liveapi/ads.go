@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // ads.go：/ads —— NTFS 备用数据流 + MotW 下载来源（契约 §11.1）。

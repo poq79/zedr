@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // tasks.go：/tasks 计划任务全量详情端点（调查深化，隧道内只读）。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // netstat.go：/netstat（契约 §5.2 v1 + §11.2 v2 富化）。

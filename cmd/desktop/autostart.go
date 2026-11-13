@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package main
 
 // 登录自启动（HKCU Run key）。

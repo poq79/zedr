@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // evtlog 接线层（E1）：Windows 事件日志 → 精选事件 → 统一告警出口。
 //
 // 与 USN 轮询同哲学：轮询式只读消费（30s/tick，游标增量），不用

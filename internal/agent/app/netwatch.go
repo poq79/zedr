@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // netwatch 接线层：把行为检测 Finding 转成统一 AlertEnvelope。
 //
 // 分工与 persist/inventory 同构：netwatch 包只负责"行为是否越阈值"（机制），

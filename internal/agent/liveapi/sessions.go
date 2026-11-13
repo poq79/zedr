@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // sessions.go：GET /sessions —— 当前活动登录会话（LSA 只读枚举）。

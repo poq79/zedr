@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package main
 
 // 单实例与跨进程面板激活。

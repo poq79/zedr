@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package agentapp 组装探针运行时：配置 → 采集 → 富化 → 检测 → 上报 → 本地 API。
 package agentapp
 

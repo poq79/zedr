@@ -46,6 +46,21 @@ build desktop    zedr-ui.exe
 build diag       zedr-diag.exe
 build resetadmin resetadmin.exe
 
+# ---- Linux 交叉编译（v0.9.14 起，RESEARCH-LINUX-AGENT）----
+# server：Linux 服务端已在路线图（svc 拆分后全链路可编译）；agent：Linux
+# 探针组合根（lapp）。产物带 -linux 后缀避免与 Windows PE 混淆；不加 -s -w
+# 的纪律与此处相同（不过 Linux 产物无 AV 拦截问题，保持一致便于对拍）。
+# 未在 Linux 实机验证：产物能在目标机跑起来才算数，交接时诚实标注。
+build_linux() {
+  local pkg="$1" out="$2"
+  echo ">> building linux/amd64 $pkg -> bin/$out"
+  GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=${VERSION}" -o "bin/$out" "./cmd/$pkg"
+}
+if [ "${SKIP_LINUX:-0}" != "1" ]; then
+  build_linux server zedr-server-linux
+  build_linux agent  zedr-agent-linux
+fi
+
 # ---- 部署包（"接入新主机"引导的下载物，HG_SERVER_DEPLOY_PACKAGE 指向它）----
 # zip：探针 + 桌面托盘 + 官方安装/卸载脚本 + 包内说明。
 # Compress-Archive 而非 tar：目标机解压用 PowerShell Expand-Archive 即可，

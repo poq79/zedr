@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // evtlog.go：GET /evtlog —— 事件日志按需查询（隧道调查面）。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package localapi 为桌面 UI 提供本机只读（含少量本地处置）HTTP 接口。
 //
 // 安全模型：仅绑定回环地址 + 拒绝带 Origin 的跨站请求（防止网页脚本
@@ -135,13 +138,13 @@ func (s *Server) routes() http.Handler {
 	api("GET /api/local/privacy", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
 			"collected": []map[string]string{
-					{"item": "进程清单", "detail": "进程名、路径、命令行、启动账号、PID/PPID 血缘"},
-					{"item": "文件指纹", "detail": "可执行文件的 SHA256 哈希与数字签名状态（不上传文件内容）"},
-					{"item": "网络连接", "detail": "进程的 TCP 连接远端地址（不抓包、不记录流量内容）"},
-					{"item": "加载模块", "detail": "进程加载的 DLL 列表（仅路径）"},
-					{"item": "自启动项", "detail": "注册表 Run/计划任务/服务等配置项的名称与命令"},
-					{"item": "管理端实时查询", "detail": "安全管理员可经服务端实时查看本机进程/连接/文件目录；文件内容预览需现场显式开启且逐次留审计（谁在何时查了什么）"},
-				},
+				{"item": "进程清单", "detail": "进程名、路径、命令行、启动账号、PID/PPID 血缘"},
+				{"item": "文件指纹", "detail": "可执行文件的 SHA256 哈希与数字签名状态（不上传文件内容）"},
+				{"item": "网络连接", "detail": "进程的 TCP 连接远端地址（不抓包、不记录流量内容）"},
+				{"item": "加载模块", "detail": "进程加载的 DLL 列表（仅路径）"},
+				{"item": "自启动项", "detail": "注册表 Run/计划任务/服务等配置项的名称与命令"},
+				{"item": "管理端实时查询", "detail": "安全管理员可经服务端实时查看本机进程/连接/文件目录；文件内容预览需现场显式开启且逐次留审计（谁在何时查了什么）"},
+			},
 			"not_collected": []string{
 				"屏幕内容 / 键盘输入 / 剪贴板",
 				"文档、图片等个人文件的内容",

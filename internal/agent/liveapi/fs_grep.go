@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // fs_grep.go：/fs/grep —— 单文件内容正则查找（AI 调查的"内容定位不搬内容"）。

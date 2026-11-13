@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // accounts_test.go：/accounts 的 JSON 结构与 is_admin 一致性。

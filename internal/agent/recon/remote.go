@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package recon
 
 // remote.go：远程管理面识别（契约 §12.3 remote 类）。

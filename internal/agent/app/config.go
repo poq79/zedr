@@ -40,10 +40,10 @@ type Config struct {
 	// 内容），用于交付验收与升级后回归。与处置类同纪律：服务端
 	// HG_SERVER_DRILL_ENABLED + 终端本开关双层闸门，默认双侧关闭——
 	// 单侧误开不会真的跑起来。
-	DrillEnabled bool
-	BaselineLearn     bool
-	Warmup            time.Duration
-	HeartbeatSec      int
+	DrillEnabled  bool
+	BaselineLearn bool
+	Warmup        time.Duration
+	HeartbeatSec  int
 
 	// PersistCheck 是自启动项（持久化）扫描间隔。
 	// 比进程扫描慢一个数量级即可——自启动项的变化频率远低于进程创建。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // usn_test.go：/usn 的纯逻辑单测（盘符归一/扩展名归一/环形截取/reason

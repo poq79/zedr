@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // info.go：/info —— 探针实时运行时（契约 §11.1）。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // analyze.go：/analyze —— 二进制深度分析（契约 §11.1）。

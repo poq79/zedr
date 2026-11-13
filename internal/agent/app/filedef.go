@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // filedef 接线层：勒索防御（canary/速率）Finding → 统一告警出口，
 // 与 netwatch/persist 的接线层同构（机制在 ransom 包，策略在这里）。
 package agentapp

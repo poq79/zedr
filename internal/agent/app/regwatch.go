@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // regwatch 接线层：注册表自启动键实时通知 → 防抖 → 立即重扫持久化项。
 //
 // 语义是"事件驱动 + 轮询兜底"双层：通知把 persist 的 5min 周期窗口缩到

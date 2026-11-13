@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // recon.go：资产侦查薄 handler（契约 §12.1/§12.2）。

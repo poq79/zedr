@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // netinfo_test.go：/netinfo 的段解析纯单测 + 真机冒烟（结构完整性 +

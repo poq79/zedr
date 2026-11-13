@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // procforensics.go：进程取证四端点（契约 §15）。

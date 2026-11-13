@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // usbwatch 接线层：可移动介质监控（摆渡链 T1091）。
 //
 // 三段式：① 周期 diff 可移动卷 → 接入告警（含 USBSTOR 历史佐证）；

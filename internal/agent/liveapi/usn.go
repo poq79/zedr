@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // usn.go：/usn 卷级最近文件活动（USN journal 定点回溯扫描）。

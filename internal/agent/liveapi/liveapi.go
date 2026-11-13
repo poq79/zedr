@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package liveapi 提供实时隧道内的只读调查接口（LiveFS，
 // 路径/字段/上限契约见 docs/LIVE-TUNNEL.md §5.2）。
 //

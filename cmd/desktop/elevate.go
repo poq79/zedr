@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package main
 
 // 以管理员身份运行外部命令（ShellExecuteExW verb="runas"）。

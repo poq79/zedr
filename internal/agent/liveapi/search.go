@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // search.go：/fs/search —— 目录限深搜索（契约 §11.1，狩猎场景）。

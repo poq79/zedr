@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package recon
 
 // base.go：六类 detector 共用的基础关联数据。

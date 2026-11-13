@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // 本文件实现探针自升级（④）的策略层：指令处理（handleSelfUpgrade）与
 // 启动时换装（applyPendingUpgrade）。从 app.go 拆出的原因：升级是横跨
 // "指令通道 + 文件舞步 + 进程生命周期"的独立能力，塞在 app.go 里会让

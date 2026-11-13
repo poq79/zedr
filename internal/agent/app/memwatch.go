@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // memwatch 接线层：内存威胁巡检——把 /memscan 的人工单 PID 排查产品化
 // 为周期性检测。
 //

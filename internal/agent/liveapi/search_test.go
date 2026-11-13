@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // search_test.go：/fs/search 端点 + matchWildcard 单元表驱动。

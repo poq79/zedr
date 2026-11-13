@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // services.go：/services 服务实时全量端点（隧道内只读调查）。

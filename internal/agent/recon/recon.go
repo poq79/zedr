@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package recon
 
 // recon.go：入口与编排。六类 detector 并发执行，共用一份基础关联数据

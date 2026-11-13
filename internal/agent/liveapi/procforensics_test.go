@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // procforensics_test.go：进程取证四端点（§15）的 handler 契约测试。

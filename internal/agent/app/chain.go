@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // chain 接线层：把多源信号喂给攻击链关联引擎，并把链告警转成统一信封。
 //
 // 分工与 netwatch/filedef 接线同构：chain 包只负责"阶段序列是否成链"

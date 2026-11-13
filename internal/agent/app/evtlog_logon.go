@@ -1,11 +1,14 @@
+//go:build windows
+// +build windows
+
 // evtlog_logon.go：登录面与账户监控 v2（E1 扩展）+ PowerShell 脚本块监控。
 //
 // 与 evtlog.go 的逐条映射互补的三类"分析"逻辑在这里：
-//   1. 4624 登录类型过滤（实测本机 24h 65 条全是 Type 5 服务登录/SYSTEM——
-//      直告警不可行，只关注 Type 2 交互/3 网络/10 RDP 的真实有人/远程登录）
-//   2. 暴破成功序列：窗口内同账户多次 4625 后紧跟 4624 同账户成功——
-//      单看任何一个事件都看不见"攻击成功"，序列才是信号
-//   3. 交互/RDP 登录时段基线：小时直方图学习，异常时段首现告警
+//  1. 4624 登录类型过滤（实测本机 24h 65 条全是 Type 5 服务登录/SYSTEM——
+//     直告警不可行，只关注 Type 2 交互/3 网络/10 RDP 的真实有人/远程登录）
+//  2. 暴破成功序列：窗口内同账户多次 4625 后紧跟 4624 同账户成功——
+//     单看任何一个事件都看不见"攻击成功"，序列才是信号
+//  3. 交互/RDP 登录时段基线：小时直方图学习，异常时段首现告警
 //
 // 诚实边界：4624 的 LoginType 5（服务登录）不产生任何信号——服务自登录
 // 是 Windows 常态；时段基线是内存态，重启重学（前 logonBaselineWarmup
@@ -67,12 +70,12 @@ func (a *Agent) evtLogonWatch(ev winapi.EvtEvent) {
 
 	// ① 暴破成功序列：同账户在聚合窗口内有足量 4625 失败后成功登录
 	// —— "失败很多次然后成功了"就是暴破成功的定义（T1110）。
-		if n := a.recentFailCount(user); n >= bruteforceSuccessMin {
-			a.emitAlert(model.AlertEnvelope{
-				Fingerprint: fmt.Sprintf("evt:brute-success:%s:%d", strings.ToLower(user), ev.TimeCreated.Unix()/300),
-				Title:       fmt.Sprintf("登录安全：疑似暴破成功（账户 %s）", user),
-				Summary: fmt.Sprintf("账户 %q 在此前窗口内有 %d 次登录失败，随后自 %s 成功登录（类型 %s）。"+
-					"「密集失败后成功」是密码暴破成功（T1110）的直接序列证据，请立即核实该来源与账户。", user, n, srcIP, logonType),
+	if n := a.recentFailCount(user); n >= bruteforceSuccessMin {
+		a.emitAlert(model.AlertEnvelope{
+			Fingerprint: fmt.Sprintf("evt:brute-success:%s:%d", strings.ToLower(user), ev.TimeCreated.Unix()/300),
+			Title:       fmt.Sprintf("登录安全：疑似暴破成功（账户 %s）", user),
+			Summary: fmt.Sprintf("账户 %q 在此前窗口内有 %d 次登录失败，随后自 %s 成功登录（类型 %s）。"+
+				"「密集失败后成功」是密码暴破成功（T1110）的直接序列证据，请立即核实该来源与账户。", user, n, srcIP, logonType),
 			Verdict:  model.VerdictSuspicious,
 			Severity: model.SeverityCritical,
 			Score:    85,

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Package localapi 内嵌桌面 UI 静态资源。
 package localapi
 

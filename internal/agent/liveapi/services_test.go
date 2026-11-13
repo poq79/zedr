@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // services_test.go：/services 的真机冒烟（结构完整性 + filter/state/limit 语义）。

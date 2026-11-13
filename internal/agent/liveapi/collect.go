@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // collect.go：GET /collect —— 文件取证打包（zip 流式回传）。

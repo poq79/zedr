@@ -1,4 +1,5 @@
 //go:build windows
+// +build windows
 
 package main
 
@@ -10,9 +11,12 @@ package main
 // 重启（恢复策略 5s/10s/30s 三级）、退出有 Stop 通知可优雅收尾。
 //
 // 用法：zedr-server -install（管理员）/ -uninstall / -service（SCM 调用）
+// Linux 侧由 systemd 接管（service_linux.go），本文件提供 main 的三个
+// 平台接缝实现。
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"unsafe"
@@ -26,6 +30,48 @@ import (
 )
 
 const serviceName = "ZEDRServer"
+
+var (
+	flagInstall   = flag.Bool("install", false, "安装为 Windows 服务（开机自启+崩溃自动重启，需管理员）")
+	flagUninstall = flag.Bool("uninstall", false, "卸载 Windows 服务")
+	flagService   = flag.Bool("service", false, "以 Windows 服务方式运行（SCM 调用）")
+)
+
+// serviceFlags 注册服务化旗子（Windows 专属）。
+func serviceFlags() {}
+
+// serviceFlagsHandled 处理 install/uninstall 旗子；返回 true 表示主流程结束。
+func serviceFlagsHandled() bool {
+	if *flagInstall {
+		if err := installServerService(); err != nil {
+			fmt.Fprintf(os.Stderr, "安装服务失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("服务 %s 已安装并设为自动启动（崩溃自动重启已启用）\n", serviceName)
+		return true
+	}
+	if *flagUninstall {
+		if err := uninstallServerService(); err != nil {
+			fmt.Fprintf(os.Stderr, "卸载服务失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("服务 %s 已卸载\n", serviceName)
+		return true
+	}
+	return false
+}
+
+// runIfServiceMode 在 SCM 拉起形态下运行服务处理器。
+func runIfServiceMode() bool {
+	if !*flagService {
+		return false
+	}
+	if err := svc.Run(serviceName, &serverServiceHandler{}); err != nil {
+		fmt.Fprintf(os.Stderr, "服务运行失败: %v\n", err)
+		os.Exit(1)
+	}
+	return true
+}
 
 type serverServiceHandler struct{}
 
@@ -87,9 +133,9 @@ func installServerService() error {
 	}
 
 	s, err := m.CreateService(serviceName, exe, mgr.Config{
-		DisplayName: "Z-EDR 总控服务端",
-		Description: "接收终端探针告警上报，执行事件聚合、规则下发与处置指令。",
-		StartType:   mgr.StartAutomatic,
+		DisplayName:  "Z-EDR 总控服务端",
+		Description:  "接收终端探针告警上报，执行事件聚合、规则下发与处置指令。",
+		StartType:    mgr.StartAutomatic,
 		ErrorControl: mgr.ErrorNormal,
 	}, "-service")
 	if err != nil {

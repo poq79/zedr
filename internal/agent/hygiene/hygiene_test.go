@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package hygiene
 
 import (
@@ -33,15 +36,15 @@ func TestExeFromCommand(t *testing.T) {
 	}{
 		{"", ""},
 		{`"C:\Program Files\App\a.exe" -flag x`, `C:\Program Files\App\a.exe`}, // 引号形态：定位到引号即止，不依赖存在性
-		{probe + " -k netsvcs", probe},              // 无引号带参数
-		{probe, probe},                              // 纯路径
-		{probe + ` /v /d`, probe},                   // 斜杠参数
-		{`"C:\no closing quote\b.exe`, ""},          // 引号未闭合：无法定位，诚实返回空
-		{lower, strings.ToLower(probe)},             // Windows 路径大小写不敏感，Stat 本身兼容
-		{`\SystemRoot\System32\notepad.exe`, notepad},            // 服务镜像路径内核写法
-		{`System32\notepad.exe`, notepad},                        // 相对 %SystemRoot%
-		{`%windir%\System32\notepad.exe`, notepad},               // 环境变量写法
-		{`\??\` + notepad, notepad},                              // NT 设备路径前缀
+		{probe + " -k netsvcs", probe},                                         // 无引号带参数
+		{probe, probe},                                                         // 纯路径
+		{probe + ` /v /d`, probe},                                              // 斜杠参数
+		{`"C:\no closing quote\b.exe`, ""},                                     // 引号未闭合：无法定位，诚实返回空
+		{lower, strings.ToLower(probe)},                                        // Windows 路径大小写不敏感，Stat 本身兼容
+		{`\SystemRoot\System32\notepad.exe`, notepad},                          // 服务镜像路径内核写法
+		{`System32\notepad.exe`, notepad},                                      // 相对 %SystemRoot%
+		{`%windir%\System32\notepad.exe`, notepad},                             // 环境变量写法
+		{`\??\` + notepad, notepad},                                            // NT 设备路径前缀
 	}
 	for _, c := range cases {
 		if got := exeFromCommand(c.in); got != c.out {
@@ -52,12 +55,12 @@ func TestExeFromCommand(t *testing.T) {
 
 func TestListenerScope(t *testing.T) {
 	cases := map[string]string{
-		"0.0.0.0":  "any",
-		"::":       "any",
-		"127.0.0.1": "loopback",
-		"::1":      "loopback",
+		"0.0.0.0":     "any",
+		"::":          "any",
+		"127.0.0.1":   "loopback",
+		"::1":         "loopback",
 		"192.168.1.5": "lan",
-		"10.0.0.2": "lan",
+		"10.0.0.2":    "lan",
 	}
 	for ip, want := range cases {
 		if got := listenerScope(ip); got != want {

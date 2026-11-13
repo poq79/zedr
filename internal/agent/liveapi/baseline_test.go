@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // baseline_test.go：/baseline 的结构契约与"读取失败必须降级 info"。

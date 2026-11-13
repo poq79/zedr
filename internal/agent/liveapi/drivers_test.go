@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // drivers_test.go：/drivers 真机冒烟。

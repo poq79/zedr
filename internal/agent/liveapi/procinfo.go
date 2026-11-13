@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // procinfo.go：/procinfo —— 单进程详情（契约 §11.1，进程↔文件↔网络交叉枢纽）。

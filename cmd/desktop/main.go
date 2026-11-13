@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // Command zedr-ui 是 Z-EDR 的桌面端，一个二进制两种角色（对标 Portmaster 的
 // UI / Notifier 拆分，见 docs.safing.io/portmaster/architecture/overview）：
 //

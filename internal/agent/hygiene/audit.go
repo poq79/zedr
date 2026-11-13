@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package hygiene
 
 import (
@@ -14,23 +17,23 @@ import (
 // 保持"检测优先、处置默认关闭"。用户看到画像与处置指引，动作留给
 // 用户自己。
 type PersistAudit struct {
-	Key      string   `json:"key"`
-	Kind     string   `json:"kind"`
-	Location string   `json:"location"`
-	Name     string   `json:"name,omitempty"`
-	Command  string   `json:"command"`
-	Enabled  bool     `json:"enabled"`
-	RunAs    string   `json:"run_as,omitempty"`
-	Elevated bool     `json:"elevated"`
-	Trigger  string   `json:"trigger,omitempty"`
+	Key      string `json:"key"`
+	Kind     string `json:"kind"`
+	Location string `json:"location"`
+	Name     string `json:"name,omitempty"`
+	Command  string `json:"command"`
+	Enabled  bool   `json:"enabled"`
+	RunAs    string `json:"run_as,omitempty"`
+	Elevated bool   `json:"elevated"`
+	Trigger  string `json:"trigger,omitempty"`
 	// ExePath 是从 Command 里定位出的可执行文件；定位不到留空。
 	ExePath string   `json:"exe_path,omitempty"`
 	File    fileMeta `json:"file"`
 	// InBaseline 为 false 表示该条目还没有进入持久化基线——通常只是
 	// 探针还没跑完下一个扫描周期；若长时间为 false，说明这是新出现的
 	// 自启动点，值得看一眼。
-	InBaseline bool      `json:"in_baseline"`
-	Flags      []string  `json:"flags,omitempty"`
+	InBaseline bool     `json:"in_baseline"`
+	Flags      []string `json:"flags,omitempty"`
 }
 
 // 审计 flags 取值。
@@ -127,8 +130,8 @@ func isMSIXPath(path string) bool {
 // verifySignature / readVersionInfo 是对 winapi 的薄封装，集中在此
 // 便于测试替身替换（hygiene_test.go 里用变量注入）。
 var (
-	verifySignature  = func(path string) winapi.SignatureResult { return winapi.VerifySignature(path) }
-	readVersionInfo  = func(path string) *winapi.VersionInfo {
+	verifySignature = func(path string) winapi.SignatureResult { return winapi.VerifySignature(path) }
+	readVersionInfo = func(path string) *winapi.VersionInfo {
 		vi, err := winapi.ReadVersionInfo(path)
 		if err != nil {
 			return nil

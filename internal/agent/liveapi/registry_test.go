@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // registry_test.go：/registry 的真机冒烟 + 路径校验单测。

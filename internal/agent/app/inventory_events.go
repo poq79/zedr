@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 // 本文件实现资产清单变更事件 → 告警的策略层：
 // inventory.Diff 产出的 ChangeEvent 按节/动作富化定级，组装成 AlertEnvelope
 // 走统一告警出口（本地视图 + 上报队列）。机制层（diff 本身）在 inventory 包，

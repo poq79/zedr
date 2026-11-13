@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // drivers.go：GET /drivers —— 已加载内核驱动列表（rootkit/驱动持久化画像）。

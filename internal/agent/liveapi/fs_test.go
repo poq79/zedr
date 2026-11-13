@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // fs_test.go：/fs、/fs/stat、/fs/read、/fs/hash 端点 + 路径校验表驱动。

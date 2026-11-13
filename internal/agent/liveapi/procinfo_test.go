@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // procinfo_test.go：/procinfo 与 netstat 富化（v2）。

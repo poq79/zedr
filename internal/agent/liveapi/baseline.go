@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package liveapi
 
 // baseline.go：安全基线 Tab 的只读检查端点（契约 §13.2）。

@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package hygiene
 
 import (
@@ -29,9 +32,9 @@ type HostEntry struct {
 
 // HostsReport 是 hosts 文件体检结果。
 type HostsReport struct {
-	Entries    []HostEntry `json:"entries"`
-	Readable   bool        `json:"readable"`
-	Note       string      `json:"note,omitempty"`
+	Entries  []HostEntry `json:"entries"`
+	Readable bool        `json:"readable"`
+	Note     string      `json:"note,omitempty"`
 }
 
 // ProxyReport 是系统代理配置。
@@ -44,9 +47,9 @@ type ProxyReport struct {
 
 // ExposureReport 是网络暴露面快照：谁能连到这台机器的什么。
 type ExposureReport struct {
-	Listeners []Listener   `json:"listeners"`
-	Hosts     HostsReport  `json:"hosts"`
-	Proxy     ProxyReport  `json:"proxy"`
+	Listeners []Listener  `json:"listeners"`
+	Hosts     HostsReport `json:"hosts"`
+	Proxy     ProxyReport `json:"proxy"`
 }
 
 // Exposure 采集网络暴露面。pidName 由调用方注入（进程名归属属于
