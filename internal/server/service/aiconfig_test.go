@@ -141,3 +141,116 @@ func TestProviderSource(t *testing.T) {
 		t.Fatalf("有 DB Provider 时 source 应为 db: %s", got)
 	}
 }
+
+// Agent 循环预算的三层口径：env 引导基线 → DB Provider 覆盖 → 引擎默认。
+// DB 显式清零 = 回落 env 基线（不是直接跳到引擎默认）；越界值钳到与
+// ai.ApplyConfig 相同的上限，保证展示值 = 引擎生效值。
+func TestResolveProviderAgentBudget(t *testing.T) {
+	boot := testBootstrap()
+	boot.AgentMaxSteps = 9
+	boot.AgentToolTimeout = 15 * time.Second
+
+	p := resolveProvider(boot, nil)
+	if p.AgentMaxSteps != 9 || p.AgentToolTimeoutMs != 15000 {
+		t.Fatalf("无 DB 时应跟随 env 基线: %+v", p)
+	}
+
+	stored := &storedAIConfig{Provider: &storedProvider{AgentMaxSteps: 11, AgentToolTimeoutMs: 25000}}
+	p = resolveProvider(boot, stored)
+	if p.AgentMaxSteps != 11 || p.AgentToolTimeoutMs != 25000 {
+		t.Fatalf("DB 覆盖应生效: %+v", p)
+	}
+
+	p = resolveProvider(boot, &storedAIConfig{Provider: &storedProvider{}})
+	if p.AgentMaxSteps != 9 || p.AgentToolTimeoutMs != 15000 {
+		t.Fatalf("DB 清零应回落 env 基线: %+v", p)
+	}
+
+	p = resolveProvider(boot, &storedAIConfig{Provider: &storedProvider{AgentMaxSteps: 99, AgentToolTimeoutMs: 99000}})
+	if p.AgentMaxSteps != 12 || p.AgentToolTimeoutMs != 60000 {
+		t.Fatalf("越界值应钳制（与 ApplyConfig 同口径）: %+v", p)
+	}
+}
+
+// Agent 循环预算接入配置中心的端到端契约：settings 往返（保存 → 读回）
+// + 引擎热更新立即生效（零值 = 回到引擎默认）。
+func TestSaveConfigAgentBudgetRoundtrip(t *testing.T) {
+	svc, _, ctx := newAIServiceTest(t)
+	key, err := settingseal.Key("", "master-secret-at-least-32-bytes-long!!")
+	if err != nil {
+		t.Fatalf("派生密钥失败: %v", err)
+	}
+	svc.encKey = key
+
+	steps, timeoutMs := 10, 20000
+	in := &SaveAIConfigInput{Provider: &SaveProviderInput{
+		BaseURL: "https://db.example.com", Model: "db-model",
+		AgentMaxSteps: &steps, AgentToolTimeoutMs: &timeoutMs,
+	}}
+	if _, err := svc.SaveConfig(ctx, in); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	view, err := svc.GetConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if view.Provider.AgentMaxSteps != 10 || view.Provider.AgentToolTimeoutMs != 20000 {
+		t.Fatalf("settings 往返丢失 Agent 预算: %+v", view.Provider)
+	}
+	// 热更新：不重启，引擎侧立即按新预算执行
+	if got := svc.eng.AgentMaxSteps(); got != 10 {
+		t.Fatalf("引擎步数预算未生效: %d", got)
+	}
+	if got := svc.eng.AgentToolTimeoutMs(); got != 20000 {
+		t.Fatalf("引擎工具超时未生效: %d", got)
+	}
+
+	// 显式传 0 = 清除覆盖：展示层归零（0 = 默认），引擎回到内置默认
+	steps, timeoutMs = 0, 0
+	if _, err := svc.SaveConfig(ctx, &SaveAIConfigInput{Provider: &SaveProviderInput{
+		AgentMaxSteps: &steps, AgentToolTimeoutMs: &timeoutMs,
+	}}); err != nil {
+		t.Fatalf("SaveConfig(清除): %v", err)
+	}
+	view, _ = svc.GetConfig(ctx)
+	if view.Provider.AgentMaxSteps != 0 || view.Provider.AgentToolTimeoutMs != 0 {
+		t.Fatalf("清除后展示值应为 0(=默认): %+v", view.Provider)
+	}
+	if got := svc.eng.AgentMaxSteps(); got != 6 {
+		t.Fatalf("清除后引擎应回默认 6 步: %d", got)
+	}
+	if got := svc.eng.AgentToolTimeoutMs(); got != 10000 {
+		t.Fatalf("清除后引擎应回默认 10s: %d", got)
+	}
+}
+
+// Agent 预算越界/非法值必须在保存口拒绝（引擎侧还有钳制兜底，但管理
+// 员应当场看到配错，而不是保存成功后被静默改值）。
+func TestSaveConfigAgentBudgetValidation(t *testing.T) {
+	svc, _, ctx := newAIServiceTest(t)
+	key, _ := settingseal.Key("", "master-secret-at-least-32-bytes-long!!")
+	svc.encKey = key
+
+	cases := []struct {
+		name      string
+		steps     *int
+		timeoutMs *int
+	}{
+		{"步数超上限", intp(13), nil},
+		{"步数负数", intp(-1), nil},
+		{"工具超时低于 1 秒", nil, intp(500)},
+		{"工具超时超上限", nil, intp(61000)},
+		{"工具超时负数", nil, intp(-5)},
+	}
+	for _, tc := range cases {
+		_, err := svc.SaveConfig(ctx, &SaveAIConfigInput{Provider: &SaveProviderInput{
+			AgentMaxSteps: tc.steps, AgentToolTimeoutMs: tc.timeoutMs,
+		}})
+		if err == nil {
+			t.Fatalf("%s 应被拒绝", tc.name)
+		}
+	}
+}
+
+func intp(v int) *int { return &v }
