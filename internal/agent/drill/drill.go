@@ -21,13 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"os/exec"
 	"strings"
-	"syscall"
 	"time"
-
-	"zedr/internal/platform/redact"
 )
 
 // 步骤名（服务端白名单同名单，见 internal/server/api/drill.go 注释）。
@@ -42,13 +37,6 @@ const (
 // PipelineSentinel 是 proc_chain 的 expected_rule 占位：该步骤验证的是
 // 采集管线本身（新进程出现在进程表），不对应任何规则 ID。
 const PipelineSentinel = "__pipeline__"
-
-// detachedProcess 是 CREATE_NO_WINDOW（0x08000000），与 cmd/desktop 的
-// spawn 先例一致：子进程拿一个不可见的控制台。演练 v1 曾用
-// DETACHED_PROCESS（0x8），cmd/sc/reg 都正常、唯独 powershell.exe 会
-// 163ms 内静默 exit 0（无控制台时初始化直接放弃），port_scan 步骤三轮
-// E2E 全空转后定位到此处——拉控制台程序一律 CREATE_NO_WINDOW。
-const detachedProcess = 0x08000000
 
 // 预算与节奏。
 const (
@@ -278,232 +266,13 @@ func expectedRuleOf(name string) string {
 	return ""
 }
 
-// ---------------------------------------------------------------- 五个步骤
+// ---------------------------------------------------------------- 步骤实现
 
-// stepProcChain 采集管线健康检查：拉起一个活 5s 左右的 cmd.exe，
-// 轮询进程表确认"新进程被采集管线捕获"。这是唯一不匹配规则的步骤。
-func stepProcChain(ctx context.Context, start time.Time, deps Deps) StepResult {
-	res := StepResult{Name: StepProcChain, ExpectedRule: PipelineSentinel}
-	if deps.ProcSnapshot == nil {
-		return skip(StepProcChain, "ProcSnapshot 未接线")
-	}
-	// 基线：演练前已存在的 PID 不算"新出现"。
-	base := make(map[uint32]struct{}, 512)
-	for _, p := range deps.ProcSnapshot() {
-		base[p.PID] = struct{}{}
-	}
-	// 自造样本：echo 后跟 6 次回环 ping（约 5s），把 cmd.exe 生命周期
-	// 撑过采集轮询周期，规避用户态轮询固有的 TOCTOU 盲区（仓库 5.3 的教训）。
-	if _, err := spawnDetached("cmd", "/c", "echo zedr-drill & ping -n 6 127.0.0.1 >nul"); err != nil {
-		res.Note = "spawn 失败: " + err.Error()
-		return res
-	}
-	var observed uint32
-	hitAt, ok := awaitHit(ctx, func() bool {
-		for _, p := range deps.ProcSnapshot() {
-			if p.PID == deps.SelfPID {
-				continue // 自身/自身子树之外才叫"新被捕获"
-			}
-			if _, seen := base[p.PID]; seen {
-				continue
-			}
-			if strings.EqualFold(p.Name, "cmd.exe") {
-				observed = p.PID
-				return true
-			}
-		}
-		return false
-	})
-	res.Hit = ok
-	res.LatencyMs = elapsedMs(start, hitAt, ok)
-	if ok {
-		res.Note = fmt.Sprintf("新 cmd.exe（PID %d）已出现在进程表，采集管线健康", observed)
-	} else {
-		res.Note = "10s 内未观察到新 cmd.exe——采集管线可能停摆或样本过快退出"
-	}
-	return res
-}
-
-// stepPortScan 网络行为检测：向 TEST-NET-3 保留网段（RFC 5737，不可路由）
-// 的 20 个端口发起仅 SYN 的连接尝试，零数据传输。Connect 全部失败正是
-// 期望形态——NW-001（端口扇出）与 NW-004（无响应）都按失败采样，
-// 默认阈值（扇出 ≥12 端口 / 无响应 ≥15 次）20 次尝试足够触发。
-func stepPortScan(ctx context.Context, start time.Time, deps Deps) StepResult {
-	res := StepResult{Name: StepPortScan, ExpectedRule: "NW-001/NW-004"}
-	if !deps.NetWatchEnabled {
-		return skip(StepPortScan, "HG_AGENT_NETWATCH 未启用，网络行为检测不可用")
-	}
-	if deps.AlertsSince == nil {
-		return skip(StepPortScan, "AlertsSince 未接线")
-	}
-	// 为什么不套 cmd /c：Go 对含空格参数的引号包装会被 cmd /c 剥掉外层，
-	// PowerShell 拿到未加引号的多 token 脚本直接解析失败（实测 exit 255）；
-	// 直接拉起 powershell 由 Go 负责整体引号，脚本原样到达。
-	// 为什么必须两波：netwatch 对首次 sighting 的进程只记基线不记事件
-	//（防启动风暴）。瞬时把全部 SYN 发完，等采样器第一次看到时整批
-	// 落进基线，永远零事件——v1/v2 E2E 未命中的根因。第一波 20 端口
-	// 只为建基线，停 6s（≥3 个采样 tick）后第二波 60 个全新端口才
-	// 会计入扇出：60 > NW-001 默认阈值 40（2026-11-14 上调）留余量。
-	// BeginConnect 挂住不关：串行阻塞 Connect 到不可路由地址要等完整
-	// SYN 超时（~21s/端口），60s 窗口只够摸 3 个端口。
-	script := `$ss=@(); foreach($p in 44100..44119){ $c=New-Object Net.Sockets.TcpClient; $ss+=$c; $null=$c.BeginConnect('203.0.113.9',$p,$null,$null) }; Start-Sleep -Seconds 6; foreach($p in 44300..44359){ $c=New-Object Net.Sockets.TcpClient; $ss+=$c; $null=$c.BeginConnect('203.0.113.9',$p,$null,$null) }; Start-Sleep -Seconds 15; foreach($c in $ss){ try{$c.Close()}catch{} }`
-	if _, err := spawnDetached("powershell", "-NoProfile", "-Command", script); err != nil {
-		res.Note = "spawn 失败: " + err.Error()
-		return res
-	}
-	var hit AlertView
-	hitAt, ok := awaitHit(ctx, func() bool {
-		a, found := deps.alertHit(start, "NW-001", "NW-004")
-		if found {
-			hit = a
-		}
-		return found
-	})
-	res.Hit = ok
-	res.LatencyMs = elapsedMs(start, hitAt, ok)
-	res.AlertID = hit.ID
-	if ok {
-		res.Note = "对 TEST-NET-3 不可路由网段的 SYN 扇出已被网络行为检测捕获（零真实外联）"
-	} else {
-		res.Note = "60s 内未出现 NW-001/NW-004 告警（阈值未达到或 netwatch 采样异常）"
-	}
-	return res
-}
-
-// drillServiceName / drillSvcPath 是演练自造服务：demand 启动类型（创建后
-// 不启动）、binpath 指向不存在的文件——服务安装事件（System 7045）照发，
-// 而服务本身永远不会运行任何代码。
-const (
-	drillServiceName = "zedr-drill-evt"
-	drillSvcPath     = `C:\Temp\zedr-drill-evt.exe`
-	drillRegValue    = "zedr-drill"
-	drillRunKey      = `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
-)
-
-// stepServiceEvt 事件日志层：创建一个 demand 空服务，等 E1 消费到
-// 服务安装事件。finally 必删服务——演练不允许在目标机器留残留。
-func stepServiceEvt(ctx context.Context, start time.Time, deps Deps) StepResult {
-	res := StepResult{Name: StepServiceEvt, ExpectedRule: "EVT-SVCINST"}
-	if !deps.EvtLogEnabled {
-		return skip(StepServiceEvt, "E1 事件日志接入未启用（HG_AGENT_EVTLOG），服务安装事件不可见")
-	}
-	if deps.AlertsSince == nil {
-		return skip(StepServiceEvt, "AlertsSince 未接线")
-	}
-	cleanup := func() {
-		// 清理用独立预算：走到这里时判断 ctx 可能已超时
-		cctx, ccancel := context.WithTimeout(context.Background(), cleanupWait)
-		defer ccancel()
-		if _, err := runSync(cctx, "sc.exe", "delete", drillServiceName); err != nil {
-			deps.warn("drill_cleanup_failed", "what", "sc delete "+drillServiceName, "err", err.Error())
-		}
-	}
-	out, err := runSync(ctx, "sc.exe", "create", drillServiceName,
-		"binpath=", drillSvcPath, "start=", "demand")
-	if err != nil {
-		cleanup() // 半创建成功也要清：残留 demand 服务是配置漂移
-		res.Note = "sc create 失败: " + tailLine(out, err)
-		return res
-	}
-	defer cleanup()
-
-	var hit AlertView
-	hitAt, ok := awaitHit(ctx, func() bool {
-		a, found := deps.alertHit(start, "EVT-SVCINST")
-		if found {
-			hit = a
-		}
-		return found
-	})
-	res.Hit = ok
-	res.LatencyMs = elapsedMs(start, hitAt, ok)
-	res.AlertID = hit.ID
-	if ok {
-		res.Note = "服务安装事件（System 7045）已被 E1 事件日志层捕获，服务已删除"
-	} else {
-		res.Note = "60s 内未出现 EVT-SVCINST 告警（E1 游标轮询 30s/tick，事件可能落后于窗口）"
-	}
-	return res
-}
-
-// stepRegRun 持久化检测：写 HKLM Run 键（T1547.001 经典路径），等
-// P-001（基线层）或 HG-023（规则层）命中，finally 必删注册表值。
-func stepRegRun(ctx context.Context, start time.Time, deps Deps) StepResult {
-	res := StepResult{Name: StepRegRun, ExpectedRule: expectedRuleOf(StepRegRun)}
-	if deps.AlertsSince == nil {
-		return skip(StepRegRun, "AlertsSince 未接线")
-	}
-	cleanup := func() {
-		cctx, ccancel := context.WithTimeout(context.Background(), cleanupWait)
-		defer ccancel()
-		if _, err := runSync(cctx, "reg.exe", "delete", drillRunKey, "/v", drillRegValue, "/f"); err != nil {
-			deps.warn("drill_cleanup_failed", "what", "reg delete "+drillRegValue, "err", err.Error())
-		}
-	}
-	out, err := runSync(ctx, "reg.exe", "add", drillRunKey,
-		"/v", drillRegValue, "/t", "REG_SZ", "/d", drillSvcPath, "/f")
-	if err != nil {
-		cleanup() // 写入失败（如非管理员）也清一次，幂等
-		res.Note = "reg add 失败（需要管理员/SYSTEM 权限）: " + tailLine(out, err)
-		return res
-	}
-	defer cleanup()
-
-	var hit AlertView
-	hitAt, ok := awaitHit(ctx, func() bool {
-		a, found := deps.alertHit(start, "P-001", "HG-023")
-		if found {
-			hit = a
-		}
-		return found
-	})
-	res.Hit = ok
-	res.LatencyMs = elapsedMs(start, hitAt, ok)
-	res.AlertID = hit.ID
-	if ok {
-		res.Note = "Run 键写入已被捕获（" + strings.Join(hit.RuleIDs, ",") + "）；注册表值已删除"
-	} else {
-		res.Note = "30s 内未出现 P-001/HG-023 告警（P-001 走持久化层 5min 轮询，regwatch 关闭时尤其滞后）"
-	}
-	return res
-}
-
-// stepCanaryTouch 勒索防御：删除一个探针自放的诱饵文件，等 FILE-CANARY
-// 命中。诱饵由探针自检静默重建，演练不留缺口。
-func stepCanaryTouch(ctx context.Context, start time.Time, deps Deps) StepResult {
-	res := StepResult{Name: StepCanaryTouch, ExpectedRule: "FILE-CANARY"}
-	if deps.CanaryFile == nil {
-		return skip(StepCanaryTouch, "CanaryFile 未接线")
-	}
-	if deps.AlertsSince == nil {
-		return skip(StepCanaryTouch, "AlertsSince 未接线")
-	}
-	canary := deps.CanaryFile()
-	if canary == "" {
-		return skip(StepCanaryTouch, "未找到可用诱饵（HG_AGENT_FILE_DEFENSE 关闭或诱饵尚未放置）")
-	}
-	if err := os.Remove(canary); err != nil {
-		res.Note = "删除诱饵失败: " + err.Error()
-		return res
-	}
-	var hit AlertView
-	hitAt, ok := awaitHit(ctx, func() bool {
-		a, found := deps.alertHit(start, "FILE-CANARY")
-		if found {
-			hit = a
-		}
-		return found
-	})
-	res.Hit = ok
-	res.LatencyMs = elapsedMs(start, hitAt, ok)
-	res.AlertID = hit.ID
-	if ok {
-		res.Note = "诱饵删除已被勒索防御捕获；诱饵将由探针 30s 自检静默重建（" + redact.Path(canary) + "）"
-	} else {
-		res.Note = "30s 内未出现 FILE-CANARY 告警（USN/文件监控可能未覆盖诱饵目录）"
-	}
-	return res
-}
+// 五个步骤的平台实现按构建标签拆分：
+//   - steps_windows.go：cmd/powershell/sc/reg 全走系统自带工具；
+//   - steps_linux.go：Go 原生拨号 + 进程内文件写删，无等价信号源的步骤
+//     （服务安装事件）诚实记 skipped。
+// 两平台各自提供 runStep 所需的同名函数；本文件只保留调度、判定与报告。
 
 // ---------------------------------------------------------------- 依赖与轮询原语
 
@@ -544,29 +313,6 @@ func awaitHit(ctx context.Context, found func() bool) (time.Time, bool) {
 	}
 }
 
-// spawnDetached 拉起不共享控制台的子进程并后台回收（不 Wait 会泄漏
-// 进程句柄——探针是长驻进程，积少成多）。
-func spawnDetached(name string, args ...string) (*exec.Cmd, error) {
-	cmd := exec.Command(name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	go func() { _ = cmd.Wait() }()
-	return cmd, nil
-}
-
-// runSync 同步执行一个快速子命令（sc/reg），DETACHED 启动避免闪现控制台。
-// 单独给 syncWait 预算：sc/reg 极端情况（SCM 卡死）不能吃掉整个判定窗口。
-func runSync(ctx context.Context, name string, args ...string) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, syncWait)
-	defer cancel()
-	cmd := exec.CommandContext(cctx, name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess}
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
 // warn 空安全的日志（步骤可被单测直接驱动，Deps.Log 可能缺省）。
 func (d Deps) warn(msg string, kv ...any) {
 	if d.Log != nil {
@@ -579,19 +325,4 @@ func elapsedMs(start, hitAt time.Time, hit bool) int64 {
 		return hitAt.Sub(start).Milliseconds()
 	}
 	return time.Since(start).Milliseconds()
-}
-
-// tailLine 从子命令输出里取最后一个非空行（sc/reg 的报错在末行），
-// 拼上错误本身；截断防超长输出撑爆回执。
-func tailLine(out string, err error) string {
-	s := strings.TrimSpace(err.Error())
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if t := strings.TrimSpace(line); t != "" {
-			s = t
-		}
-	}
-	if len(s) > 120 {
-		s = s[:120] + "…"
-	}
-	return s
 }
