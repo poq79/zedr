@@ -69,43 +69,44 @@ func TestFirstSightIsBaseline(t *testing.T) {
 	}
 }
 
-// 1) NW-001 端口扫描：逐步扇出 12 个端口触发；同端口反复连接不虚增计数。
+// 1) NW-001 端口扫描：逐步扇出 40 个端口触发（2026-11-14 阈值 12→40，
+// 正常多端口应用防误报）；同端口反复连接不虚增计数。
 func TestPortScanThresholdAndDedup(t *testing.T) {
 	w := New(Config{}, 1)
 	ident := pid100(t0)
 	prime(w, t0, ident)
 	at := t0.Add(time.Second)
 
-	// 11 个端口：不触发
-	for i := 0; i < 11; i++ {
+	// 39 个端口：不触发
+	for i := 0; i < 39; i++ {
 		at = at.Add(5 * time.Second)
 		fs := w.Observe(tickOf(at, map[uint32][]winapi.TCPConn{
 			100: {conn("203.0.113.10", uint16(1000+i), "ESTABLISHED")},
 		}, map[uint32]ProcIdent{100: ident}))
 		if len(fs) != 0 {
-			t.Fatalf("11 个端口不应触发，第 %d 个端口时触发: %v", i+1, ruleIDs(fs))
+			t.Fatalf("39 个端口不应触发，第 %d 个端口时触发: %v", i+1, ruleIDs(fs))
 		}
 	}
 	// 同一批连接重复上报（长连接每轮都在表里）：计数不得虚增
 	for i := 0; i < 5; i++ {
 		at = at.Add(2 * time.Second)
 		var conns []winapi.TCPConn
-		for p := uint16(1000); p < 1011; p++ {
+		for p := uint16(1000); p < 1039; p++ {
 			conns = append(conns, conn("203.0.113.10", p, "ESTABLISHED"))
 		}
 		if fs := w.Observe(tickOf(at, map[uint32][]winapi.TCPConn{100: conns},
 			map[uint32]ProcIdent{100: ident})); len(fs) != 0 {
-			t.Fatalf("重复连接去重后仍只有 11 个端口，不应触发: %v", ruleIDs(fs))
+			t.Fatalf("重复连接去重后仍只有 39 个端口，不应触发: %v", ruleIDs(fs))
 		}
 	}
-	// 第 12 个端口：触发 NW-001
+	// 第 40 个端口：触发 NW-001
 	at = at.Add(2 * time.Second)
 	fs := w.Observe(tickOf(at, map[uint32][]winapi.TCPConn{
 		100: {conn("203.0.113.10", 2000, "ESTABLISHED")},
 	}, map[uint32]ProcIdent{100: ident}))
 	ids := ruleIDs(fs)
 	if !ids["NW-001"] {
-		t.Fatalf("12 个端口应触发 NW-001，得到: %v", ids)
+		t.Fatalf("40 个端口应触发 NW-001，得到: %v", ids)
 	}
 	if fs[0].Severity != "high" || fs[0].Verdict != "suspicious" {
 		t.Fatalf("NW-001 定级不符: %+v", fs[0])
@@ -265,7 +266,7 @@ func TestLoopbackAndOwnIPExcluded(t *testing.T) {
 // 7) 可信进程阈值放大。
 func TestTrustedScale(t *testing.T) {
 	var conns []winapi.TCPConn
-	for p := uint16(1000); p < 1012; p++ {
+	for p := uint16(1000); p < 1040; p++ {
 		conns = append(conns, conn("203.0.113.10", p, "ESTABLISHED"))
 	}
 	mk := func(trusted bool) ProcIdent {
@@ -276,11 +277,11 @@ func TestTrustedScale(t *testing.T) {
 	}
 	w := New(Config{}, 1)
 	prime(w, t0, mk(true))
-	// 可信进程 12 个端口：阈值 ×3 = 36，不触发
+	// 可信进程 40 个端口：阈值 ×3 = 120，不触发
 	fs := w.Observe(tickOf(t0.Add(time.Second), map[uint32][]winapi.TCPConn{100: conns},
 		map[uint32]ProcIdent{100: mk(true)}))
 	if ruleIDs(fs)["NW-001"] {
-		t.Fatal("可信进程 12 端口不应触发（阈值放大 3 倍）")
+		t.Fatal("可信进程 40 端口不应触发（阈值放大 3 倍）")
 	}
 	// 不可信进程同样规模：触发
 	w2 := New(Config{}, 1)
@@ -288,7 +289,7 @@ func TestTrustedScale(t *testing.T) {
 	fs = w2.Observe(tickOf(t0.Add(time.Second), map[uint32][]winapi.TCPConn{100: conns},
 		map[uint32]ProcIdent{100: mk(false)}))
 	if !ruleIDs(fs)["NW-001"] {
-		t.Fatalf("不可信进程 12 端口应触发: %v", ruleIDs(fs))
+		t.Fatalf("不可信进程 40 端口应触发: %v", ruleIDs(fs))
 	}
 }
 
@@ -307,21 +308,21 @@ func TestPIDReuseResetsWindow(t *testing.T) {
 			map[uint32]ProcIdent{100: {PID: 100, Name: "x.exe", StartTime: start}}))
 	}
 	// 首次 sighting：基线，不计
-	if fs := add(6, t0, 1000); len(fs) != 0 {
-		t.Fatalf("首次 sighting 是基线，6 端口不应触发: %v", ruleIDs(fs))
+	if fs := add(20, t0, 1000); len(fs) != 0 {
+		t.Fatalf("首次 sighting 是基线，20 端口不应触发: %v", ruleIDs(fs))
 	}
 	// 同 PID、创建时间不同 → 新进程，窗口清零且重新建基线
-	if fs := add(6, t0.Add(time.Hour), 1000); len(fs) != 0 {
+	if fs := add(20, t0.Add(time.Hour), 1000); len(fs) != 0 {
 		t.Fatalf("PID 复用后旧窗口应清零，不应触发: %v", ruleIDs(fs))
 	}
-	// 新进程累计：+6 → 6，不触发
-	if fs := add(6, t0.Add(time.Hour), 1006); len(fs) != 0 {
-		t.Fatalf("新进程累计 6 端口不应触发: %v", ruleIDs(fs))
+	// 新进程累计：+20 → 20，不触发
+	if fs := add(20, t0.Add(time.Hour), 1020); len(fs) != 0 {
+		t.Fatalf("新进程累计 20 端口不应触发: %v", ruleIDs(fs))
 	}
-	// 再 +6 → 12 → 触发
-	fs := add(6, t0.Add(time.Hour), 1012)
+	// 再 +20 → 40 → 触发
+	fs := add(20, t0.Add(time.Hour), 1040)
 	if !ruleIDs(fs)["NW-001"] {
-		t.Fatalf("累计 12 端口应触发: %v", ruleIDs(fs))
+		t.Fatalf("累计 40 端口应触发: %v", ruleIDs(fs))
 	}
 }
 
@@ -331,16 +332,16 @@ func TestTimeWaitCounted(t *testing.T) {
 	ident := pid100(t0)
 	prime(w, t0, ident)
 	at := t0.Add(time.Second)
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 40; i++ {
 		at = at.Add(3 * time.Second)
 		fs := w.Observe(tickOf(at, map[uint32][]winapi.TCPConn{
 			100: {conn("203.0.113.10", uint16(3000+i), "TIME_WAIT")},
 		}, map[uint32]ProcIdent{100: ident}))
-		if i < 11 && len(fs) != 0 {
+		if i < 39 && len(fs) != 0 {
 			t.Fatalf("第 %d 个 TIME_WAIT 不应触发", i+1)
 		}
-		if i == 11 && !ruleIDs(fs)["NW-001"] {
-			t.Fatalf("12 个 TIME_WAIT 端口应触发 NW-001: %v", ruleIDs(fs))
+		if i == 39 && !ruleIDs(fs)["NW-001"] {
+			t.Fatalf("40 个 TIME_WAIT 端口应触发 NW-001: %v", ruleIDs(fs))
 		}
 	}
 }

@@ -36,8 +36,12 @@ import (
 // 默认值取自业界公开检测规则的量级（fanout>10/30s、单 IP≥10 端口/5min），
 // 并按"宁可漏报不打扰"的口径整体上调一档——扫描检测的误报成本
 // （值班信任度）远高于漏报成本（还有关键词/规则/血缘层兜底）。
+// 2026-11-14 用户裁决：NW-001 再上调一档（12→40）——资产盘点/监控探测/
+// 下载器类正常软件对单 IP 开十几个端口并不罕见，扫描要"明显"才值得报。
 type Config struct {
 	// PortScanPorts：NW-001，长窗口内对同一目的 IP 的不同端口数阈值。
+	// 40 = 5min 内对同一 IP 摸 40 个端口才报：真实扫描器（nmap top-1000
+	// 起步）轻松越过，正常多端口应用（代理/下载器/集群客户端）够不到。
 	PortScanPorts int
 	// HostSweepIPs：NW-002，短窗口内"非常见端口"的不同目的 IP 数阈值。
 	HostSweepIPs int
@@ -74,7 +78,7 @@ type Config struct {
 // Default 返回默认配置。
 func Default() Config {
 	return Config{
-		PortScanPorts:     12,
+		PortScanPorts:     40,
 		HostSweepIPs:      15,
 		LateralIPs:        8,
 		NoRespFails:       15,
