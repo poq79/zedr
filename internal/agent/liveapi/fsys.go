@@ -1,6 +1,6 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：FSys 抽象与 OSFS 双平台编译。唯一的平台差异点——
+// 目录条目的 Windows 文件属性（hidden/system/readonly/reparse）——收敛为
+// fileAttrs 平台钩子（platform_windows.go / platform_linux.go）。
 package liveapi
 
 // fsys.go：FSys 抽象与默认 OSFS 实现。
@@ -14,9 +14,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-
-	"zedr/internal/agent/winapi"
 )
+
+// fileAttrFlags 是 Entry 四个 Windows 语义属性的中性载体：Windows 由
+// GetFileAttrs 填充，Linux 由 stat 信息做诚实映射（见 platform_linux.go）。
+type fileAttrFlags struct {
+	Hidden   bool
+	System   bool
+	Readonly bool
+	Reparse  bool
+}
 
 // Entry 是目录条目（契约 §5.2）：只含 name，全路径由前端用 path 拼接。
 type Entry struct {
@@ -71,8 +78,8 @@ func (OSFS) List(dir string) ([]Entry, error) {
 			e.MtimeUnix = fi.ModTime().Unix()
 		}
 		// 属性逐条查询：目录可能被并发改动，个别条目会消失，
-		// GetFileAttrs 失败返回零值，不让单条目失败放大成整目录失败
-		a := winapi.GetFileAttrs(filepath.Join(dir, de.Name()))
+		// fileAttrs 失败返回零值，不让单条目失败放大成整目录失败
+		a := fileAttrs(filepath.Join(dir, de.Name()))
 		e.Hidden, e.System, e.Readonly, e.Reparse = a.Hidden, a.System, a.Readonly, a.Reparse
 		out = append(out, e)
 	}
@@ -90,7 +97,7 @@ func (OSFS) Stat(path string) (Entry, error) {
 		IsDir:     info.IsDir(),
 		MtimeUnix: info.ModTime().Unix(),
 	}
-	a := winapi.GetFileAttrs(path)
+	a := fileAttrs(path)
 	e.Hidden, e.System, e.Readonly, e.Reparse = a.Hidden, a.System, a.Readonly, a.Reparse
 	return e, nil
 }

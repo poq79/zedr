@@ -1,6 +1,6 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：/peers 是纯聚合端点（连接表 × 进程快照的内存 join），
+// 无平台依赖；连接行类型用 nettypes.NetRow（winapi.NetRow 的单一事实源，
+// Windows 侧零改动，Linux 侧由 /proc/net 投影同形状）。
 package liveapi
 
 // peers.go：外联对端聚合（契约 §16.2，"谁在跟这台机器说话"）。
@@ -28,8 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"zedr/internal/agent/nettypes"
 	"zedr/internal/agent/state"
-	"zedr/internal/agent/winapi"
 	"zedr/internal/platform/httpx"
 )
 
@@ -105,7 +105,7 @@ type procAgg struct {
 }
 
 // buildPeersResult 是纯聚合逻辑（单测直接注入桩连接表/进程快照）。
-func buildPeersResult(rows []winapi.NetRow, snap []state.ProcRow, generatedAt time.Time) peersResult {
+func buildPeersResult(rows []nettypes.NetRow, snap []state.ProcRow, generatedAt time.Time) peersResult {
 	pidName := make(map[uint32]string, len(snap))
 	for _, p := range snap {
 		pidName[p.PID] = procDisplayName(p)

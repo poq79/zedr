@@ -1,14 +1,19 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：/procinfo 双平台编译。平台差异收敛为两个钩子：
+//   - procRealtimeFields：快照没有的单 PID 实时字段（Windows：
+//     session_id/elevated/started_at；Linux：仅 started_at，session/elevated
+//     无对等语义，诚实省略）；
+//   - execFileInfoExtra：exec_info 的平台扩展块（Windows：签名状态 + MotW；
+//     Linux：无，返回 nil）。
+//
+// Modules 未接线（Linux v1 恒未接线）时 modules 块整体省略，端点其余照常。
 package liveapi
 
 // procinfo.go：/procinfo —— 单进程详情（契约 §11.1，进程↔文件↔网络交叉枢纽）。
 //
 // 数据来源分三层，口径各有注释：
 //   - 基本信息 = 采集快照（Deps.Snapshot/Procs），无系统调用；
-//   - session_id/elevated/started_at = 对该 PID 的实时 winapi 查询（单
-//     PID 成本可控；快照 ProcRow 不携带这三个字段）；
+//   - procRealtimeFields = 对该 PID 的平台实时查询（单 PID 成本可控；
+//     快照 ProcRow 不携带这些字段）；
 //   - modules/exec_info = 按需调用（Modules 是 collector 的高成本接口，
 //     只应在可疑进程上触发）。
 
@@ -16,8 +21,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"zedr/internal/agent/nettypes"
 	"zedr/internal/agent/state"
-	"zedr/internal/agent/winapi"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
 	"zedr/internal/platform/redact"
@@ -62,30 +67,23 @@ func (s *server) handleProcInfo(w http.ResponseWriter, r *http.Request) {
 		"first_seen_unix": row.FirstSeen.Unix(),
 	}
 
-	// 实时富化：快照没有的三个字段。进程已退出时查询自然失败 → 字段省略
-	if sid, err := winapi.SessionID(pid); err == nil && sid > 0 {
-		out["session_id"] = sid
-	}
-	// IsElevated 对打不开令牌的进程（权限不足/已退出）返回 false——
-	// "非提权"与"未知"在此无法区分，是已知口径局限
-	if winapi.IsElevated(pid) {
-		out["elevated"] = true
-	}
-	if ts, err := winapi.ProcessStartTime(pid); err == nil && ts > 0 {
-		out["started_at_unix"] = ts
+	// 实时富化：快照没有的平台字段（session_id/elevated/started_at）。
+	// 进程已退出时平台查询自然失败 → 对应字段省略
+	for k, v := range procRealtimeFields(pid) {
+		out[k] = v
 	}
 	// cpu_percent/mem_mb：快照 ProcRow 不携带，本端点不做单进程采样
 	//（诚实省略，见包内 /info 的全机口径）
 
 	if s.d.Netstat != nil {
-		var mine []winapi.NetRow
+		var mine []nettypes.NetRow
 		for _, nr := range s.d.Netstat() {
 			if nr.PID == pid {
 				mine = append(mine, nr)
 			}
 		}
 		if mine == nil {
-			mine = []winapi.NetRow{}
+			mine = []nettypes.NetRow{}
 		}
 		out["connections"] = s.enrichNetRows(mine, s.snapshotRows())
 	}
@@ -126,17 +124,18 @@ func (s *server) moduleReport(pid uint32) ([]map[string]string, bool, int) {
 	for _, m := range mods {
 		// 只取 name/path（契约口径）；base_addr/size 对模块级排查无增益
 		out = append(out, map[string]string{"name": m.Name, "path": m.Path})
-		// 未签名 = Authenticode 内嵌+catalog 双通道都无签名。
-		// 注意：打不开文件/校验出错的状态是 error_*，不计入 unsigned
-		//（未知 ≠ 未签名，宁缺毋滥）
-		if winapi.VerifySignature(m.Path).State == "unsigned" {
+		// 未签名 = 签名钩子（Windows: Authenticode 内嵌+catalog 双通道）
+		// 判定为 unsigned。注意：打不开文件/校验出错的状态是 error_*，
+		// 不计入 unsigned（未知 ≠ 未签名，宁缺毋滥）
+		if fileSignature(m.Path).State == "unsigned" {
 			unsigned++
 		}
 	}
 	return out, truncated, unsigned
 }
 
-// execInfo 可执行文件速览：存在性 + 签名状态 + MotW zone。
+// execInfo 可执行文件速览：存在性 + 平台扩展块（Windows: 签名状态 + MotW
+// zone；Linux: 无对等语义，钩子返回 nil，只给 exists）。
 func (s *server) execInfo(path string) map[string]any {
 	info := map[string]any{"exists": false}
 	e, err := s.d.FS.Stat(path)
@@ -147,18 +146,8 @@ func (s *server) execInfo(path string) map[string]any {
 	if e.IsDir {
 		return info
 	}
-	sig := winapi.VerifySignature(path)
-	info["signed_state"] = sig.State
-	// 有 zone.identifier 流才读内容（MotW 存在性一次枚举即可判定）
-	if streams, err := winapi.EnumerateStreams(path); err == nil {
-		for _, st := range streams {
-			if st.Name == "zone.identifier" {
-				if zi, err := winapi.ReadZoneIdentifier(path); err == nil && zi != nil {
-					info["ads_zone_id"] = zi.ZoneID
-				}
-				break
-			}
-		}
+	for k, v := range execFileInfoExtra(path) {
+		info[k] = v
 	}
 	return info
 }

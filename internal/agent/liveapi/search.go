@@ -1,6 +1,7 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：/fs/search 双平台编译。平台差异收敛为两个钩子：
+//   - hasAltStreams（NTFS ADS quick 标志，Linux 无 ADS 语义恒 false）；
+//   - relPathSep（相对路径分隔符：Windows `\`、Linux `/`，线协议按平台
+//     原生形态输出，前端拼完整路径时与 /fs 的 path 形态一致）。
 package liveapi
 
 // search.go：/fs/search —— 目录限深搜索（契约 §11.1，狩猎场景）。
@@ -9,8 +10,9 @@ package liveapi
 // 全树逐文件 Open 在 C:\Windows 规模（30 万+条目）下不可接受；walk 本体
 // 只做 ReadDir + 名称匹配，成本与条目数线性。
 //
-// junction 环防护：不进入 reparse 目录（与 v1 "junction 不可进入"口径一致），
-// 否则 C:\Documents and Settings 这类循环 junction 会让 depth 限制形同虚设。
+// junction 环防护：不进入 reparse 目录（与 v1 "junction 不可进入"口径一致；
+// Linux 侧对应 symlink 条目，fileAttrs 把 symlink 映射为 Reparse），
+// 否则循环链接会让 depth 限制形同虚设。
 
 import (
 	"context"
@@ -21,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	"zedr/internal/agent/winapi"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
 )
@@ -116,7 +117,7 @@ func (s *server) handleFSSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			childRel := en.Name
 			if rel != "" {
-				childRel = rel + `\` + en.Name
+				childRel = rel + relPathSep + en.Name
 			}
 			if matchWildcard(needle, strings.ToLower(en.Name)) {
 				hits = append(hits, s.buildHit(filepath.Join(dir, en.Name), en, childRel))
@@ -151,7 +152,8 @@ func (s *server) buildHit(full string, en Entry, rel string) searchHit {
 			q.PE = magic[0] == 'M' && magic[1] == 'Z'
 			_ = rc.Close()
 		}
-		if streams, err := winapi.EnumerateStreams(full); err == nil && len(streams) > 0 {
+		// ADS 存在性一次枚举判定（Linux 无 ADS 语义，钩子恒 false）
+		if hasAltStreams(full) {
 			q.ADS = true
 		}
 	}

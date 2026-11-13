@@ -1,6 +1,6 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：/info 双平台编译。基础字段来自 state.RuntimeInfo；
+// 平台扩展字段（Linux: os/arch + hostname 兜底）由 enrichInfo 平台方法
+// 追加（Windows 实现为 no-op，输出零变化）。
 package liveapi
 
 // info.go：/info —— 探针实时运行时（契约 §11.1）。
@@ -34,7 +34,7 @@ func (s *server) handleInfo(w http.ResponseWriter, r *http.Request) {
 
 	// cpu_percent/mem_mb 为 0 视为"尚未采样"照实输出 0（探针刚启动的
 	// 瞬态），不猜测不插值
-	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"version":       version,
 		"hostname":      rt.Hostname,
 		"uptime_sec":    uptime,
@@ -43,5 +43,8 @@ func (s *server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"mem_mb":        rt.MemMB,
 		"scan_interval": rt.ScanInterval,
 		"collector":     rt.Collector,
-	})
+	}
+	// 平台扩展（Windows: no-op；Linux: 追加 os/arch 与 hostname 兜底）
+	s.enrichInfo(out)
+	httpx.WriteJSON(w, r, http.StatusOK, out)
 }

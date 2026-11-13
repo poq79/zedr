@@ -1,6 +1,8 @@
-//go:build windows
-// +build windows
-
+// 本文件保持 NEUTRAL（无构建标签）：Deps/Server/路由注册在 Windows 与
+// Linux 双平台编译。平台差异全部收敛为包内平台钩子（platform_windows.go /
+// platform_linux.go）与各自的端点实现文件；Linux 版能力矩阵（哪些端点
+// 可用、哪些回 501）见 platform_linux.go 与 unsupported_linux.go 的注释。
+//
 // Package liveapi 提供实时隧道内的只读调查接口（LiveFS，
 // 路径/字段/上限契约见 docs/LIVE-TUNNEL.md §5.2）。
 //
@@ -23,8 +25,8 @@ import (
 	"strconv"
 	"time"
 
+	"zedr/internal/agent/nettypes"
 	"zedr/internal/agent/state"
-	"zedr/internal/agent/winapi"
 	"zedr/internal/livecatalog"
 	"zedr/internal/model"
 	"zedr/internal/platform/apperr"
@@ -42,8 +44,11 @@ type Deps struct {
 	// /processes 返回 501，/netstat 的富化随之降级（proc_name/proc_path 留空）。
 	Procs func(limit int) []state.ProcRow
 
-	// Netstat 返回带 PID 的连接表（winapi.GetNetstat 的直通引用）；nil → 501。
-	Netstat func() []winapi.NetRow
+	// Netstat 返回带 PID 的连接表；nil → 501。类型用 nettypes.NetRow
+	// （单一事实源）：Windows 侧 winapi.NetRow 是它的类型别名，GetNetstat
+	// 直通引用零改动；Linux 侧由 /proc/net/tcp 投影（netrow.go 的
+	// ProcfsNetstat，供组合根接线）。
+	Netstat func() []nettypes.NetRow
 
 	// FS 文件系统抽象；nil 时用 OSFS（单测注入内存/桩实现）。
 	FS FSys

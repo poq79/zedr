@@ -1,6 +1,6 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：/collect 的打包逻辑与平台无关（FSys 抽象 + zip 流），
+// 双平台编译。唯一的平台差异是路径去重键的大小写口径（fsPathKey 钩子：
+// Windows 路径大小写不敏感 → casefold；Linux 大小写敏感 → 原样）。
 package liveapi
 
 // collect.go：GET /collect —— 文件取证打包（zip 流式回传）。
@@ -120,7 +120,8 @@ func (s *server) handleCollect(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, apperr.Invalid("p 参数必填（可重复，每个为一个绝对路径）"))
 		return
 	}
-	// 去重按 Clean 后路径 casefold（Windows 路径大小写不敏感），保序取首个。
+	// 去重键口径在 fsPathKey（Windows: Clean 后 casefold——路径大小写
+	// 不敏感；Linux: 原样——/tmp/A 与 /tmp/a 是两个文件），保序取首个。
 	seen := make(map[string]bool, len(raws))
 	paths := make([]string, 0, len(raws))
 	for _, raw := range raws {
@@ -129,7 +130,7 @@ func (s *server) handleCollect(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, r, err)
 			return
 		}
-		key := strings.ToLower(clean)
+		key := fsPathKey(clean)
 		if seen[key] {
 			continue
 		}

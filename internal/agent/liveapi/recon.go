@@ -1,6 +1,7 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：/recon 的 thin handler 双平台编译。recon 包在两个平台
+// 各有编排实现（recon.go / recon_linux.go），Deps 形状一致（Windows 侧
+// winapi.NetRow 是 nettypes.NetRow 的类型别名，两侧同型）；recon.Result
+// 等输出结构体是 recon 包的双平台共享类型。
 package liveapi
 
 // recon.go：资产侦查薄 handler（契约 §12.1/§12.2）。
@@ -11,9 +12,6 @@ package liveapi
 //   - 连接表复用 Netstat；
 //   - probe 参数由请求决定；全局开关 HG_AGENT_RECON_PROBE=false 时
 //     强制被动（这里读环境变量作为兜底，接线层也可用 Config 覆盖）。
-//
-// 注意：路由注册在 liveapi.New（本批不改 liveapi.go），接线时需加一行
-// mux.HandleFunc("GET /recon", s.handleRecon)。
 
 import (
 	"net/http"

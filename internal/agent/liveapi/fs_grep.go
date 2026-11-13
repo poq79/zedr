@@ -1,6 +1,5 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：/fs/grep 无任何平台依赖（bufio+regexp+FSys 抽象），
+// 双平台编译，行为一致。
 package liveapi
 
 // fs_grep.go：/fs/grep —— 单文件内容正则查找（AI 调查的"内容定位不搬内容"）。

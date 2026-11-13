@@ -1,6 +1,8 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：fs* 四端点双平台编译。平台差异收敛为三个钩子：
+//   - validateFSPath（路径校验，Windows 要求盘符卷名 / Linux 要求绝对路径
+//     防穿越——这是 LiveFS 移植的历史雷区，规则分治见 platform_*.go）；
+//   - fileSignature（/fs/hash 的签名块，Linux 无 Authenticode 语义）；
+//   - fsPathKey（collect 去重键的大小写口径）。
 package liveapi
 
 // fs.go：/fs、/fs/stat、/fs/read、/fs/hash 四个端点（契约 §5.2）。
@@ -13,54 +15,22 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
-	"zedr/internal/agent/winapi"
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/httpx"
 )
 
-// validateFSPath 校验 fs* 四端点共用的 path 参数，返回 Clean 后的安全路径。
-//
-// 规则（契约 §5.2 逐条）：
-//   - 非空（空 = 400）；
-//   - 拒绝 `\\.\` 与 `\\?\` 前缀（设备命名空间——`\\.\PhysicalDrive0` 能把
-//     整块物理盘当文件读，风险面 v1 明确不收）；
-//   - filepath.IsAbs 且 VolumeName 非空（拒绝 `\foo` 这类盘符相对路径，
-//     它实际落在"进程当前盘"，语义随 cwd 漂移）；
-//   - 不允许出现 `..` 路径段。
-//
-// `..` 检查必须看原始输入：filepath.Clean 会把 `C:\a\..\b` 解析成 `C:\b`，
-// 绝对路径经 Clean 后理论上不可能残留 ".."，对 Clean 结果检查恒为假。
-func validateFSPath(raw string) (string, error) {
-	if raw == "" {
-		return "", apperr.Invalid("path 参数必填")
-	}
-	if strings.HasPrefix(raw, `\\.\`) || strings.HasPrefix(raw, `\\?\`) {
-		return "", apperr.Invalid("不支持设备命名空间路径")
-	}
-	if !filepath.IsAbs(raw) {
-		return "", apperr.Invalid("path 必须是绝对路径")
-	}
-	if filepath.VolumeName(raw) == "" {
-		return "", apperr.Invalid("path 缺少盘符/卷名")
-	}
-	for _, seg := range splitPathSegs(raw) {
-		if seg == ".." {
-			return "", apperr.Invalid("path 不允许包含 ..")
-		}
-	}
-	return filepath.Clean(raw), nil
-}
-
-// splitPathSegs 按 Windows 两种分隔符切分路径段（空段丢弃）。
-func splitPathSegs(p string) []string {
-	return strings.FieldsFunc(p, func(r rune) bool {
-		return r == '\\' || r == '/'
-	})
+// signatureInfo 是文件签名验证的中性投影（/fs/hash 的 authenticode 块与
+// procinfo 模块未签名计数的共用钩子返回值）。Windows 由 Authenticode
+// 校验填充；Linux 无 Authenticode 语义，State 恒为 "unsupported"（诚实
+// 表达"本平台不做签名判定"，绝不冒充 unsigned）。
+type signatureInfo struct {
+	State  string
+	Signer string
+	Signed bool
 }
 
 // parseCursor 解析 v1 游标：`o<十进制offset>`；空串 = 从头。
@@ -312,7 +282,7 @@ func (s *server) handleFSHash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sig := winapi.VerifySignature(path)
+	sig := fileSignature(path)
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
 		"path":   path,
 		"sha256": hex.EncodeToString(digest.Sum(nil)),

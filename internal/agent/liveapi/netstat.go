@@ -1,6 +1,7 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：/netstat 双平台编译。唯一的平台差异点——对快照内存活
+// PID 的实时富化（启动时刻/提权态）——收敛为 netRealtime 平台钩子
+// （Windows：OpenProcess/GetProcessTimes；Linux：/proc/[pid] 只读解析，
+// 见 platform_linux.go）。
 package liveapi
 
 // netstat.go：/netstat（契约 §5.2 v1 + §11.2 v2 富化）。
@@ -17,8 +18,8 @@ import (
 	"net"
 	"net/http"
 
+	"zedr/internal/agent/nettypes"
 	"zedr/internal/agent/state"
-	"zedr/internal/agent/winapi"
 	"zedr/internal/platform/httpx"
 	"zedr/internal/platform/redact"
 )
@@ -28,10 +29,10 @@ import (
 const netRealtimeEnrichMax = 256
 
 // netItem 是 /netstat 输出行：连接五元组 + 富化的归属进程信息。
-// 内嵌 winapi.NetRow 让 JSON 字段原地展开，线协议与契约逐字对齐；
-// v2 追加字段全部 omitempty，老消费者解析不受影响。
+// 内嵌 nettypes.NetRow（winapi.NetRow 的单一事实源）让 JSON 字段原地展开，
+// 线协议与契约逐字对齐；v2 追加字段全部 omitempty，老消费者解析不受影响。
 type netItem struct {
-	winapi.NetRow
+	nettypes.NetRow
 	ProcName      string `json:"proc_name"`
 	ProcPath      string `json:"proc_path"`
 	ProcUser      string `json:"proc_user,omitempty"`
@@ -58,23 +59,23 @@ func (s *server) handleNetstat(w http.ResponseWriter, r *http.Request) {
 
 // enrichNetRows 把连接表与进程快照 join 成富化行（/netstat 全表与
 // /procinfo 单进程过滤后共用）。
-func (s *server) enrichNetRows(rows []winapi.NetRow, snap []state.ProcRow) []netItem {
+func (s *server) enrichNetRows(rows []nettypes.NetRow, snap []state.ProcRow) []netItem {
 	byPID := make(map[uint32]state.ProcRow, len(snap))
 	for _, p := range snap {
 		byPID[p.PID] = p
 	}
 
 	// 实时富化集合：快照内唯一 PID（连接表里同一进程几十条连接是常态，
-	// 按 PID 去重后才谈得上成本可控）
+	// 按 PID 去重后才谈得上成本可控）；逐 PID 的实时查询在平台钩子里，
+	// 成本护栏（netRealtimeEnrichMax）在钩子两侧共同遵守
 	startedAt := make(map[uint32]int64, len(byPID))
 	elevated := make(map[uint32]bool, len(byPID))
 	if len(byPID) > 0 && len(byPID) <= netRealtimeEnrichMax {
+		pids := make([]uint32, 0, len(byPID))
 		for pid := range byPID {
-			if ts, err := winapi.ProcessStartTime(pid); err == nil && ts > 0 {
-				startedAt[pid] = ts
-			}
-			elevated[pid] = winapi.IsElevated(pid)
+			pids = append(pids, pid)
 		}
+		startedAt, elevated = netRealtime(pids)
 	}
 
 	items := make([]netItem, 0, len(rows))
