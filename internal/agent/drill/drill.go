@@ -43,9 +43,12 @@ const (
 // 采集管线本身（新进程出现在进程表），不对应任何规则 ID。
 const PipelineSentinel = "__pipeline__"
 
-// detachedProcess 与仓库 spawn 先例一致（cmd/diag 的拉起形态）：
-// 不共享控制台，避免演练子进程在交互式会话里闪现黑框。
-const detachedProcess = 0x00000008
+// detachedProcess 是 CREATE_NO_WINDOW（0x08000000），与 cmd/desktop 的
+// spawn 先例一致：子进程拿一个不可见的控制台。演练 v1 曾用
+// DETACHED_PROCESS（0x8），cmd/sc/reg 都正常、唯独 powershell.exe 会
+// 163ms 内静默 exit 0（无控制台时初始化直接放弃），port_scan 步骤三轮
+// E2E 全空转后定位到此处——拉控制台程序一律 CREATE_NO_WINDOW。
+const detachedProcess = 0x08000000
 
 // 预算与节奏。
 const (
@@ -336,7 +339,14 @@ func stepPortScan(ctx context.Context, start time.Time, deps Deps) StepResult {
 	// 为什么不套 cmd /c：Go 对含空格参数的引号包装会被 cmd /c 剥掉外层，
 	// PowerShell 拿到未加引号的多 token 脚本直接解析失败（实测 exit 255）；
 	// 直接拉起 powershell 由 Go 负责整体引号，脚本原样到达。
-	script := `$c=New-Object Net.Sockets.TcpClient; foreach($p in 44100..44119){ try{$c.Connect('203.0.113.9',$p)}catch{}; $c.Close(); $c=New-Object Net.Sockets.TcpClient }`
+	// 为什么必须两波：netwatch 对首次 sighting 的进程只记基线不记事件
+	//（防启动风暴）。瞬时把全部 SYN 发完，等采样器第一次看到时整批
+	// 落进基线，永远零事件——v1/v2 E2E 未命中的根因。第一波 20 端口
+	// 只为建基线，停 6s（≥3 个采样 tick）后第二波 60 个全新端口才
+	// 会计入扇出：60 > NW-001 默认阈值 40（2026-11-14 上调）留余量。
+	// BeginConnect 挂住不关：串行阻塞 Connect 到不可路由地址要等完整
+	// SYN 超时（~21s/端口），60s 窗口只够摸 3 个端口。
+	script := `$ss=@(); foreach($p in 44100..44119){ $c=New-Object Net.Sockets.TcpClient; $ss+=$c; $null=$c.BeginConnect('203.0.113.9',$p,$null,$null) }; Start-Sleep -Seconds 6; foreach($p in 44300..44359){ $c=New-Object Net.Sockets.TcpClient; $ss+=$c; $null=$c.BeginConnect('203.0.113.9',$p,$null,$null) }; Start-Sleep -Seconds 15; foreach($c in $ss){ try{$c.Close()}catch{} }`
 	if _, err := spawnDetached("powershell", "-NoProfile", "-Command", script); err != nil {
 		res.Note = "spawn 失败: " + err.Error()
 		return res
@@ -355,7 +365,7 @@ func stepPortScan(ctx context.Context, start time.Time, deps Deps) StepResult {
 	if ok {
 		res.Note = "对 TEST-NET-3 不可路由网段的 SYN 扇出已被网络行为检测捕获（零真实外联）"
 	} else {
-		res.Note = "60s 内未出现 NW-001/NW-004 告警（聚合窗口未满足或 netwatch 采样异常）"
+		res.Note = "60s 内未出现 NW-001/NW-004 告警（阈值未达到或 netwatch 采样异常）"
 	}
 	return res
 }
