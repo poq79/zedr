@@ -1,3 +1,7 @@
+//go:build windows
+
+// 测试夹具用 winapi.TCPConn 构造连接表（Windows 形态）；netwatch 的
+// Linux 覆盖由 collect 的 parse_procdata_test.go（解析）与实机验收承担。
 package netwatch
 
 import (
