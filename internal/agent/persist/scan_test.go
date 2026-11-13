@@ -1,3 +1,7 @@
+//go:build windows
+
+// ScanRegistry/registryTypes 是 Windows regwatch 路径的子集语义；
+// winapi.PersistItem 构造夹具需要 winapi（Linux 构建不参与编译）。
 package persist
 
 import (
