@@ -285,6 +285,12 @@ func (s *AgentService) EnqueueCommand(ctx context.Context, agentID, typ, payload
 		if !s.cfg.QuarantineEnabled {
 			return nil, apperr.Forbidden("服务端未启用文件隔离能力（HG_SERVER_QUARANTINE_ENABLED）")
 		}
+	case "drill":
+		// 演练会让探针在目标机器执行受控自测（自造样本），与处置类同纪律：
+		// 服务端总开关 + 终端本地开关双层闸门，默认双侧关闭。
+		if !s.cfg.DrillEnabled {
+			return nil, apperr.Forbidden("服务端未启用检测演练（HG_SERVER_DRILL_ENABLED）")
+		}
 	case "rescan", "sync_rules", "collect":
 		// 只读类动作始终允许
 	default:
@@ -307,6 +313,11 @@ func (s *AgentService) EnqueueCommand(ctx context.Context, agentID, typ, payload
 	return c, nil
 }
 
+// commandResultMaxLen 是指令回执的入库上限。普通回执一句话足够，
+// 检测演练的回执是整份 JSON 报告（逐步结果+告警引用），500 字节会被
+// 拦腰截断成半截 JSON；列本身是 TEXT 无长度约束，上限纯粹是卫生闸。
+const commandResultMaxLen = 4096
+
 // CompleteCommand 处理终端回执。
 func (s *AgentService) CompleteCommand(ctx context.Context, agentID string, results []model.CommandResult) error {
 	now := time.Now()
@@ -315,7 +326,7 @@ func (s *AgentService) CompleteCommand(ctx context.Context, agentID string, resu
 		if r.Status == "failed" {
 			status = "failed"
 		}
-		if err := s.repos.Commands.Complete(ctx, r.CommandID, status, truncate(r.Result, 500), now); err != nil {
+		if err := s.repos.Commands.Complete(ctx, r.CommandID, status, truncate(r.Result, commandResultMaxLen), now); err != nil {
 			return err
 		}
 	}
@@ -330,6 +341,18 @@ func (s *AgentService) MarkOffline(ctx context.Context, threshold time.Duration)
 // ListCommands 查询最近的指令下发记录。
 func (s *AgentService) ListCommands(ctx context.Context, limit int) ([]domain.AgentCommand, error) {
 	return s.repos.Commands.ListRecent(ctx, limit)
+}
+
+// ListCommandsByType 按终端+类型分页查询指令（检测演练报告走 type=drill
+// 过滤，复用指令管线，不建新表）。
+func (s *AgentService) ListCommandsByType(ctx context.Context, agentID, typ string, page, pageSize int) ([]domain.AgentCommand, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 20
+	}
+	return s.repos.Commands.ListByAgentType(ctx, agentID, typ, (page-1)*pageSize, pageSize)
 }
 
 func hashSecret(s string) string {

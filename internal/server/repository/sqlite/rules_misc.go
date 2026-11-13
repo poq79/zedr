@@ -287,3 +287,35 @@ func (r *commandRepo) ListRecent(ctx context.Context, limit int) ([]domain.Agent
 	}
 	return out, rows.Err()
 }
+
+func (r *commandRepo) ListByAgentType(ctx context.Context, agentID, typ string, offset, limit int) ([]domain.AgentCommand, int, error) {
+	var total int
+	if err := r.s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM agent_commands WHERE agent_id = ? AND type = ?`,
+		agentID, typ).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("统计指令失败: %w", err)
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.s.db.QueryContext(ctx,
+		`SELECT `+cmdCols+` FROM agent_commands WHERE agent_id = ? AND type = ?
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`, agentID, typ, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("查询指令失败: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]domain.AgentCommand, 0, limit)
+	for rows.Next() {
+		c, err := scanCmd(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *c)
+	}
+	return out, total, rows.Err()
+}

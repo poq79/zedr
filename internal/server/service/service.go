@@ -18,6 +18,11 @@ type Config struct {
 	EnrollToken       string        // 终端注册预共享令牌
 	KillEnabled       bool          // 是否允许下发终止进程指令
 	QuarantineEnabled bool          // 是否允许下发文件隔离/恢复指令
+	// DrillEnabled 是检测演练指令（type=drill）的服务端闸门：演练会让
+	// 探针在目标机器上执行受控自测（自造样本、零真实恶意内容），只在
+	// 交付验收/升级回归场景显式打开。终端侧还有 HG_AGENT_DRILL_ENABLED
+	// 第二道闸，单侧误开不会真的跑起来。
+	DrillEnabled      bool          // 是否允许下发检测演练指令
 	HeartbeatInterval time.Duration // 心跳间隔（下发给终端）
 	ScanInterval      time.Duration // 采集间隔（下发给终端）
 	DupWindow         time.Duration // 同指纹告警聚合窗口
