@@ -1,6 +1,5 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：访问控制（回环 + Origin + 令牌）无平台依赖，双平台
+// 编译，行为一致。
 package localapi
 
 import (

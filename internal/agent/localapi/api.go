@@ -1,6 +1,10 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：Deps/Server/Backend/路由注册双平台编译。唯一的平台
+// 差异点——泛安全体检（hygiene）五个方法的数据形状——收敛为本地视图
+// 类型（InstalledAppView 等）：Windows 侧是 hygiene 类型的别名（零转换、
+// 既有 Backend 实现零改动），Linux 侧是本地同形结构体（见
+// localapi_windows.go / localapi_linux.go）。不直接 import hygiene 的
+// 原因：hygiene 正在被另一会话并行改造，Linux 构建不耦合其变化窗口。
+//
 // Package localapi 为桌面 UI 提供本机只读（含少量本地处置）HTTP 接口。
 //
 // 安全模型：仅绑定回环地址 + 拒绝带 Origin 的跨站请求（防止网页脚本
@@ -16,7 +20,6 @@ import (
 	"strings"
 
 	"zedr/internal/agent/allow"
-	"zedr/internal/agent/hygiene"
 	"zedr/internal/agent/persist"
 	"zedr/internal/agent/quarantine"
 	"zedr/internal/agent/state"
@@ -41,18 +44,22 @@ type Backend interface {
 	// QuarantineEntries 返回隔离区当前记录；处置能力默认关闭，多数时候为空。
 	QuarantineEntries() []quarantine.Entry
 
-	// ---- 泛安全体检（按需采集，全部只读；见 internal/agent/hygiene）----
+	// ---- 泛安全体检（按需采集，全部只读；采集面见 internal/agent/hygiene）----
+	//
+	// 返回类型用本地视图（*View）：Windows 上是 hygiene 类型别名（线协议
+	// 与既有实现零变化），Linux 上是本地同形结构体。字段形状与
+	// hygiene_types.go 保持逐字一致——两侧漂移时以 hygiene 为准修这边。
 
-	// Apps 返回已安装软件清单（Win32 卸载表 + Store 应用）。
-	Apps() []hygiene.InstalledApp
+	// Apps 返回已安装软件清单（Windows：卸载表 + Store 应用）。
+	Apps() []InstalledAppView
 	// Posture 返回安全配置姿势体检（UAC/RDP/SMBv1/补丁/隐私设置等）。
-	Posture() []hygiene.Check
+	Posture() []CheckView
 	// Exposure 返回网络暴露面（监听端点归属 + hosts + 系统代理）。
-	Exposure() hygiene.ExposureReport
+	Exposure() ExposureView
 	// BrowserAudit 返回浏览器扩展清单与策略劫持面。
-	BrowserAudit() hygiene.BrowserReport
+	BrowserAudit() BrowserView
 	// PersistAudit 返回自启动项现场画像（签名/文件缺失/基线外）。
-	PersistAudit() []hygiene.PersistAudit
+	PersistAudit() []PersistAuditView
 }
 
 // Deps 是构造参数。

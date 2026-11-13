@@ -1,6 +1,5 @@
-//go:build windows
-// +build windows
-
+// 本文件 NEUTRAL：静态资源内嵌（go:embed）双平台可用。
+//
 // Package localapi 内嵌桌面 UI 静态资源。
 package localapi
 
