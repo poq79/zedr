@@ -84,20 +84,26 @@ var techniques = map[string]Technique{
 	// ---- 执行 ----
 	"T1047":     {"T1047", "Windows Management Instrumentation", "WMI 执行", "TA0002"},
 	"T1053.005": {"T1053.005", "Scheduled Task", "计划任务", "TA0002"},
+	// T1053.003/T1059.004 随 Linux 规则组（HG-037~044，2026-11-14）入目录。
+	"T1053.003": {"T1053.003", "Cron", "计划任务 Cron", "TA0002"},
 	"T1059":     {"T1059", "Command and Scripting Interpreter", "命令与脚本解释器", "TA0002"},
 	"T1059.001": {"T1059.001", "PowerShell", "PowerShell 执行", "TA0002"},
+	"T1059.004": {"T1059.004", "Unix Shell", "Unix Shell 执行", "TA0002"},
 	"T1059.005": {"T1059.005", "Visual Basic", "Visual Basic 执行", "TA0002"},
 	"T1059.007": {"T1059.007", "JavaScript/JScript", "JavaScript/JScript 执行", "TA0002"},
 	"T1204":     {"T1204", "User Execution", "用户执行", "TA0002"},
 	"T1204.002": {"T1204.002", "Malicious File", "恶意文件", "TA0002"},
 	// ---- 持久化 ----
 	"T1098":     {"T1098", "Account Manipulation", "账户操纵", "TA0003"},
+	"T1098.004": {"T1098.004", "SSH Authorized Keys", "SSH 授权密钥", "TA0003"},
 	"T1136.001": {"T1136.001", "Local Account", "新建本地账户", "TA0003"},
 	"T1543.003": {"T1543.003", "Windows Service", "Windows 服务", "TA0003"},
 	"T1547.001": {"T1547.001", "Registry Run Keys / Startup Folder", "注册表 Run 键/启动目录", "TA0003"},
 	"T1574.002": {"T1574.002", "DLL Side-Loading", "DLL 侧加载", "TA0003"},
+	"T1574.006": {"T1574.006", "Dynamic Linker Hijacking", "动态链接器劫持", "TA0003"},
 	// ---- 权限提升 ----
-	"T1548": {"T1548", "Abuse Elevation Control Mechanism", "滥用权限控制机制", "TA0004"},
+	"T1548":     {"T1548", "Abuse Elevation Control Mechanism", "滥用权限控制机制", "TA0004"},
+	"T1548.001": {"T1548.001", "Setuid and Setgid", "Setuid/Setgid 置位", "TA0004"},
 	// ---- 发现 ----
 	"T1046": {"T1046", "Network Service Discovery", "网络服务发现", "TA0007"},
 	"T1057": {"T1057", "Process Discovery", "进程发现", "TA0007"},

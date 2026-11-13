@@ -298,5 +298,20 @@ func keywordPatterns() []kwPattern {
 		{ID: "K-048", Token: ioc.S("YmNkZWRpdCAvc2V0"), Score: 20, Name: "修改引导配置", MITRE: "T1490"},
 		{ID: "K-049", Token: ioc.S("bmdyb2s="), Score: 24, Name: "内网穿透工具", MITRE: "T1572"},
 		{ID: "K-050", Token: ioc.S("Y2hpc2Vs"), Score: 24, Name: "隧道工具", MITRE: "T1572"},
+
+		// ---- Linux 命令行关键词（2026-11-14 随 Linux 规则 HG-037~044 补充）----
+		// 保守口径：只收"正常运行几乎不会引用"的高信号词——低频双用途词
+		//（解码落盘、计划任务编辑、ssh 本地转发）一律不收，宁缺勿滥；
+		// 组合判定交给规则层（HG-037~044），关键词层只做单 token 记分。
+		// 与规则层互补：规则要组合条件才报，这里单命中即计分参与融合，
+		// 供血缘/融合层与 AI 研判取证据。
+		// bash 内建网络设备出现在命令行 ≈ 反连/探测，正常运维不引用。
+		{ID: "K-051", Token: ioc.S("L2Rldi90Y3Av"), Score: 40, Name: "bash 内建网络重定向反连", Note: "命令行引用内建网络设备，典型反连/网络探测形态", MITRE: "T1059.004"},
+		// 引用动态链接器预加载配置 ≈ 写入尝试（正常运行不引用它），
+		// 用户态 rootkit 首选持久化位。
+		{ID: "K-052", Token: ioc.S("bGQuc28ucHJlbG9hZA=="), Score: 40, Name: "动态链接预加载配置引用", Note: "正常运行不引用预加载配置，命令行出现多为写入尝试", MITRE: "T1574.006"},
+		// 引用 SSH 授权密钥文件：低分参考（管理员手动加 key 也会命中），
+		// 与规则层 HG-041 的写入形态组合互补。
+		{ID: "K-053", Token: ioc.S("YXV0aG9yaXplZF9rZXlz"), Score: 26, Name: "SSH 授权密钥文件引用", Note: "双用途低分参考；写入形态由规则层 HG-041 判定", MITRE: "T1098.004"},
 	}
 }

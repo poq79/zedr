@@ -36,26 +36,26 @@ type Definition struct {
 
 // Target 是被检测进程的字段快照，供条件求值使用。
 type Target struct {
-	Name        string   // 进程名（含 .exe）
-	Path        string   // 完整路径
-	CmdLine     string   // 完整命令行
-	User        string   // 运行账号
-	ParentName  string   // 父进程名
-	ParentPath  string   // 父进程路径
-	Ancestors   []string // 祖先链进程名（由近到远）
-	Signed      bool     // 是否有可信数字签名
-	SignatureOK bool     // 签名链是否校验通过
-	Signer      string   // 签名主体
-	Elevated    bool     // 是否高完整性（管理员）
-	InSystem      bool   // 是否位于 System32/SysWOW64/WinSxS
-	DirWritable   bool   // 镜像所在目录是否用户可写
-	SessionID     uint32 // 会话 ID（0=系统会话）
-	NetConnCount  int    // 活跃网络连接数
-	RemotePorts   []uint32
-	HasPublicRemote bool // 是否存在非内网远端
-	UnsignedModules int  // 加载的未签名模块数
-	NonSystemModules int // 从非系统目录加载的模块数
-	FilePathDepth   int  // 路径层级（用于识别深层伪装目录）
+	Name             string   // 进程名（含 .exe）
+	Path             string   // 完整路径
+	CmdLine          string   // 完整命令行
+	User             string   // 运行账号
+	ParentName       string   // 父进程名
+	ParentPath       string   // 父进程路径
+	Ancestors        []string // 祖先链进程名（由近到远）
+	Signed           bool     // 是否有可信数字签名
+	SignatureOK      bool     // 签名链是否校验通过
+	Signer           string   // 签名主体
+	Elevated         bool     // 是否高完整性（管理员）
+	InSystem         bool     // 是否位于 System32/SysWOW64/WinSxS
+	DirWritable      bool     // 镜像所在目录是否用户可写
+	SessionID        uint32   // 会话 ID（0=系统会话）
+	NetConnCount     int      // 活跃网络连接数
+	RemotePorts      []uint32
+	HasPublicRemote  bool // 是否存在非内网远端
+	UnsignedModules  int  // 加载的未签名模块数
+	NonSystemModules int  // 从非系统目录加载的模块数
+	FilePathDepth    int  // 路径层级（用于识别深层伪装目录）
 }
 
 // Eval 编译后的规则。
@@ -118,22 +118,22 @@ var validFields = map[string]fieldKind{
 	"process.path": kindString, "proc.path": kindString,
 	"process.cmdline": kindString, "proc.cmdline": kindString,
 	"process.user": kindString, "proc.user": kindString,
-	"process.signed":         kindBool,
-	"process.signature_ok":   kindBool,
-	"process.signer":         kindString,
-	"process.elevated":       kindBool,
-	"process.in_system":      kindBool,
-	"process.dir_writable":   kindBool,
-	"process.session":        kindInt,
-	"process.depth":          kindInt,
-	"parent.name":            kindString,
-	"parent.path":            kindString,
-	"ancestor.names":         kindStringList,
-	"network.count":          kindInt,
-	"network.remote_ports":   kindIntList,
+	"process.signed":            kindBool,
+	"process.signature_ok":      kindBool,
+	"process.signer":            kindString,
+	"process.elevated":          kindBool,
+	"process.in_system":         kindBool,
+	"process.dir_writable":      kindBool,
+	"process.session":           kindInt,
+	"process.depth":             kindInt,
+	"parent.name":               kindString,
+	"parent.path":               kindString,
+	"ancestor.names":            kindStringList,
+	"network.count":             kindInt,
+	"network.remote_ports":      kindIntList,
 	"network.has_public_remote": kindBool,
-	"module.unsigned_count":  kindInt,
-	"module.non_system_count": kindInt,
+	"module.unsigned_count":     kindInt,
+	"module.non_system_count":   kindInt,
 }
 
 var validOps = map[string]struct{}{
