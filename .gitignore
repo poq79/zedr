@@ -29,6 +29,8 @@ logs/
 .smoke/
 __pycache__/
 *.pyc
+# logman/ETW 抓包产物（诊断用临时文件，不入库）
+*.etl
 
 # 前端工程依赖（webapp 构建产物输出到 internal/server/web/static/ 并入库，
 # 保证无 Node 环境也能 go build）
