@@ -290,6 +290,22 @@ func (d *Defense) CanaryDirs() []string {
 	return d.dirs
 }
 
+// OneCanaryPath 返回一个当前真实存在的诱饵文件路径（检测演练自测用）。
+// 全部不存在时返回空串——演练步骤据此记 skipped 而不是失败；
+// 只做存在性探测，不动诱饵内容，删除/改写由演练步骤自己执行并负责。
+// canaries 键集在 New 后只读，无锁遍历是安全的（与 Consume 同口径）。
+func (d *Defense) OneCanaryPath() string {
+	if d == nil {
+		return ""
+	}
+	for key := range d.canaries {
+		if _, err := os.Stat(key); err == nil {
+			return key
+		}
+	}
+	return ""
+}
+
 // Dropped 返回速率窗口触顶后被丢弃的事件数（诚实计数器）。
 func (d *Defense) Dropped() int64 {
 	if d == nil {

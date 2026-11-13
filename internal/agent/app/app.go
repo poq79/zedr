@@ -20,6 +20,7 @@ import (
 	"zedr/internal/agent/chain"
 	"zedr/internal/agent/collect"
 	"zedr/internal/agent/detect"
+	"zedr/internal/agent/drill"
 	"zedr/internal/agent/enrich"
 	"zedr/internal/agent/hygiene"
 	"zedr/internal/agent/inventory"
@@ -1171,6 +1172,8 @@ func (a *Agent) handleCommands(ctx context.Context, cmds []model.Command) {
 			res = a.handleSelfUpgrade(ctx, c)
 		case "collect":
 			res.Result = fmt.Sprintf("进程 %d 个", a.store.Runtime().ProcCount)
+		case "drill":
+			res = a.handleDrill(ctx, c)
 		default:
 			res.Status = "failed"
 			res.Result = "不支持的指令类型: " + c.Type
@@ -1187,6 +1190,62 @@ func (a *Agent) handleCommands(ctx context.Context, cmds []model.Command) {
 	// 回执送达后才允许为升级退出：进程在回执前消失，指令会永远
 	// 挂在"已下发、无回执"（见 maybeExitForUpgrade 注释）
 	a.maybeExitForUpgrade()
+}
+
+// handleDrill 处理检测演练指令（需服务端与终端双重开启）。同步执行，
+// 总预算 150s：handleCommands 是同步回执模型，演练期间心跳顺延，
+// 150s 远小于服务端侧任何超时判定（执行语义见 internal/agent/drill
+// 包注释）。回执是整份演练报告 JSON，服务端回执上限已放宽到 4096。
+func (a *Agent) handleDrill(ctx context.Context, c model.Command) model.CommandResult {
+	res := model.CommandResult{CommandID: c.ID}
+	if !a.cfg.DrillEnabled {
+		res.Status = "failed"
+		res.Result = "终端未启用检测演练（HG_AGENT_DRILL_ENABLED=false）"
+		return res
+	}
+	steps, err := drill.ParsePayload(c.Payload)
+	if err != nil {
+		res.Status = "failed"
+		res.Result = err.Error()
+		return res
+	}
+	deps := drill.Deps{
+		AlertsSince: func(t time.Time) []drill.AlertView {
+			// 只把步骤起点之后的本地告警给演练判定，历史命中由
+			// drill.Run 过滤；这里不做阈值/去重口径加工（判定口径
+			// 是"期望规则出现在新告警里"，与 emitAlert 的产出一致）。
+			all := a.store.Alerts(512)
+			out := make([]drill.AlertView, 0, len(all))
+			for _, al := range all {
+				if al.OccurredAt.Before(t) {
+					continue
+				}
+				out = append(out, drill.AlertView{ID: al.ID, RuleIDs: al.RuleIDs, OccurredAt: al.OccurredAt})
+			}
+			return out
+		},
+		ProcSnapshot: func() []drill.ProcView {
+			rows := a.store.Procs(1024)
+			out := make([]drill.ProcView, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, drill.ProcView{PID: r.PID, Name: r.Name})
+			}
+			return out
+		},
+		CanaryFile: func() string {
+			if a.fileDefense == nil {
+				return ""
+			}
+			return a.fileDefense.OneCanaryPath()
+		},
+		EvtLogEnabled:   a.cfg.EvtLog,
+		NetWatchEnabled: a.cfg.NetWatch,
+		Log:             a.log,
+		SelfPID:         uint32(os.Getpid()),
+	}
+	report := drill.BuildReport(drill.Run(ctx, steps, deps))
+	res.Result = drill.MarshalReport(report)
+	return res
 }
 
 // handleTerminate 处理终止进程指令（需服务端与终端双重开启）。

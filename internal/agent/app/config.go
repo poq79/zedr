@@ -35,6 +35,12 @@ type Config struct {
 	// 与 KillEnabled 同一套双层开关先例：服务端、终端都要显式打开，
 	// 隔离动作才会真正执行——现场排障时可以只关终端侧。
 	QuarantineEnabled bool
+	// DrillEnabled 控制是否执行服务端下发的检测演练指令（type=drill）。
+	// 演练会让探针在目标机器上执行受控自测（全部自造样本，零真实恶意
+	// 内容），用于交付验收与升级后回归。与处置类同纪律：服务端
+	// HG_SERVER_DRILL_ENABLED + 终端本开关双层闸门，默认双侧关闭——
+	// 单侧误开不会真的跑起来。
+	DrillEnabled bool
 	BaselineLearn     bool
 	Warmup            time.Duration
 	HeartbeatSec      int
@@ -146,6 +152,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.OfflineQueue = l.Int("HG_AGENT_OFFLINE_QUEUE", 5000)
 	c.KillEnabled = l.Bool("HG_AGENT_KILL_ENABLED", false)
 	c.QuarantineEnabled = l.Bool("HG_AGENT_QUARANTINE_ENABLED", false)
+	c.DrillEnabled = l.Bool("HG_AGENT_DRILL_ENABLED", false)
 	c.BaselineLearn = l.Bool("HG_AGENT_BASELINE_LEARN", true)
 	c.Warmup = l.DurationZeroOK("HG_AGENT_WARMUP", 5*time.Minute) // 允许 0 = 关闭静默期
 	c.HeartbeatSec = l.Int("HG_AGENT_HEARTBEAT_SEC", 30)
@@ -211,6 +218,9 @@ func LoadConfig(version string) (*Config, error) {
 	}
 	if strings.EqualFold(c.Env, "production") && c.UpgradeEnabled {
 		l.SecurityWarning(false, "已启用探针自升级（HG_AGENT_UPGRADE_ENABLED），探针将接受服务端推送的二进制并自动换装，请确认这是预期行为")
+	}
+	if strings.EqualFold(c.Env, "production") && c.DrillEnabled {
+		l.SecurityWarning(false, "已启用检测演练（HG_AGENT_DRILL_ENABLED），探针将执行服务端下发的受控自测（自造样本），请确认这是预期行为")
 	}
 
 	if err := l.Err(); err != nil {
