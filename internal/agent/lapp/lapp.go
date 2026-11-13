@@ -44,11 +44,14 @@ import (
 	"zedr/internal/agent/enrich"
 	"zedr/internal/agent/fswatch"
 	"zedr/internal/agent/inventory"
+	"zedr/internal/agent/liveapi"
+	"zedr/internal/agent/localapi"
 	"zedr/internal/agent/nettypes"
 	"zedr/internal/agent/netwatch"
 	"zedr/internal/agent/persist"
 	"zedr/internal/agent/ransom"
 	"zedr/internal/agent/state"
+	"zedr/internal/agent/tunnel"
 	"zedr/internal/agent/uplink"
 	"zedr/internal/model"
 	"zedr/internal/platform/idgen"
@@ -284,9 +287,33 @@ func collectorName(v string) string {
 	}
 }
 
-// Run 启动全部循环，阻塞直到 ctx 取消。
-// 本地面板/实时隧道/资产清单由集成阶段接线（TODO(integration) 接缝）。
+// hostName 是本机主机名（os.Hostname 失败退机器 ID 前缀，不冒充）。
+func (a *Agent) hostName() string {
+	hn, err := os.Hostname()
+	if err != nil || hn == "" {
+		return a.machineID()[:8]
+	}
+	return hn
+}
+
+// Run 启动全部循环，阻塞直到 ctx 取消。本地面板/实时隧道/资产清单
+// 全部接线（与 Windows Run 同构）。
 func (a *Agent) Run(ctx context.Context) error {
+	// 本地 API 供本地面板/桌面端使用（体检面接 hygiene Linux 采集器）
+	api := localapi.New(localapi.Deps{
+		Backend: newLocalBackend(a),
+		Log:     a.log,
+		Addr:    a.cfg.LocalAddr,
+		Token:   a.cfg.LocalToken,
+	})
+	if err := api.Start(); err != nil {
+		return fmt.Errorf("本地 API 启动失败: %w", err)
+	}
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = api.Shutdown(shutCtx)
+	}()
 	// 文件落地监控必须先于首轮扫描启动（与 Windows 同理：启动瞬间
 	// 落地的样本不能被当成"老文件"）。
 	if a.cfg.FileWatch {
@@ -327,6 +354,33 @@ func (a *Agent) Run(ctx context.Context) error {
 		} else {
 			a.log.Warn("persist_dir_watch_disabled", "err", err)
 		}
+	}
+
+	// 实时隧道（只读调查通道）：零监听、纯出站，服务端经隧道发起只读
+	// 查询、探针在流上应答；失败自动退避重连，对端不支持进每小时静默
+	// 模式。StartTime 用 a.startedAt（与 /info uptime 同源——不要放进
+	// scan 回调：SetRuntime 只有最后一个回调生效，踩过的坑）。
+	if a.cfg.TunnelEnabled {
+		mgr := tunnel.New(a.log, tunnel.Options{
+			ServerURL: a.cfg.ServerURL,
+			Creds:     a.up.TunnelCreds,
+			Handler: liveapi.New(liveapi.Deps{
+				Version:   a.cfg.Version,
+				Hostname:  a.hostName(),
+				StartTime: a.startedAt,
+				Procs:     a.store.Procs,
+				// Linux v1 无模块枚举（/proc maps 语义不同，诚实 nil）
+				Modules: a.coll.Modules,
+				Snapshot: func() []state.ProcRow {
+					// procinfo 全量快照做 PID 定位与 netstat join
+					return a.store.Procs(2000)
+				},
+				Runtime: a.store.Runtime,
+				Netstat: liveapi.ProcfsNetstat,
+			}),
+		})
+		go mgr.Start(ctx)
+		defer mgr.Stop()
 	}
 
 	go a.enrollLoop(ctx)
@@ -1419,4 +1473,16 @@ func loadOrCreateLocalToken(path string, log *slog.Logger) string {
 	}
 	log.Info("local_token_created", "path", path)
 	return t
+}
+
+// purgeChainsOnAllowlist 是加白即回收的链侧动作（本地加白入口共用；
+// 服务端下发白名单的回收在 syncRules 接线时对齐 Windows 版）。
+// 失败静默——回收是降噪动作，不该让加白操作本身失败。
+func (a *Agent) purgeChainsOnAllowlist() {
+	if a.chainE == nil {
+		return
+	}
+	if n := a.chainE.PurgeAllowlisted(); n > 0 {
+		a.log.Info("chain_purged_on_allowlist", "machines", n)
+	}
 }
