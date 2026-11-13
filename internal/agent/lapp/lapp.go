@@ -43,6 +43,7 @@ import (
 	"zedr/internal/agent/drill"
 	"zedr/internal/agent/enrich"
 	"zedr/internal/agent/fswatch"
+	"zedr/internal/agent/inventory"
 	"zedr/internal/agent/nettypes"
 	"zedr/internal/agent/netwatch"
 	"zedr/internal/agent/persist"
@@ -81,6 +82,12 @@ type Agent struct {
 	// landed 是落地时间索引（fwatch 事件回填，"落地即执行"关联依据）。
 	landedMu sync.Mutex
 	landed   map[string]time.Time
+
+	// 资产清单：inventoryLoop 赋值；invReady 之后才对可 diff 节做
+	// 条目级变更告警（首轮是建基线，不是"全是新增"）。
+	// 两个字段只在 inventoryLoop 自己的 goroutine 上读写，无需加锁。
+	inv      *inventory.Manager
+	invReady bool
 
 	startedAt time.Time
 	scanReq   chan bool
@@ -329,6 +336,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.persistLoop(ctx)
 	go a.persistScanLoop(ctx)
 	go a.persistRescanLoop(ctx)
+	go a.inventoryLoop(ctx)
 
 	<-ctx.Done()
 	a.log.Info("agent_stopping", "pending_alerts", a.up.Pending())
