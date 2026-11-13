@@ -32,7 +32,7 @@ func TestItemsReturnsBaselineEntries(t *testing.T) {
 		},
 		// 老版本基线条目：没有 type/location 列
 		`scheduled_task|\zedr\worker`: {
-			Command: "cmd /c worker.exe",
+			Command:   "cmd /c worker.exe",
 			FirstSeen: now, LastSeen: now,
 		},
 	})

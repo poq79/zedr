@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"zedr/internal/agent/enrich"
-	"zedr/internal/agent/winapi"
 	"zedr/internal/model"
 )
 
@@ -58,7 +57,7 @@ type baselineFile struct {
 
 // Finding 是一条需要关注的持久化变更。
 type Finding struct {
-	Item     winapi.PersistItem
+	Item     PersistItem
 	Path     string // 解析出的可执行路径（可能为空）
 	Score    int
 	Verdict  model.Verdict
@@ -89,9 +88,9 @@ type Monitor struct {
 	path string
 	enr  *enrich.Enricher
 
-	mu     sync.Mutex
-	items  map[string]record
-	loaded bool
+	mu      sync.Mutex
+	items   map[string]record
+	loaded  bool
 	savedAt time.Time
 }
 
@@ -164,32 +163,13 @@ func (m *Monitor) saveLocked() error {
 }
 
 // Scan 枚举当前持久化项并与基线对比。
-// Scan 全量扫描（六类位置）并 diff 基线——周期轮询路径。
+// Scan 全量扫描（全部位置）并 diff 基线——周期轮询路径。
+// 枚举器按 OS 各自提供（Windows: winapi 全量枚举；Linux: enum_linux）。
 func (m *Monitor) Scan() (*Result, error) {
-	return m.scanWith(winapi.EnumeratePersistence, nil)
+	return m.scanWith(enumeratePersistence, nil)
 }
 
-// registryTypes 是定向重扫（ScanRegistry）覆盖的基线类型集合。
-var registryTypes = map[string]bool{
-	winapi.PersistRegistryRun:     true,
-	winapi.PersistRegistryRunOnce: true,
-	winapi.PersistWinlogon:        true,
-	winapi.PersistIFEO:            true,
-}
-
-// ScanRegistry 只枚举注册表类位置并在该子集内 diff——regwatch 实时事件
-// 路径用：全量枚举里服务/计划任务占大头，事件驱动的即时重扫只扫三节。
-//
-// 子集语义（两处都必须限定，否则定向扫描是错的）：
-//   - diff 只对注册表类键做：其他节的键本轮根本没枚举；
-//   - Removed 判定同样只删"注册表类基线键"——不限定的话会把全部
-//     服务/计划任务误判成 Removed（且真的删掉它们的基线记录，
-//     下一轮全量扫描会集体误报 Added）。
-func (m *Monitor) ScanRegistry() (*Result, error) {
-	return m.scanWith(winapi.EnumeratePersistenceRegistry, registryTypes)
-}
-
-func (m *Monitor) scanWith(enum func() ([]winapi.PersistItem, []string), subset map[string]bool) (*Result, error) {
+func (m *Monitor) scanWith(enum func() ([]PersistItem, []string), subset map[string]bool) (*Result, error) {
 	m.mu.Lock()
 	if !m.loaded {
 		_ = m.loadLocked()
@@ -202,9 +182,9 @@ func (m *Monitor) scanWith(enum func() ([]winapi.PersistItem, []string), subset 
 
 	now := time.Now()
 	seen := make(map[string]struct{}, len(items))
-	var added []winapi.PersistItem
+	var added []PersistItem
 	var changed []struct {
-		item winapi.PersistItem
+		item PersistItem
 		old  string
 	}
 
@@ -221,7 +201,7 @@ func (m *Monitor) scanWith(enum func() ([]winapi.PersistItem, []string), subset 
 			}
 		case !sameCommand(old.Command, it.Command):
 			changed = append(changed, struct {
-				item winapi.PersistItem
+				item PersistItem
 				old  string
 			}{it, old.Command})
 			m.items[it.Key] = record{
@@ -276,32 +256,22 @@ func (m *Monitor) scanWith(enum func() ([]winapi.PersistItem, []string), subset 
 // 有些软件每次启动都会改写参数（比如带随机会话 ID），因此只在
 // 规范化后的命令差异较大时才认为"被改写"。
 func sameCommand(a, b string) bool {
-	pa := strings.ToLower(strings.TrimSpace(winapi.PersistCommandPath(a)))
-	pb := strings.ToLower(strings.TrimSpace(winapi.PersistCommandPath(b)))
+	pa := strings.ToLower(strings.TrimSpace(commandPath(a)))
+	pb := strings.ToLower(strings.TrimSpace(commandPath(b)))
 	if pa != "" && pb != "" {
 		return pa == pb
 	}
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
-// 可写目录：攻击者最容易落地的地方。命中这些位置的自启动项风险显著更高。
-var writableMarkers = []string{
-	`\temp\`, `\tmp\`, `\downloads\`, `\appdata\local\temp`,
-	`\users\public\`, `\programdata\`, `\recycle`, `\$recycle.bin\`,
-	`\windows\temp\`, `\perflogs\`, `\desktop\`, `\documents\`,
-}
-
-// 危险命令解释器：自启动项通过它们拉起载荷，是"间接启动"的典型形态。
-var dangerousHosts = []string{
-	"powershell", "pwsh", "mshta", "rundll32", "regsvr32", "wscript",
-	"cscript", "cmd.exe", "cmd /c", "certutil", "bitsadmin", "msiexec",
-}
-
-// assess 对单个持久化项做信誉判定。
-func (m *Monitor) assess(it winapi.PersistItem, isChange bool) Finding {
+// assess 对单个持久化项做信誉判定。可移植骨架 + 按 OS 钩子
+// （pathMarkers/interpreterMarkers/hiddenArgMarkers/uncPaths/
+// addPrivilegeScore/mitreFor），落点信誉的目录形态与解释器清单
+// 两套 OS 差异很大，不硬凑同一份清单。
+func (m *Monitor) assess(it PersistItem, isChange bool) Finding {
 	f := Finding{Item: it, MITRE: mitreFor(it.Type)}
 
-	path := winapi.PersistCommandPath(it.Command)
+	path := commandPath(it.Command)
 	f.Path = path
 	cmdLower := strings.ToLower(it.Command)
 
@@ -322,13 +292,13 @@ func (m *Monitor) assess(it winapi.PersistItem, isChange bool) Finding {
 	if lowPath == "" {
 		add(8, "无法解析出可执行文件路径")
 	} else {
-		for _, mk := range writableMarkers {
+		for _, mk := range pathMarkers {
 			if strings.Contains(lowPath, mk) {
 				add(26, "指向用户可写目录："+locateMarker(lowPath, mk))
 				break
 			}
 		}
-		if strings.HasPrefix(lowPath, `\\`) {
+		if uncPaths && strings.HasPrefix(lowPath, `\\`) {
 			add(22, "指向 UNC 网络路径")
 		}
 		if !fileExists(path) {
@@ -336,30 +306,18 @@ func (m *Monitor) assess(it winapi.PersistItem, isChange bool) Finding {
 		}
 	}
 
-	// 2.5) 权限与触发方式（主要针对计划任务）
-	//
-	// "以最高权限运行 + 开机即触发 + 指向可写目录"是持久化里风险最高的组合：
-	// 它同时满足了自动性、高权限和不可信载荷三个条件。
-	// 单看任何一条都不够，凑齐才有判别力，因此这里只做组合加分。
-	if it.Elevated && strings.Contains(it.Trigger, "开机") {
-		add(14, "计划任务以最高权限在开机时运行")
-	} else if it.Elevated && it.Type == winapi.PersistScheduledTask {
-		add(6, "计划任务以最高权限运行")
-	}
-	if it.RunAs != "" && strings.Contains(strings.ToLower(it.RunAs), "system") &&
-		it.Type == winapi.PersistScheduledTask {
-		add(4, "计划任务以 SYSTEM 身份运行")
-	}
+	// 2.5) 权限与触发方式（计划任务/systemd 的组合加分，按 OS 各自判）
+	addPrivilegeScore(it, add)
 
 	// 3) 间接启动：通过命令解释器拉起
-	for _, h := range dangerousHosts {
+	for _, h := range interpreterMarkers {
 		if strings.Contains(cmdLower, h) {
 			add(16, "通过命令解释器启动（"+h+"）")
 			break
 		}
 	}
 	// 编码/隐藏参数
-	for _, kw := range []string{"-enc", "-encodedcommand", "hidden", "bypass", "-w hidden", "/c start"} {
+	for _, kw := range hiddenArgMarkers {
 		if strings.Contains(cmdLower, kw) {
 			add(18, "命令行含隐藏/编码参数（"+kw+"）")
 			break
@@ -413,32 +371,12 @@ func fileExists(p string) bool {
 	return err == nil && !st.IsDir()
 }
 
-// mitreFor 把持久化类型映射到 ATT&CK 技术编号。
-func mitreFor(typ string) []string {
-	switch typ {
-	case winapi.PersistRegistryRun, winapi.PersistRegistryRunOnce:
-		return []string{"T1547.001"}
-	case winapi.PersistStartupFolder:
-		return []string{"T1547.001"}
-	case winapi.PersistService:
-		return []string{"T1543.003"}
-	case winapi.PersistScheduledTask:
-		return []string{"T1053.005"}
-	case winapi.PersistWinlogon:
-		return []string{"T1547.004"}
-	case winapi.PersistIFEO:
-		return []string{"T1546.012"}
-	default:
-		return []string{"T1547"}
-	}
-}
-
 // ToAlert 把 Finding 转成告警信封。
 // 只有越过可疑阈值的项才会被上层转成告警。
 func (f Finding) ToAlert(hostname string) model.AlertEnvelope {
-	title := "新增自启动项：" + winapi.PersistLocationLabel(f.Item.Type)
+	title := "新增自启动项：" + labelFor(f.Item.Type)
 	if f.Score < 38 {
-		title = "自启动项变更：" + winapi.PersistLocationLabel(f.Item.Type)
+		title = "自启动项变更：" + labelFor(f.Item.Type)
 	}
 
 	summary := strings.Join(f.Reasons, "；")
