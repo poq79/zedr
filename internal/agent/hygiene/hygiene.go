@@ -1,25 +1,17 @@
 //go:build windows
 // +build windows
 
-// Package hygiene 提供本地面板的"泛安全体检"数据：已安装软件、安全配置
-// 姿势、网络暴露面、浏览器扩展、自启动项审计。
-//
-// 定位与检测引擎互补：检测引擎回答"现在正在发生什么攻击"，本包回答
-// "这台机器长期处于什么状态"。全部采集只读（注册表 QUERY_VALUE、
-// 文件系统读、WinVerifyTrust），没有任何写操作入口——本地面板的用户
-// 看到的是体检报告和手动处置指引，不是一键修复按钮（产品原则见
-// AGENTS.md §3.8：检测优先，响应动作保持默认关闭）。
-//
-// 所有入口按需调用（打开对应视图时），不在扫描循环里运行；
-// 签名/版本信息读取有 (path,size,mtime) 缓存，重复打开视图近零成本。
 package hygiene
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 )
+
+// 本文件是 Windows 侧的文件画像实现：命令行可执行定位、Authenticode
+// 验签与版本资源读取。类型定义与双平台共享逻辑在 hygiene_types.go
+// （无构建标签），Linux 实现在 hygiene_linux.go。
 
 // exeFromCommand 从命令行/镜像路径里提取可执行文件路径。
 //
@@ -89,82 +81,6 @@ func isFile(p string) bool {
 	return err == nil && !fi.IsDir()
 }
 
-// fileMeta 是一个可执行文件的体检画像（签名 + 版本资源 + 存在性）。
-type fileMeta struct {
-	Exists      bool   `json:"exists"`
-	Signed      bool   `json:"signed"`
-	SigState    string `json:"sig_state"` // valid | unsigned | untrusted | ...
-	Signer      string `json:"signer,omitempty"`
-	Company     string `json:"company,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-// fileCache 按 (path,size,mtime) 缓存文件画像。WinVerifyTrust 单次
-// 数毫秒到数十毫秒，一次驻留体检可能枚举上百个文件，没有缓存的话
-// 每次打开视图都是一次全量重验。
-type fileCache struct {
-	mu sync.Mutex
-	m  map[string]fileMeta
-}
-
-func newFileCache() *fileCache {
-	return &fileCache{m: make(map[string]fileMeta)}
-}
-
-// limit 是缓存条目上限：自启动项 + 软件资产通常几百个文件；超过说明
-// 键在快速变化（软件正在装卸），整表重置即可，不是错误。
-const cacheLimit = 4096
-
-// probeFile 读取一个文件的体检画像，带 (path,size,mtime) 缓存。
-func (c *fileCache) probeFile(path string) fileMeta {
-	if path == "" {
-		return fileMeta{}
-	}
-	key := path
-	if fi, err := os.Stat(path); err == nil {
-		key = path + "|" + itoa(fi.Size()) + "|" + itoa(fi.ModTime().UnixNano())
-	}
-
-	c.mu.Lock()
-	if hit, ok := c.m[key]; ok {
-		c.mu.Unlock()
-		return hit
-	}
-	c.mu.Unlock()
-
-	meta := inspectFile(path)
-
-	c.mu.Lock()
-	if len(c.m) >= cacheLimit {
-		c.m = make(map[string]fileMeta)
-	}
-	c.m[key] = meta
-	c.mu.Unlock()
-	return meta
-}
-
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [21]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
-}
-
 // inspectFile 无缓存读取：存在性 + Authenticode + 版本资源。
 func inspectFile(path string) fileMeta {
 	meta := fileMeta{}
@@ -196,3 +112,6 @@ func systemRoot() string {
 func hostsPath() string {
 	return filepath.Join(systemRoot(), "System32", "drivers", "etc", "hosts")
 }
+
+// verifySignature / readVersionInfo 测试替身变量定义在 audit.go
+//（与现场枚举实现同文件，便于测试注入）。

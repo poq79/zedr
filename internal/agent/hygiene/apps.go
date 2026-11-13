@@ -10,28 +10,8 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// InstalledApp 是一个已安装软件条目。
-//
-// 数据面：Win32 软件来自三处 Uninstall 注册表键（64 位 HKLM、32 位
-// Wow6432Node、HKCU），Store/UWP 应用来自 Appx 机器级注册表。刻意不用
-// WMI Win32_Product——它会触发 MSI 自修复（静默跑安装器），对用户机器
-// 是真实的副作用，违反本包只读纪律。
-type InstalledApp struct {
-	Name      string `json:"name"`
-	Version   string `json:"version,omitempty"`
-	Publisher string `json:"publisher,omitempty"`
-	// InstallDate 是注册表里的安装日期原串（通常 yyyymmdd）；缺失留空。
-	InstallDate string `json:"install_date,omitempty"`
-	SizeKB      uint64 `json:"size_kb,omitempty"`
-	Location    string `json:"location,omitempty"`
-	// Source: win32 | store
-	Source string `json:"source"`
-	// Hidden 是"从卸载列表里藏起来"的信号：SystemComponent=1 的条目
-	// 不会出现在系统"应用和功能"里——正常软件极少这样做，捆装/流氓
-	// 软件常用来躲卸载入口。NoRemove=1 表示连卸载按钮都被藏了。
-	Hidden   bool `json:"hidden"`
-	NoRemove bool `json:"no_remove"`
-}
+// InstalledApp 类型定义在 hygiene_types.go（双平台共享，Linux 由
+// hygiene_linux.go 生产同形状数据）。
 
 // uninstallEntry 是解析结果：app 之外还带去重键。
 type uninstallEntry struct {
@@ -123,14 +103,7 @@ func regDwordSet(k registry.Key, name string) bool {
 	return err == nil && v != 0
 }
 
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
+// firstNonEmpty 定义在 hygiene_types.go（双平台共享）。
 
 // storeApps 枚举 Microsoft Store（UWP/MSIX）应用。
 //

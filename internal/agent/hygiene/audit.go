@@ -10,48 +10,8 @@ import (
 	"zedr/internal/agent/winapi"
 )
 
-// PersistAudit 是一个自启动项的体检画像。
-//
-// 对标 Sysinternals Autoruns 的着色逻辑（粉=无描述/无签名，黄=文件
-// 缺失），但只读：这里不提供禁用入口——禁用是写操作，产品原则要求
-// 保持"检测优先、处置默认关闭"。用户看到画像与处置指引，动作留给
-// 用户自己。
-type PersistAudit struct {
-	Key      string `json:"key"`
-	Kind     string `json:"kind"`
-	Location string `json:"location"`
-	Name     string `json:"name,omitempty"`
-	Command  string `json:"command"`
-	Enabled  bool   `json:"enabled"`
-	RunAs    string `json:"run_as,omitempty"`
-	Elevated bool   `json:"elevated"`
-	Trigger  string `json:"trigger,omitempty"`
-	// ExePath 是从 Command 里定位出的可执行文件；定位不到留空。
-	ExePath string   `json:"exe_path,omitempty"`
-	File    fileMeta `json:"file"`
-	// InBaseline 为 false 表示该条目还没有进入持久化基线——通常只是
-	// 探针还没跑完下一个扫描周期；若长时间为 false，说明这是新出现的
-	// 自启动点，值得看一眼。
-	InBaseline bool     `json:"in_baseline"`
-	Flags      []string `json:"flags,omitempty"`
-}
-
-// 审计 flags 取值。
-const (
-	FlagUnsigned    = "unsigned"     // 文件存在但没有可信签名（Autoruns 粉）
-	FlagFileMissing = "file_missing" // 指向的文件已不存在（Autoruns 黄）
-	FlagNoInfo      = "no_info"      // 无发布者且无描述（Autoruns 粉）
-	FlagElevated    = "elevated"     // 以最高权限运行
-	FlagNew         = "new"          // 尚未进入持久化基线
-)
-
-// Auditor 是带文件画像缓存的驻留审计器。
-//
-// 为什么不做成函数：缓存要跨请求存活（打开视图→切换→再打开不应重新
-// 验签全部文件），生命周期应与 Agent 一致。
-type Auditor struct {
-	cache *fileCache
-}
+// PersistAudit / Auditor 类型与 flags 常量定义在 hygiene_types.go
+// （双平台共享）；本文件是 Windows 现场枚举实现。
 
 // NewAuditor 创建审计器。
 func NewAuditor() *Auditor {
@@ -62,7 +22,8 @@ func NewAuditor() *Auditor {
 //
 // 注意这是"当前真实状态"（现场枚举），与 /api/local/persist 返回的
 // 基线快照互补：基线回答"相对上次扫描变了什么"，这里回答"现在每个
-// 自启动点指向什么、可不可信"。
+// 自启动点指向什么、可不可信"。Linux 同名方法见 hygiene_linux.go
+// （v1 无现场枚举器，走注入式 AuditItems）。
 func (a *Auditor) Audit(baselineKeys map[string]bool) []PersistAudit {
 	items, _ := winapi.EnumeratePersistence()
 	out := make([]PersistAudit, 0, len(items))

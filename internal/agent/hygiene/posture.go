@@ -14,19 +14,8 @@ import (
 	"zedr/internal/agent/winapi"
 )
 
-// Check 是一条体检项。State 用三色语义（对齐 Windows 安全中心的绿/黄/红
-// 惯例）：ok=正常，warn=需关注，err=高风险；info=无法判断/仅陈述事实。
-// 刻意不做数字总分——"92 分"式的评分无法解释每一分的来源，只会制造
-// 虚假安全感；这里每一项都必须自带"为什么"和"怎么办"。
-type Check struct {
-	ID     string `json:"id"`
-	Group  string `json:"group"` // config | update | privacy
-	Title  string `json:"title"`
-	State  string `json:"state"` // ok | warn | err | info
-	Value  string `json:"value"`
-	Why    string `json:"why"`
-	Advice string `json:"advice,omitempty"`
-}
+// Check 类型定义在 hygiene_types.go（双平台共享，Linux 由
+// hygiene_linux.go 生产同形状数据）。
 
 // Posture 汇总本机安全配置体检。单个检查项失败降级为 info（写明"无法
 // 判断"），绝不让整个体检视图空白，也绝不用默认值冒充测量结果。
