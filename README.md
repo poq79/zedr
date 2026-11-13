@@ -193,6 +193,14 @@ EICAR string — no external executables are ever downloaded.
 - Authenticode verification uses local caches; no online revocation checks.
 - IOC library (SHA256) is manually maintained and signed for delivery; no
   automatic intelligence feeds yet.
+- **Linux agent (experimental)**: a Linux build (`zedr-agent-linux`, GOOS=linux)
+  shares the detection engine, procfs collection, netwatch, attack-chain,
+  ransom canaries and persistence baselines (cron/systemd/ssh profiles) with
+  the Windows agent. It is cross-compile and unit-test validated only —
+  **not yet validated on real Linux hardware**; response commands
+  (terminate/quarantine/self-upgrade), memory scanning, event-log ingestion
+  and ETW are Windows-only. See the honest capability matrix in the private
+  deployment docs before field deployment.
 
 ## Contributing
 
