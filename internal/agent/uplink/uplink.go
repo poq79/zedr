@@ -29,9 +29,9 @@ import (
 
 // Credentials 是注册后持久化的凭证。
 type Credentials struct {
-	AgentID  string `json:"agent_id"`
-	Secret   string `json:"agent_secret"`
-	Server   string `json:"server_url"`
+	AgentID   string `json:"agent_id"`
+	Secret    string `json:"agent_secret"`
+	Server    string `json:"server_url"`
 	MachineID string `json:"machine_id"`
 }
 
@@ -42,9 +42,9 @@ type Client struct {
 	dataDir     string
 	http        *http.Client
 
-	mu    sync.Mutex
-	creds *Credentials
-	queue []model.AlertEnvelope
+	mu       sync.Mutex
+	creds    *Credentials
+	queue    []model.AlertEnvelope
 	maxQueue int
 	dropped  int64
 

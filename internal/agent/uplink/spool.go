@@ -60,18 +60,18 @@ type spool struct {
 	// 保证超限淘汰时"整段丢弃"的粒度不会超过总容量的约 1/4。
 	segMaxRecords int
 
-	mu       sync.Mutex
-	segs     []spoolSeg // 已封存段，按文件名升序（最旧在前）
-	total    int        // 所有段 + 活跃段的记录数
-	bytes    int64
-	dropped  int64
-	nextSeq  uint64
-	active   *os.File
+	mu         sync.Mutex
+	segs       []spoolSeg // 已封存段，按文件名升序（最旧在前）
+	total      int        // 所有段 + 活跃段的记录数
+	bytes      int64
+	dropped    int64
+	nextSeq    uint64
+	active     *os.File
 	activePath string
-	activeN  int
-	activeB  int64
-	flushing bool
-	closed   bool
+	activeN    int
+	activeB    int64
+	flushing   bool
+	closed     bool
 }
 
 // openSpool 打开（或创建）spool 目录并恢复已有段。

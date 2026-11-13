@@ -404,7 +404,7 @@ func TestRateStreakResetOnGap(t *testing.T) {
 }
 
 // NW-004 的非常见端口占比条件：DNS 故障/断网时全机失败集中在常用端口
-//（53 等），形态与扫描正交——不应触发（v0.9.10 深化二轮误报收口）。
+// （53 等），形态与扫描正交——不应触发（v0.9.10 深化二轮误报收口）。
 func TestNoResponseCommonPortExempt(t *testing.T) {
 	w := New(Config{}, 1)
 	ident := pid100(t0)
@@ -426,4 +426,3 @@ func TestNoResponseCommonPortExempt(t *testing.T) {
 		}
 	}
 }
-

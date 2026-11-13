@@ -30,15 +30,15 @@ import (
 
 // Entry 是隔离清单里的一条记录。
 type Entry struct {
-	ID           string     `json:"id"`
-	OriginalPath string     `json:"original_path"`
-	StoredName   string     `json:"stored_name"`
-	Size         int64      `json:"size"`
-	SHA256       string     `json:"sha256"`
-	Reason       string     `json:"reason"`
-	By           string     `json:"by"`
-	QuarantinedAt time.Time `json:"quarantined_at"`
-	RestoredAt   *time.Time `json:"restored_at,omitempty"`
+	ID            string     `json:"id"`
+	OriginalPath  string     `json:"original_path"`
+	StoredName    string     `json:"stored_name"`
+	Size          int64      `json:"size"`
+	SHA256        string     `json:"sha256"`
+	Reason        string     `json:"reason"`
+	By            string     `json:"by"`
+	QuarantinedAt time.Time  `json:"quarantined_at"`
+	RestoredAt    *time.Time `json:"restored_at,omitempty"`
 }
 
 // manifest 是清单文件结构（版本化，防止未来字段语义漂移时误读）。
@@ -49,7 +49,7 @@ type manifest struct {
 
 // Store 是隔离区。
 type Store struct {
-	dir     string
+	dir          string
 	manifestPath string
 	// protected 前缀（小写、带尾分隔符规范化）内的文件拒绝隔离
 	protected []string
@@ -60,10 +60,10 @@ type Store struct {
 
 // ErrLocked 等常见失败统一为错误值，供上层翻译成指令回执文案。
 var (
-	ErrNotFound      = errors.New("隔离记录不存在")
-	ErrAlreadyGone   = errors.New("文件不存在或已被移动")
-	ErrProtected     = errors.New("拒绝隔离 Z-EDR 自身目录内的文件")
-	ErrOriginalExists = errors.New("原路径已存在同名文件，拒绝覆盖")
+	ErrNotFound        = errors.New("隔离记录不存在")
+	ErrAlreadyGone     = errors.New("文件不存在或已被移动")
+	ErrProtected       = errors.New("拒绝隔离 Z-EDR 自身目录内的文件")
+	ErrOriginalExists  = errors.New("原路径已存在同名文件，拒绝覆盖")
 	ErrAlreadyRestored = errors.New("该记录已恢复过")
 )
 
