@@ -1078,7 +1078,7 @@ function OpsQueueCard() {
 
                 {open && (
                   <div className="mt-2 rounded-md border border-border-soft bg-background px-3 py-2.5">
-                    <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-faint">调查证据（五步确定性 · {it.engine === 'heuristic' ? '规则版' : it.engine}）</div>
+                    <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-faint">关联核查证据（确定性五步 · {it.engine === 'heuristic' ? '规则版' : it.engine}）</div>
                     <ol className="grid gap-1.5">
                       {(it.findings || []).map((f, i) => (
                         <li key={i} className="text-[11.5px] leading-[1.65] text-muted-foreground">

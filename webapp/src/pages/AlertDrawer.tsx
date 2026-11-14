@@ -39,7 +39,10 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
   const [a, setA] = useState<Alert | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
-  /* 证据链 / AI 研判 / 自动调查 / AI 调查 四卡：抽屉一屏一屏看 */
+  /* 证据链 / AI 研判 / 关联核查 / AI-agent深度调查 四卡：抽屉一屏一屏看。
+     三级分工（2026-11-14 文案裁决）：研判=只看本条已有证据定性（轻）；
+     关联核查=零模型规则式跨主机/情报/驻留核查（中，与值班队列同一份）；
+     深度调查=模型自主决定查什么（重，多次只读工具调用）。 */
   const [tab, setTab] = useState<'evidence' | 'ai' | 'investigate' | 'agent'>('evidence');
 
   useEffect(() => {
@@ -139,7 +142,7 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
       ) : a && (
         <div className="space-y-5">
           <Tabs className="mb-1" value={tab} onChange={(k) => setTab(k as 'evidence' | 'ai' | 'investigate' | 'agent')}
-            tabs={[{ key: 'evidence', label: '证据链' }, { key: 'ai', label: 'AI 研判' }, { key: 'investigate', label: '自动调查' }, { key: 'agent', label: 'AI 调查' }]} />
+            tabs={[{ key: 'evidence', label: '证据链' }, { key: 'ai', label: 'AI 研判' }, { key: 'investigate', label: '关联核查' }, { key: 'agent', label: 'AI-agent深度调查' }]} />
           {tab === 'evidence' && (
             <div key="ev" className="anim-page space-y-5">
           {a.summary && (
@@ -214,7 +217,7 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
             </div>
           )}
           {tab === 'ai' && (
-            <div key="ai" className="anim-page"><AiPanel alertId={a.id} /></div>
+            <div key="ai" className="anim-page"><AiPanel alertId={a.id} onGoto={(t) => setTab(t)} /></div>
           )}
           {tab === 'investigate' && (
             <div key="inv" className="anim-page"><InvestigatePanel alertId={a.id} /></div>
@@ -269,7 +272,7 @@ function ScoreBar({ a }: { a: Alert }) {
 
 /* ---------------- AI 研判面板 ---------------- */
 
-function AiPanel({ alertId }: { alertId: string }) {
+function AiPanel({ alertId, onGoto }: { alertId: string; onGoto: (tab: 'investigate' | 'agent') => void }) {
   const toast = useToast();
   const [stats, setStats] = useState<{ enabled?: boolean; stats?: { model?: string; budget_used?: number; budget_cap?: number } } | null>(null);
   const [result, setResult] = useState<TriageResp | null>(null);
@@ -308,18 +311,18 @@ function AiPanel({ alertId }: { alertId: string }) {
       <Card className="p-3.5">
         {!result && !busy && (
           <div className="text-xs leading-[1.8] text-faint">
-            结合该告警的完整证据链做判断：给出结论、置信度、逐条可核对的理由，以及处置建议。
-            <br />所有结论都会标注所依据的证据编号，可以逐条回到「命中信号」核对。
+            只基于本条告警已有的证据链做定性判断：给出结论、置信度、逐条可核对的理由，以及处置建议——不发起新的查询。
+            <br />所有结论都会标注所依据的证据编号，可以逐条回到「命中信号」核对。要跨主机/情报关联，请用「关联核查」。
           </div>
         )}
         {busy && <div className="flex items-center gap-2 text-xs text-faint"><Skeleton className="w-40" /> 正在分析证据链…</div>}
-        {result && <TriageBody r={result} />}
+        {result && <TriageBody r={result} onGoto={onGoto} />}
       </Card>
     </Section>
   );
 }
 
-function TriageBody({ r }: { r: TriageResp }) {
+function TriageBody({ r, onGoto }: { r: TriageResp; onGoto: (tab: 'investigate' | 'agent') => void }) {
   const [vLabel, vTone] = TRIAGE_VERDICT[r.verdict] || ['未知', 'info'];
   const conf = Math.round((r.confidence || 0) * 100);
   return (
@@ -374,17 +377,37 @@ function TriageBody({ r }: { r: TriageResp }) {
           </div>
         </div>
       )}
+
+      {/* 引流：研判只看已有证据，两级更深的调查入口在此接力 */}
+      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-border-soft bg-secondary/40 px-3 py-2">
+        <span className="text-[11.5px] text-faint">发现疑点？继续往下挖：</span>
+        <Button size="sm" variant="ghost" onClick={() => onGoto('investigate')}
+          title="零模型调用的规则式核查：同哈希跨主机/情报库/持久化驻留">继续关联核查</Button>
+        <Button size="sm" variant="ghost" onClick={() => onGoto('agent')}
+          title="模型自主决定查什么，会发起多次只读查询（耗时与 token 更高）">继续深度调查</Button>
+      </div>
     </div>
   );
 }
 
-/* Agentic 自动调查（POST /alerts/{id}/investigate）：
-   五步确定性编排——每步都有 finding 与引用，建议动作标注服务端开关是否可用。 */
+/* 关联核查（POST /alerts/{id}/investigate）：
+   零模型调用的确定性编排——每步都有 finding 与引用，建议动作标注服务端开关是否可用。
+   与值班队列是同一份调查（AutoOps 共用缓存）：挂载时先取缓存，跑过就直接展示。 */
 function InvestigatePanel({ alertId }: { alertId: string }) {
   const toast = useToast();
   const [inv, setInv] = useState<Investigation | null>(null);
   const [busy, setBusy] = useState(false);
   const [runErr, setRunErr] = useState('');
+
+  // 预取缓存：值班队列的自动调查/重评估与这里共用服务端缓存，
+  // 跑过就直接展示，不再让用户从空态开始（无缓存是常态，不是错误）
+  useEffect(() => {
+    let alive = true;
+    api.get<Investigation | null>(`/api/v1/alerts/${encodeURIComponent(alertId)}/investigation`)
+      .then((v) => { if (alive && v) setInv(v); })
+      .catch(() => { /* 缓存未命中静默 */ });
+    return () => { alive = false; };
+  }, [alertId]);
 
   const run = async () => {
     setBusy(true); setRunErr('');
@@ -403,12 +426,12 @@ function InvestigatePanel({ alertId }: { alertId: string }) {
       {!inv && (
         <div className="rounded-lg border border-border-soft bg-secondary/40 px-4 py-6 text-center">
           <p className="m-0 text-[12.5px] leading-[1.8] text-muted-foreground">
-            自动调查会对这条告警执行五步确定性编排：<br />
-            进程画像 → 家族/哈希关联 → 主机上下文 → 同源扩散 → 处置建议。<br />
-            <span className="text-faint">每一步都给证据引用，不做黑盒判断。</span>
+            关联核查对这条告警执行零模型调用的确定性编排：<br />
+            告警本体 → 同哈希跨主机 → 同主机关联告警 → IOC 比对 → 持久化驻留 → 证据形态加减分。<br />
+            <span className="text-faint">每一步都给证据引用，不做黑盒判断；与值班队列为同一份报告。</span>
           </p>
           <Button variant="primary" className="mt-3.5" onClick={run} disabled={busy}>
-            {busy ? '调查中…' : '开始自动调查'}
+            {busy ? '核查中…' : '开始关联核查'}
           </Button>
           {runErr && <div className="mt-2.5 text-xs text-destructive">{runErr}</div>}
         </div>
@@ -504,12 +527,12 @@ function AgentPanel({ alertId }: { alertId: string }) {
       {!rep && (
         <div className="rounded-lg border border-border-soft bg-secondary/40 px-4 py-6 text-center">
           <p className="m-0 text-[12.5px] leading-[1.8] text-muted-foreground">
-            AI 调查让模型自主决定查什么：同哈希是否跨主机、是否命中情报库、<br />
+            深度调查让模型自主决定查什么：同哈希是否跨主机、是否命中情报库、<br />
             同指纹是否复发性误报、资产清单里有没有持久化痕迹——每一步工具调用都可见。<br />
-            <span className="text-faint">工具只有只读七件；未配置模型时自动回退确定性五步。</span>
+            <span className="text-faint">八件只读工具白名单；会发起多次只读查询，耗时与 token 消耗高于关联核查。<br />未配置模型或调用失败时自动回退，结果与「关联核查」等价。</span>
           </p>
           <Button variant="primary" className="mt-3.5" onClick={run} disabled={busy}>
-            {busy ? '调查中…' : '开始 AI 调查'}
+            {busy ? '调查中…' : '开始深度调查'}
           </Button>
           {err && <div className="mt-2.5 text-xs text-destructive">{err}</div>}
         </div>
@@ -522,6 +545,9 @@ function AgentPanel({ alertId }: { alertId: string }) {
             <Badge tone={verdictTone(rep.verdict)}>{VERDICT_LABEL[rep.verdict] || rep.verdict}</Badge>
             <span className="text-xs text-faint">置信度 <b className="font-mono text-foreground">{(rep.confidence * 100).toFixed(0)}%</b></span>
             <Badge tone={rep.engine === 'llm' ? 'resolved' : 'info'}>{rep.engine === 'llm' ? 'Agent（模型）' : '确定性回退'}</Badge>
+            {rep.engine !== 'llm' && (
+              <span className="text-[11px] text-faint" title="本次为确定性回退：结果与「关联核查」等价；配置模型后可获得自主挖掘能力">回退=关联核查等价</span>
+            )}
             {rep.model && <Badge tone="info">{rep.model}</Badge>}
             <Badge tone={rep.grounded ? 'resolved' : 'medium'}>{rep.grounded ? '结论全部可溯源' : `${rep.uncited} 条结论无引用`}</Badge>
             {rep.steps_limit_reached && <Badge tone="medium" title="达到步数上限，模型用已有结果收尾">步数触顶</Badge>}
