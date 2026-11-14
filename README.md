@@ -84,11 +84,15 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
   duty queue — all routed through one configurable AI platform with per-task
   model slots, prompt overrides, budgets and an eval gate (44 synthetic
   fixtures with a deterministic scorer).
-- **Live forensics** — outbound-only yamux tunnel (zero inbound listening),
-  30 read-only investigation endpoints (processes, connections, files, registry,
-  event logs, tasks, services, drivers, logon sessions, ARP/route/DNS cache,
-  USN, PE analysis, evidence zip collection), surfaced in the console and to
-  MCP clients.
+- **Live forensics over a callback tunnel** — the agent opens **zero listening
+  ports**: it dials back over an outbound-only yamux tunnel and serves its
+  local HTTP API through it, so the console, MCP clients and AI agents can
+  reach 30 read-only investigation endpoints (processes, connections, files,
+  registry, event logs, tasks, services, drivers, logon sessions,
+  ARP/route/DNS cache, USN, PE analysis, evidence zip collection) in real
+  time — even on tightly firewalled endpoints. This live channel is what lets
+  the agentic investigation pull fresh endpoint evidence instead of working
+  from a static alert snapshot.
 - **Fleet operations** — enrollment + three-step onboarding, signed rule / IOC /
   intel packs (HMAC, dual v1/v2 signatures for mixed fleets), a rules center
   with shadow mode (observe → count → promote), ATT&CK coverage matrix,
