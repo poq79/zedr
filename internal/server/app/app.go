@@ -9,20 +9,20 @@ import (
 	"sort"
 	"time"
 
-	"zedr/internal/platform/apperr"
-	"zedr/internal/platform/httpx"
-	"zedr/internal/platform/settingseal"
 	"zedr/internal/ai"
 	"zedr/internal/mcp"
 	"zedr/internal/model"
-	"zedr/internal/server/notify"
-	"zedr/internal/platform/rulehash"
+	"zedr/internal/platform/apperr"
+	"zedr/internal/platform/httpx"
 	"zedr/internal/platform/idgen"
 	"zedr/internal/platform/logx"
+	"zedr/internal/platform/rulehash"
+	"zedr/internal/platform/settingseal"
 	"zedr/internal/server/api"
 	"zedr/internal/server/auth"
 	"zedr/internal/server/ingestguard"
 	"zedr/internal/server/livetunnel"
+	"zedr/internal/server/notify"
 	"zedr/internal/server/repository/sqlite"
 	"zedr/internal/server/service"
 	"zedr/internal/server/web"
@@ -116,17 +116,19 @@ func New() (*App, error) {
 	}
 
 	svc := service.New(repos, tokens, service.Config{
-		EnrollToken:       cfg.EnrollToken,
-		KillEnabled:       cfg.KillEnabled,
-		QuarantineEnabled: cfg.QuarantineEnabled,
-		DrillEnabled:      cfg.DrillEnabled,
-		HeartbeatInterval: time.Duration(cfg.HeartbeatSec) * time.Second,
-		ScanInterval:      time.Duration(cfg.ScanSec) * time.Second,
-		RetentionDays:     cfg.RetentionDays,
-		DupWindow:         cfg.DupWindow,
-		OpenAlertTTL:      cfg.OpenAlertTTL,
-		AIBootstrap:       aiCfg,
-		SettingEncKey:     encKey,
+		EnrollToken:           cfg.EnrollToken,
+		KillEnabled:           cfg.KillEnabled,
+		QuarantineEnabled:     cfg.QuarantineEnabled,
+		DrillEnabled:          cfg.DrillEnabled,
+		SensorOfflineAlerts:   cfg.SensorOfflineAlerts,
+		SensorOfflineSeverity: cfg.SensorOfflineSeverity,
+		HeartbeatInterval:     time.Duration(cfg.HeartbeatSec) * time.Second,
+		ScanInterval:          time.Duration(cfg.ScanSec) * time.Second,
+		RetentionDays:         cfg.RetentionDays,
+		DupWindow:             cfg.DupWindow,
+		OpenAlertTTL:          cfg.OpenAlertTTL,
+		AIBootstrap:           aiCfg,
+		SettingEncKey:         encKey,
 	}, log, aiEngine)
 
 	// 后台 AI 配置中心的 DB 配置在启动时应用一次：
@@ -344,33 +346,33 @@ func New() (*App, error) {
 	}
 
 	router := api.Router(api.Deps{
-		Services:     svc,
-		Tokens:       tokens,
-		Log:          log,
-		WebFS:        web.FS(),
-		AllowOrigins: cfg.CORSOrigins,
-		RateRPS:      cfg.RateRPS,
-		LoginRPS:     cfg.LoginRPS,
-		LoginBurst:   cfg.LoginBurst,
-		RateBurst:    cfg.RateBurst,
-		Ready:  readyCheck(store),
-		RuleSignKey: ruleSignKey(cfg),
-		Version:      Version,
-		StartedAt:    time.Now(),
-		CookieSecure: cfg.CookieSecure,
-		Bus:          svc.Bus,
-		Notifier:     notifier,
-		NotifyReport: notifyWatch.Report,
+		Services:       svc,
+		Tokens:         tokens,
+		Log:            log,
+		WebFS:          web.FS(),
+		AllowOrigins:   cfg.CORSOrigins,
+		RateRPS:        cfg.RateRPS,
+		LoginRPS:       cfg.LoginRPS,
+		LoginBurst:     cfg.LoginBurst,
+		RateBurst:      cfg.RateBurst,
+		Ready:          readyCheck(store),
+		RuleSignKey:    ruleSignKey(cfg),
+		Version:        Version,
+		StartedAt:      time.Now(),
+		CookieSecure:   cfg.CookieSecure,
+		Bus:            svc.Bus,
+		Notifier:       notifier,
+		NotifyReport:   notifyWatch.Report,
 		UpgradeFile:    cfg.UpgradeFile,
 		UpgradeVersion: cfg.UpgradeVersion,
 		DeployPackage:  cfg.DeployPackage,
 		DeployVersion:  cfg.DeployVersion,
 		EnrollToken:    cfg.EnrollToken,
-		Tunnel:           tunnelReg,
-		Live:             liveSvc,
-		Ingest: ingestguard.New(cfg.IngestAlertRPS, cfg.IngestAlertBurst, cfg.IngestMaxInflight),
-		MCP:      mcpSrv,
-		MCPToken: cfg.MCPToken,
+		Tunnel:         tunnelReg,
+		Live:           liveSvc,
+		Ingest:         ingestguard.New(cfg.IngestAlertRPS, cfg.IngestAlertBurst, cfg.IngestMaxInflight),
+		MCP:            mcpSrv,
+		MCPToken:       cfg.MCPToken,
 	})
 
 	srv := httpx.NewServer(httpx.ServerConfig{
@@ -441,10 +443,16 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 		case <-a.stop:
 			return
 		case <-ticker.C:
-			if n, err := a.services.Agent.MarkOffline(ctx, 3*time.Minute); err != nil {
+			if stale, err := a.services.Agent.MarkOffline(ctx, 3*time.Minute); err != nil {
 				a.Log.Warn("mark_offline_failed", "err", err)
-			} else if n > 0 {
-				a.Log.Info("agents_marked_offline", "count", n)
+			} else if len(stale) > 0 {
+				a.Log.Info("agents_marked_offline", "count", len(stale))
+				// 失联告警与状态翻转同 tick 完成：转变事实只在翻转瞬间存在，
+				// 拆到下一个 tick 就要另存"未消费的转变"状态，不值得。
+				// 建告警条数由服务内部记日志（sensor_offline_alerts_raised）。
+				if _, err := a.services.Sensor.RaiseForTransitions(ctx, stale); err != nil {
+					a.Log.Warn("sensor_offline_alert_failed", "err", err)
+				}
 			}
 
 			if n, err := a.store.DB().ExecContext(ctx,
@@ -560,7 +568,6 @@ func ruleSignKey(cfg *Config) []byte {
 	return rulehash.DeriveKey([]byte(cfg.JWTSecret), "rule-signing")
 }
 
-
 // backupDB 用 VACUUM INTO 把数据库快照到 <db 目录>/backup/，
 // 文件名带时间戳，保留最近 7 份。返回备份文件路径。
 func (a *App) backupDB(ctx context.Context) (string, error) {
@@ -586,7 +593,6 @@ func (a *App) backupDB(ctx context.Context) (string, error) {
 	}
 	return dst, nil
 }
-
 
 // severityRank 把严重度转成可比较的数值。
 func severityRank(s string) int {

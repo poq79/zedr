@@ -22,11 +22,15 @@ type Config struct {
 	// 探针在目标机器上执行受控自测（自造样本、零真实恶意内容），只在
 	// 交付验收/升级回归场景显式打开。终端侧还有 HG_AGENT_DRILL_ENABLED
 	// 第二道闸，单侧误开不会真的跑起来。
-	DrillEnabled      bool          // 是否允许下发检测演练指令
-	HeartbeatInterval time.Duration // 心跳间隔（下发给终端）
-	ScanInterval      time.Duration // 采集间隔（下发给终端）
-	DupWindow         time.Duration // 同指纹告警聚合窗口
-	RetentionDays     int           // 处置完成告警的保留天数
+	DrillEnabled bool // 是否允许下发检测演练指令
+	// SensorOfflineAlerts/Severity 是传感器失联告警（SEN-OFFLINE）的开关
+	// 与严重度，语义见 app.Config 同名字段注释。
+	SensorOfflineAlerts   bool
+	SensorOfflineSeverity string
+	HeartbeatInterval     time.Duration // 心跳间隔（下发给终端）
+	ScanInterval          time.Duration // 采集间隔（下发给终端）
+	DupWindow             time.Duration // 同指纹告警聚合窗口
+	RetentionDays         int           // 处置完成告警的保留天数
 	// OpenAlertTTL 是超期 open 告警自动归档为 acknowledged 的时限。
 	// 0 = 禁用（默认）：自动替值班人员做"不重要"的决定必须显式打开。
 	OpenAlertTTL time.Duration
@@ -49,6 +53,7 @@ type Services struct {
 	Audit    *AuditService
 	Stats    *StatsService
 	Incident *IncidentService
+	Sensor   *SensorWatchService
 	Bus      *AlertBus
 	AI       *AIService
 }
@@ -59,15 +64,17 @@ func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Log
 		cfg.DupWindow = 5 * time.Minute
 	}
 	bus := NewAlertBus()
+	sensor := &SensorWatchService{repos: repos, bus: bus, cfg: cfg, log: log}
 
 	return &Services{
 		Auth:     &AuthService{repos: repos, tokens: tokens, log: log},
-		Agent:    &AgentService{repos: repos, cfg: cfg, log: log},
+		Agent:    &AgentService{repos: repos, cfg: cfg, log: log, sensor: sensor},
 		Alert:    &AlertService{repos: repos, cfg: cfg, log: log, bus: bus},
 		Rule:     &RuleService{repos: repos, log: log},
 		Audit:    &AuditService{repos: repos},
 		Stats:    &StatsService{repos: repos},
 		Incident: &IncidentService{repos: repos, cfg: cfg, log: log},
+		Sensor:   sensor,
 		Bus:      bus,
 		AI:       &AIService{repos: repos, eng: aiEngine, log: log, cfg: cfg, bootstrap: cfg.AIBootstrap, encKey: cfg.SettingEncKey},
 	}

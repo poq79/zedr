@@ -19,10 +19,10 @@ type Config struct {
 	LogLevel  string
 	LogFormat string
 
-	Addr            string
-	DBPath          string
-	CORSOrigins     []string
-	RuleSignKey  string // 规则包签名密钥；空则从 JWTSecret 派生
+	Addr        string
+	DBPath      string
+	CORSOrigins []string
+	RuleSignKey string // 规则包签名密钥；空则从 JWTSecret 派生
 
 	// Webhook 告警推送：URL 为空表示不启用。
 	WebhookURL     string
@@ -86,12 +86,12 @@ type Config struct {
 	AITokenBudget int
 	// AI Agent 循环预算（零值 = 引擎内置默认 6 步/8 次/10s）：
 	// 1M 上下文模型下可调大，配合 HG_AI_HOURLY_TOKEN_BUDGET 一起控成本。
-	AIAgentMaxSteps  int
+	AIAgentMaxSteps    int
 	AIAgentToolTimeout time.Duration
 	// Zero-click：critical+malicious 告警自动触发 Agentic 调查（带实时
 	// 取证），三道闸（指纹 30 分钟去重 / 每主机每小时上限 / token 预算）
 	// 全过才跑，任何一道不过回落确定性五步。默认开（2026-11-10 裁决）。
-	AIZeroClick         bool
+	AIZeroClick           bool
 	AIZeroClickMaxPerHost int
 	// SettingEncKey 是后台配置敏感字段（模型 API Key）的静态加密密钥，
 	// 64 位 hex（32 字节）。空则从 JWTSecret 派生子密钥（与规则签名同策略）。
@@ -102,33 +102,38 @@ type Config struct {
 	AuditSealKey string
 	// MCP 是对外 MCP 工具服务（只读，2026-11 方向 A）：默认关闭；
 	// 启用需独立 Bearer Token（>=16 字符），与 JWT/探针凭证完全分离。
-	MCPEnabled bool
-	MCPToken   string
-	JWTSecret       string
-	AccessTTL       time.Duration
-	RefreshTTL      time.Duration
-	CookieSecure    bool
-	BootstrapUser   string
-	BootstrapPass   string
-	EnrollToken     string
-	RateRPS         float64
-	LoginRPS    float64
-	LoginBurst  float64
-	RateBurst       float64
+	MCPEnabled    bool
+	MCPToken      string
+	JWTSecret     string
+	AccessTTL     time.Duration
+	RefreshTTL    time.Duration
+	CookieSecure  bool
+	BootstrapUser string
+	BootstrapPass string
+	EnrollToken   string
+	RateRPS       float64
+	LoginRPS      float64
+	LoginBurst    float64
+	RateBurst     float64
 	// Ingest 是终端告警上报的背压参数：每终端按"告警条数"限速，
 	// 并有全局在途批次上限（保护 SQLite 单写者）。
 	// RPS=0 关闭限速；MaxInflight 建议 4-16。
-	IngestAlertRPS  float64
-	IngestAlertBurst float64
+	IngestAlertRPS    float64
+	IngestAlertBurst  float64
 	IngestMaxInflight int
-	KillEnabled     bool
+	KillEnabled       bool
 	QuarantineEnabled bool
-	DrillEnabled    bool // 检测演练指令总开关（HG_SERVER_DRILL_ENABLED，默认关）
-	RetentionDays   int
-	DupWindow       time.Duration // 同指纹告警聚合窗口
-	HeartbeatSec    int
-	ScanSec         int
-	ShutdownTimeout time.Duration
+	DrillEnabled      bool // 检测演练指令总开关（HG_SERVER_DRILL_ENABLED，默认关）
+	// 传感器失联告警（SEN-OFFLINE）：默认开——这是"探针挂了没人知道"的
+	// 闭环，属运营级信号不属处置类，无需双层开关；严重度默认 medium
+	// （通知门槛默认 high，即默认只留档不外推，调 high 才推手机/SIEM）。
+	SensorOfflineAlerts   bool
+	SensorOfflineSeverity string
+	RetentionDays         int
+	DupWindow             time.Duration // 同指纹告警聚合窗口
+	HeartbeatSec          int
+	ScanSec               int
+	ShutdownTimeout       time.Duration
 }
 
 // LoadConfig 读取并集中校验配置；任何非法项都会让进程启动即失败。
@@ -184,7 +189,7 @@ func LoadConfig() (*Config, error) {
 	c.AIBaseURL = l.Env("HG_AI_BASE_URL", "")
 	c.AIAPIKey = l.Env("HG_AI_API_KEY", "")
 	c.AIModel = l.Env("HG_AI_MODEL", "")
-	c.AIAgentMaxSteps = l.Int("HG_AI_AGENT_MAX_STEPS", 0)          // 0 = 引擎默认（6）
+	c.AIAgentMaxSteps = l.Int("HG_AI_AGENT_MAX_STEPS", 0)            // 0 = 引擎默认（6）
 	c.AIAgentToolTimeout = l.Duration("HG_AI_AGENT_TOOL_TIMEOUT", 0) // 0 = 引擎默认（10s）
 	c.AIZeroClick = l.Bool("HG_AI_ZEROCLICK", true)
 	c.AIZeroClickMaxPerHost = l.Int("HG_AI_ZEROCLICK_MAX_PER_HOST", 3)
@@ -202,7 +207,7 @@ func LoadConfig() (*Config, error) {
 	c.EnrollToken = l.Env("HG_SERVER_ENROLL_TOKEN", "")
 	c.RateRPS = l.Float("HG_SERVER_RATE_LIMIT_RPS", 20)
 	c.RateBurst = l.Float("HG_SERVER_RATE_LIMIT_BURST", 60)
-	c.LoginRPS = l.Float("HG_SERVER_LOGIN_RPS", 0.5)   // 登录：约每 2 秒 1 次
+	c.LoginRPS = l.Float("HG_SERVER_LOGIN_RPS", 0.5) // 登录：约每 2 秒 1 次
 	c.LoginBurst = float64(l.Int("HG_SERVER_LOGIN_BURST", 5))
 	// 告警上报背压：默认允许单终端 200 条/秒、突发 1000 条（两批 500），
 	// 全局最多 8 个批次同时写库。正常终端每秒远低于此，只有失控/被入侵
@@ -219,6 +224,8 @@ func LoadConfig() (*Config, error) {
 	// 检测演练默认关：会让探针在目标机器跑受控自测，只在交付验收/
 	// 升级回归场景显式打开（终端侧 HG_AGENT_DRILL_ENABLED 是第二道闸）
 	c.DrillEnabled = l.Bool("HG_SERVER_DRILL_ENABLED", false)
+	c.SensorOfflineAlerts = l.Bool("HG_SERVER_SENSOR_OFFLINE_ALERTS", true)
+	c.SensorOfflineSeverity = l.Env("HG_SERVER_SENSOR_OFFLINE_SEVERITY", "medium")
 	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 30)
 	c.DupWindow = l.Duration("HG_SERVER_DUP_WINDOW", 5*time.Minute) // 同指纹告警聚合窗口
 	c.HeartbeatSec = l.Int("HG_SERVER_HEARTBEAT_SEC", 30)
@@ -229,6 +236,9 @@ func LoadConfig() (*Config, error) {
 	l.Check(c.WebhookMinSeverity == "low" || c.WebhookMinSeverity == "medium" ||
 		c.WebhookMinSeverity == "high" || c.WebhookMinSeverity == "critical",
 		"HG_SERVER_WEBHOOK_MIN_SEVERITY 只能是 low/medium/high/critical")
+	l.Check(c.SensorOfflineSeverity == "low" || c.SensorOfflineSeverity == "medium" ||
+		c.SensorOfflineSeverity == "high",
+		"HG_SERVER_SENSOR_OFFLINE_SEVERITY 只能是 low/medium/high")
 	l.Check(c.NotifyFailWindows >= 1,
 		"HG_SERVER_NOTIFY_FAIL_WINDOWS 至少为 1（连续失败窗数）")
 

@@ -24,6 +24,9 @@ type AgentService struct {
 	repos    repository.Repos
 	cfg      Config
 	log      *slog.Logger
+	// sensor 是失联告警闭环（nil 合法：单测可直接构造）。恢复结案挂在
+	// 心跳路径上——探针上线的事实只在这里发生，放维护循环会晚一个 tick。
+	sensor *SensorWatchService
 }
 
 // Enroll 处理终端注册。同一 machine_id 重复注册会轮转凭证（重装/迁移场景）。
@@ -183,9 +186,26 @@ func (s *AgentService) Heartbeat(ctx context.Context, agentID string, req model.
 				"skew_sec", int(skew.Seconds()), "hint", "事件时间线可能失真，请检查终端 NTP")
 		}
 	}
+	// 恢复闭环：上一状态是 offline 的终端刚回归，自动结案其失联告警。
+	// 必须在 UpdateHeartbeat 之前读上一状态——更新本身会把 status 置回
+	// online，转变事实读不到；常态在线的终端每 30s 心跳都只付一次
+	// ByID 的代价（按主键查，微秒级）。读失败不阻断心跳，结案还有
+	// 下一次心跳的机会。
+	var wasOffline bool
+	if s.sensor != nil {
+		if prev, perr := s.repos.Agents.ByID(ctx, agentID); perr == nil {
+			wasOffline = prev.Status == domain.AgentOffline
+		}
+	}
 	if err := s.repos.Agents.UpdateHeartbeat(ctx, agentID, now,
 		req.ProcCount, req.CPUPercent, req.MemMB, req.RuleVersion, ip, req.Version); err != nil {
 		return nil, err
+	}
+	if wasOffline && s.sensor != nil {
+		if _, rerr := s.sensor.ResolveOnBackOnline(ctx, agentID); rerr != nil {
+			s.log.WarnContext(ctx, "sensor_back_online_resolve_failed",
+				"agent_id", agentID, "err", rerr.Error())
+		}
 	}
 
 	cmds, err := s.repos.Commands.PendingForAgent(ctx, agentID, 10)
@@ -333,9 +353,18 @@ func (s *AgentService) CompleteCommand(ctx context.Context, agentID string, resu
 	return nil
 }
 
-// MarkOffline 供维护任务调用：把长时间无心跳的终端标记为离线。
-func (s *AgentService) MarkOffline(ctx context.Context, threshold time.Duration) (int64, error) {
-	return s.repos.Agents.MarkOfflineBefore(ctx, time.Now().Add(-threshold))
+// MarkOffline 供维护任务调用：把长时间无心跳的终端标记为离线，并返回
+// 本轮发生 online→offline 转变的终端清单（供失联告警消费转变事实）。
+func (s *AgentService) MarkOffline(ctx context.Context, threshold time.Duration) ([]domain.Agent, error) {
+	before := time.Now().Add(-threshold)
+	stale, err := s.repos.Agents.StaleOnline(ctx, before)
+	if err != nil || len(stale) == 0 {
+		return nil, err
+	}
+	if _, err := s.repos.Agents.MarkOfflineBefore(ctx, before); err != nil {
+		return nil, err
+	}
+	return stale, nil
 }
 
 // ListCommands 查询最近的指令下发记录。
