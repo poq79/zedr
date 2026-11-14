@@ -264,6 +264,8 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/incidents/{id}/narrative", viewer(adminH.getIncidentNarrative))
 	mux.Handle("GET /api/v1/hosts/{id}/changes", viewer(adminH.getHostChanges))
 	mux.Handle("POST /api/v1/alerts/{id}/investigate", viewer(adminH.investigateAlert))
+	// 关联核查缓存读取（不重算）：值班队列已跑过的调查直接展示，避免空态起步
+	mux.Handle("GET /api/v1/alerts/{id}/investigation", viewer(adminH.getCachedInvestigation))
 	// Agentic 调查 v2：模型调用只读工具自主调查（未配置模型自动回退确定性五步）
 	mux.Handle("POST /api/v1/alerts/{id}/investigate/agent", viewer(adminH.agentInvestigate))
 	mux.Handle("GET /api/v1/alerts/{id}/agent-investigation", viewer(adminH.getAgentInvestigation))

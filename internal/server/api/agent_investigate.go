@@ -30,6 +30,14 @@ func (h *adminHandler) agentInvestigate(w http.ResponseWriter, r *http.Request) 
 	httpx.WriteJSON(w, r, http.StatusOK, rep)
 }
 
+// getCachedInvestigation 返回缓存的关联核查报告（不重算，无缓存返回 null）。
+// 值班队列的自动调查/重评估与告警抽屉「关联核查」Tab 共用同一份缓存——
+// 队列跑过的告警，抽屉打开即有结果，不必再从空态开始。
+func (h *adminHandler) getCachedInvestigation(w http.ResponseWriter, r *http.Request) {
+	inv := h.deps.Services.AI.CachedInvestigation(r.PathValue("id"))
+	httpx.WriteJSON(w, r, http.StatusOK, inv)
+}
+
 // getAgentInvestigation 返回缓存的 Agent 报告（不重算）。
 func (h *adminHandler) getAgentInvestigation(w http.ResponseWriter, r *http.Request) {
 	rep := h.deps.Services.AI.CachedAgentReport(r.PathValue("id"))
