@@ -5,8 +5,13 @@
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%20Server%202016%2B-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows-server)
 [![Version](https://img.shields.io/badge/version-0.9.14-informational)](#)
+[![License](https://img.shields.io/badge/License-AGPL_3.0--only-blue.svg)](LICENSE)
 
 **English** | [中文](README.zh-CN.md)
+
+<p align="center">
+  <img src="assets/hero.png" alt="Z-EDR — detection-first, user-mode EDR; five-layer detection pipeline readout" width="100%">
+</p>
 
 Z-EDR records process, file-drop, persistence, network and event-log telemetry on
 Windows endpoints, scores it with a five-layer detection pipeline mapped to
@@ -28,15 +33,21 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
 
 <p align="center">
   <img src="assets/console-alert-detail.png" alt="Alert evidence chain — score composition, command line, matched signals, lineage" width="49%">
-  <img src="assets/console-attack-matrix.png" alt="ATT&CK matrix — hit counts vs rule coverage" width="49%">
+  <img src="assets/console-alert-ai.png" alt="AI triage verdict — confidence, per-claim evidence citations, recommended actions" width="49%">
 </p>
-<p align="center"><sub>Every alert carries an explainable evidence chain — left · ATT&CK coverage matrix (hits vs. static coverage) — right</sub></p>
+<p align="center"><sub>Evidence chain with score composition — left · AI verdict: every claim cites its evidence id (E1/E2), every action waits for human confirmation — right</sub></p>
 
 <p align="center">
+  <img src="assets/console-attack-matrix.png" alt="ATT&CK matrix — hit counts vs rule coverage" width="49%">
   <img src="assets/console-incidents.png" alt="Incidents — alerts clustered into attack chains with status machine" width="49%">
-  <img src="assets/console-rules.png" alt="Rules center — 44 built-in rules, severity / score / ATT&CK / shadow mode" width="49%">
 </p>
-<p align="center"><sub>Alerts clustered into incident chains with a disposition state machine — left · rules center with shadow mode &amp; one-click promotion — right</sub></p>
+<p align="center"><sub>ATT&CK coverage matrix (hits vs. static coverage) — left · alerts clustered into incident chains with a disposition state machine — right</sub></p>
+
+<p align="center">
+  <img src="assets/console-rules.png" alt="Rules center — 44 built-in rules, severity / score / ATT&CK / shadow mode" width="49%">
+  <img src="assets/console-alerts.png" alt="Alert center — severity filters, scores, disposition" width="49%">
+</p>
+<p align="center"><sub>Rules center with shadow mode &amp; one-click promotion — left · alert center with severity / verdict / status filters — right</sub></p>
 
 <p align="center">
   <img src="assets/console-hosts.png" alt="Host fleet — online state, CPU, memory, pending alerts, heartbeat" width="49%">
@@ -51,15 +62,15 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
 <p align="center"><sub>Host detail: services / tasks / autoruns / live files / recon / baseline / accounts / changes — left · AI platform: one provider, per-task slots, budget & cache hot-reload — right</sub></p>
 
 <p align="center">
-  <img src="assets/console-alerts.png" alt="Alert center — severity filters, scores, disposition" width="49%">
   <img src="assets/console-hunt.png" alt="AI hunting — natural language to a safe, reviewable DSL" width="49%">
+  <img src="assets/console-login.png" alt="Login — split screen with the five-layer pipeline story" width="49%">
 </p>
-<p align="center"><sub>Alert center with severity / verdict / status filters — left · natural-language hunting compiled to a safe DSL (the model never sees SQL) — right</sub></p>
+<p align="center"><sub>Natural-language hunting compiled to a safe DSL (the model never sees SQL) — left · console entry, doubling as a five-layer pipeline tour — right</sub></p>
 
 <p align="center">
-  <img src="assets/console-login.png" alt="Login — split screen with the five-layer pipeline story" width="75%">
+  <img src="assets/demo-alert-ai.gif" alt="From evidence chain to AI verdict — citations, confidence, recommended actions" width="62%">
 </p>
-<p align="center"><sub>Console entry: the login page doubles as a tour of the five-layer detection pipeline</sub></p>
+<p align="center"><sub>One alert, end to end: open the evidence chain, request an AI verdict — every claim cites its evidence, every action waits for a human</sub></p>
 
 ## Highlights
 
@@ -102,6 +113,12 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
 
 ## Design principles
 
+**Who Z-EDR is for:** Windows-heavy fleets and desktops, self-hosted and homelab
+setups, regulated environments that must avoid kernel drivers, and teams that
+want every AI judgment tied to inspectable evidence. **Not for:** prevention-first
+(EPP) needs, kernel-grade tamper protection, or Linux-only estates — the Linux
+agent is experimental.
+
 1. **Detection, not prevention.** No inline blocking or filesystem filters —
    Z-EDR works after the fact: record, detect, investigate, respond.
 2. **User mode, low intrusion.** Only documented user-mode APIs. Nothing is
@@ -112,6 +129,21 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
    short-lived processes, and there is no tamper protection. Measured detection
    results are published as-is, including misses — see [Testing](#testing) and
    the known-limitations list.
+
+## How Z-EDR compares
+
+Statements below describe each project's public documentation and source at the
+time of writing (2026-11); corrections welcome.
+
+| | Z-EDR | Wazuh | Falco | Velociraptor |
+|---|---|---|---|---|
+| **Focus** | Windows-first EDR: detect, investigate, respond | Cross-platform SIEM / HIDS platform | Cloud-native runtime security for Linux | Endpoint visibility & DFIR |
+| **Deploy shape** | one server binary (embedded UI, SQLite) + one agent | manager + indexer + dashboards stack | agent + rules, CNCF ecosystem | server + client, VQL-driven |
+| **Collection model** | user-mode APIs only — no driver, no hook | agent (log & state collection) | kernel module or eBPF on syscalls | agent (osquery-like artifacts) |
+| **Real-time behavioral detection** | 5-layer pipeline + attack-chain + ransom/netwatch/event-log families | rule-based log analysis + FIM | syscall rule engine | monitoring via VQL artifacts (DFIR-first) |
+| **AI-assisted investigation** | grounded triage, NL hunting, agentic investigation, incident narratives | — | — | — |
+| **Response** | terminate / quarantine, off by default, human-approved, audited | active-response scripts (configurable automation) | alerts (forwarding via Falcosidekick) | remote shell / artifact collection |
+| **Best when** | you need per-process evidence and explainable AI on Windows, without kernel drivers | you need a full SIEM stack with compliance content | you need Linux/container runtime alerting | you need deep fleet queries and forensic collection |
 
 ## Architecture
 
@@ -216,7 +248,8 @@ Response actions are audited, RBAC-gated, and never automatic.
   the AI assistant in the console shares the same toolset.
 - **Public**: `/health`, `/ready`, `/metrics` (Prometheus text format).
 
-The full endpoint table and RBAC matrix live in the repository's internal docs.
+Every `HG_*` switch — including the safety defaults above — is documented with
+comments in [`.env.example`](.env.example).
 
 ## Testing
 

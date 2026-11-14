@@ -5,8 +5,13 @@
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%20Server%202016%2B-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows-server)
 [![Version](https://img.shields.io/badge/version-0.9.14-informational)](#)
+[![License](https://img.shields.io/badge/License-AGPL_3.0--only-blue.svg)](LICENSE)
 
 [English](README.md) | **中文**
+
+<p align="center">
+  <img src="assets/hero.png" alt="Z-EDR — 检测优先的用户态 EDR，五层检测流水线读数" width="100%">
+</p>
 
 Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与事件日志遥测，用
 五层检测流水线（映射 MITRE ATT&CK）打分，把告警聚类为事件，并为分析师提供
@@ -27,15 +32,21 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 
 <p align="center">
   <img src="assets/console-alert-detail.png" alt="告警证据链——分值构成、命令行、命中信号、血缘链" width="49%">
-  <img src="assets/console-attack-matrix.png" alt="ATT&CK 矩阵——命中数与规则覆盖" width="49%">
+  <img src="assets/console-alert-ai.png" alt="AI 研判——置信度、逐条证据引用、建议处置" width="49%">
 </p>
-<p align="center"><sub>每条告警都带可解释证据链——左 · ATT&CK 覆盖矩阵（命中 vs 静态覆盖）——右</sub></p>
+<p align="center"><sub>证据链与分值构成——左 · AI 研判：每条结论标注证据编号（E1/E2），每个动作等人工确认——右</sub></p>
 
 <p align="center">
+  <img src="assets/console-attack-matrix.png" alt="ATT&CK 矩阵——命中数与规则覆盖" width="49%">
   <img src="assets/console-incidents.png" alt="事件——告警聚类为攻击链，带处置状态机" width="49%">
-  <img src="assets/console-rules.png" alt="规则中心——44 条内置规则，严重度 / 分值 / ATT&CK / 观察模式" width="49%">
 </p>
-<p align="center"><sub>告警聚类为事件链并配处置状态机——左 · 规则中心支持观察模式与一键转正——右</sub></p>
+<p align="center"><sub>ATT&CK 覆盖矩阵（命中 vs 静态覆盖）——左 · 告警聚类为事件链并配处置状态机——右</sub></p>
+
+<p align="center">
+  <img src="assets/console-rules.png" alt="规则中心——44 条内置规则，严重度 / 分值 / ATT&CK / 观察模式" width="49%">
+  <img src="assets/console-alerts.png" alt="告警中心——严重度筛选、分值、处置" width="49%">
+</p>
+<p align="center"><sub>规则中心支持观察模式与一键转正——左 · 告警中心：严重度 / 结论 / 状态三向筛选——右</sub></p>
 
 <p align="center">
   <img src="assets/console-hosts.png" alt="主机终端——在线状态、CPU、内存、待处置、心跳" width="49%">
@@ -50,15 +61,15 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 <p align="center"><sub>主机详情：服务 / 计划任务 / 自启动 / 实时文件 / 资产侦查 / 安全基线 / 账户 / 变更——左 · AI 平台：一个 Provider、按任务槽位、预算与缓存热更新——右</sub></p>
 
 <p align="center">
-  <img src="assets/console-alerts.png" alt="告警中心——严重度筛选、分值、处置" width="49%">
   <img src="assets/console-hunt.png" alt="AI 狩猎——自然语言编译为安全可审的 DSL" width="49%">
+  <img src="assets/console-login.png" alt="登录页——分屏呈现五层检测流水线" width="49%">
 </p>
-<p align="center"><sub>告警中心：严重度 / 结论 / 状态三向筛选——左 · 自然语言狩猎编译为安全 DSL（模型接触不到 SQL）——右</sub></p>
+<p align="center"><sub>自然语言狩猎编译为安全 DSL（模型接触不到 SQL）——左 · 控制台入口，兼五层流水线导览——右</sub></p>
 
 <p align="center">
-  <img src="assets/console-login.png" alt="登录页——分屏呈现五层检测流水线" width="75%">
+  <img src="assets/demo-alert-ai.gif" alt="从证据链到 AI 研判——引用、置信度、建议处置" width="62%">
 </p>
-<p align="center"><sub>控制台入口：登录页同时是五层检测流水线的产品导览</sub></p>
+<p align="center"><sub>一条告警的完整旅程：打开证据链 → 请求 AI 研判——每条结论都引用证据，每个动作都等人工确认</sub></p>
 
 ## 核心能力
 
@@ -90,6 +101,11 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 
 ## 设计原则
 
+**Z-EDR 适合谁：** Windows 为主的终端舰队与桌面、自托管/家庭实验室、
+不允许装内核驱动的合规环境，以及要求每个 AI 判定都可回查证据的团队。
+**不适合：** 需要执行前拦截（EPP）的场景、需要内核级自保护的对抗环境、
+纯 Linux 资产（Linux 探针为实验性）。
+
 1. **只做检测，不做执行前拦截。** 不挂文件系统过滤、不阻止进程启动——
    事后负责：记录、发现、调查、响应。
 2. **用户态、低侵入。** 只用文档化的用户态 API，不修改系统、不注入进程，
@@ -97,6 +113,20 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 3. **响应是显式可选项。** 没有明确配置与人工审批，什么都不会被杀、不会被动。
 4. **诚实接受代价。** 轮询采集对短命进程存在 TOCTOU 盲区，且无自保护——
    实测结果如实发布，包括漏检。见[测试](#测试)与已知边界清单。
+
+## 与同类项目的对比
+
+下表描述各项目撰写时点（2026-11）的公开文档与源码形态，如有出入欢迎指正。
+
+| | Z-EDR | Wazuh | Falco | Velociraptor |
+|---|---|---|---|---|
+| **定位** | Windows 优先的 EDR：检测、调查、响应 | 跨平台 SIEM / HIDS 平台 | 云原生 Linux 运行时安全 | 端点可见性与数字取证 |
+| **部署形态** | 单服务端二进制（内嵌管理台、SQLite）+ 单探针 | manager + 索引 + 仪表盘多组件栈 | agent + 规则，CNCF 生态 | server + client，VQL 驱动 |
+| **采集方式** | 仅用户态 API——零驱动、零 Hook | agent（日志与状态采集） | 内核模块或 eBPF 采集系统调用 | agent（类 osquery 的 artifact） |
+| **实时行为检测** | 五层流水线 + 攻击链 + 勒索/网络/事件日志检测器族 | 基于规则的日志分析 + FIM | 系统调用规则引擎 | VQL artifact 监控（取证优先） |
+| **AI 辅助调查** | 证据锚定研判、自然语言狩猎、Agentic 调查、事件叙事 | — | — | — |
+| **响应模型** | terminate / 隔离，默认关闭、人工审批、全程审计 | active-response 脚本（可配置自动化） | 仅告警（经 Falcosidekick 转发） | 远程 shell / artifact 采集 |
+| **适用场景** | 需要 Windows 上逐进程证据与可解释 AI，且不装内核驱动 | 需要带合规内容库的完整 SIEM 栈 | 需要 Linux/容器运行时告警 | 需要深度舰队查询与取证采集 |
 
 ## 架构
 
@@ -196,7 +226,8 @@ Autoruns 式自启动审计（签名 / 文件缺失标记）、安全姿势与�
   端侧实时取证。每次调用进审计；控制台 AI 助手共享同一套工具。
 - **公开**：`/health`、`/ready`、`/metrics`（Prometheus 文本格式）。
 
-完整端点表与 RBAC 矩阵见仓库内部文档。
+所有 `HG_*` 开关——含上方安全默认表——都在 [`.env.example`](.env.example)
+里带注释逐项说明。
 
 ## 测试
 
@@ -255,4 +286,8 @@ pre-commit 钩子会拦截：私钥块、主流令牌格式（AWS/GitHub/Slack/G
 
 ## 许可证
 
-首次公开发布前选定，届时补 `LICENSE` 文件。在此之前保留所有权利。
+以 **GNU Affero General Public License v3.0**（`AGPL-3.0-only`）发布——见
+[LICENSE](LICENSE)。与同类开源 DFIR 平台（如 Velociraptor）一致：修改——
+包括通过网络提供服务这一形态——同样必须遵循 AGPL。
+
+Copyright © 2026 poq79
