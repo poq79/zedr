@@ -251,7 +251,8 @@ func TestRateAnomalyStreak(t *testing.T) {
 // 6) 环回与本机地址排除。
 func TestLoopbackAndOwnIPExcluded(t *testing.T) {
 	w := New(Config{}, 1)
-	// 注入本机地址表并冻结刷新（否则首次 Observe 会用真实网卡覆盖）
+	// 注入本机地址表并冻结刷新（否则首次 Observe 会用真实网卡覆盖）。
+	// IP 用 TEST-NET-3 文档段占位，不写真实内网地址（公开仓库口径）
 	w.ownIPs["203.0.113.156"] = true
 	w.ownIPsAt = t0
 	conns := []winapi.TCPConn{
