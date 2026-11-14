@@ -36,6 +36,7 @@ func (h *adminHandler) metrics(w http.ResponseWriter, r *http.Request) {
 
 	gauge("zedr_hosts_total", "注册的主机总数", m.TotalHosts)
 	gauge("zedr_hosts_online", "在线主机数（3 分钟内有心跳）", m.OnlineHosts)
+	gauge("zedr_hosts_offline", "离线主机数（超 3 分钟无心跳，SEN-OFFLINE 告警口径）", m.OfflineHosts)
 	gauge("zedr_alerts_24h", "过去 24 小时收到的告警数", m.Alerts24h)
 	gauge("zedr_alerts_open", "未处置告警数（open + acknowledged）", m.OpenAlerts)
 	gauge("zedr_alerts_critical_open", "未处置的 critical 告警数", m.CriticalOpen)
@@ -109,8 +110,8 @@ func (h *adminHandler) metrics(w http.ResponseWriter, r *http.Request) {
 // 超过上限时在响应头标注 truncated，让调用方知道数据不完整。
 func (h *adminHandler) exportCSV(w http.ResponseWriter, r *http.Request) {
 	const (
-		pageSize  = 200
-		maxRows   = 5000
+		pageSize = 200
+		maxRows  = 5000
 	)
 
 	p := principal(r)

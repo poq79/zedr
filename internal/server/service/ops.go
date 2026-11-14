@@ -17,6 +17,7 @@ import (
 type MetricsSnapshot struct {
 	TotalHosts   int
 	OnlineHosts  int
+	OfflineHosts int
 	Alerts24h    int
 	OpenAlerts   int
 	CriticalOpen int
@@ -48,6 +49,8 @@ func (s *StatsService) Metrics(ctx context.Context, startedAt time.Time, wh Sent
 		m.SeverityDist = d.SeverityDist
 		m.AvgScore = d.AvgScore
 	}
+	// 离线数从既有的总/在线口径推导，不加专门查询（与函数注释的取数纪律一致）。
+	m.OfflineHosts = max(0, m.TotalHosts-m.OnlineHosts)
 
 	m.WebhookSent, m.WebhookFailed, m.WebhookDropped = wh()
 
