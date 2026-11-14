@@ -105,8 +105,15 @@ type Agent struct {
 
 // watchDirsLinux 是落地监控的目录集合（Linux 口径）：可执行入口与
 // 用户可写落地高发区，与 Windows WatchDirs 的选点思路一致——监控
-// "样本最可能出现的位置"，不做全盘。
+// "样本最可能出现的位置"，不做全盘。诱饵目录必须并入监控面：canary
+// 是"动了就告警"的绊线，放在监控面之外等于不设防（2026-11-14 Kali
+// 实机验收踩过：/root/Documents 与 /srv/documents 只种不监，删除无感）。
 func watchDirsLinux() []string {
+	dirs := append(watchDirsLinuxBase(), canaryDirsLinux()...)
+	return dedupDirs(dirs)
+}
+
+func watchDirsLinuxBase() []string {
 	dirs := []string{"/tmp", "/var/tmp", "/dev/shm", "/usr/local/bin", "/opt"}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		dirs = append(dirs,
