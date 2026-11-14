@@ -74,3 +74,43 @@ func TestEvtBruteWindowSemantics(t *testing.T) {
 		t.Fatalf("测试仅推进到阈值-1，不应触发告警: %v", cooled)
 	}
 }
+
+// 游标悬空判定 v3（evtResetDecision）：v2 的教训是拿"XPath 过滤后最旧
+// 匹配记录"当连续性基准，稀疏 EventID 下与游标的差距是常态 → 恒触发
+// 重置 → 旧事件全量重放（单机 11.5 万行告警的根因）。v3 用通道级
+// oldest/newest 对拍，本表把四类场景与事故回归案例锁死。
+func TestEvtResetDecision(t *testing.T) {
+	cases := []struct {
+		name          string
+		since, oldest uint64
+		newest        uint64
+		wantReset     bool
+		wantTo        uint64
+		wantReason    string
+	}{
+		// 正常安静：游标在 tip（≤ newest），通道最旧未越过游标——绝不重置。
+		// 这正是事故形态（v2 在此场景每个空批 tick 都误重置）。
+		{"quiet_at_tip", 394058, 105, 394058, false, 0, ""},
+		{"quiet_behind_tip", 394000, 105, 394058, false, 0, ""},
+		// 日志清空/重建：RecordID 归零重计，通道 tip 反而低于游标。
+		{"cleared_recount", 742839, 1, 742824, true, 742824, "cleared"},
+		// 日志滚动：最旧记录已前进超过游标（游标之前的记录全部不存在了）。
+		{"rolled_forward", 394058, 500000, 610000, true, 610000, "rolled"},
+		// 通道被清后尚无新事件：重置到 0，等通道重新填充。
+		{"channel_emptied", 394058, 0, 0, true, 0, "empty"},
+		// 首轮建基线路径不归判定管（since=0 由 evtBaseline 处理）。
+		{"first_run_guard", 0, 105, 394058, false, 0, ""},
+	}
+	for _, c := range cases {
+		gotTo, gotReason, got := evtResetDecision(c.since, c.oldest, c.newest)
+		if got != c.wantReset {
+			t.Fatalf("%s: wantReset=%v got=%v", c.name, c.wantReset, got)
+		}
+		if !c.wantReset {
+			continue
+		}
+		if gotTo != c.wantTo || gotReason != c.wantReason {
+			t.Fatalf("%s: want (%d,%s) got (%d,%s)", c.name, c.wantTo, c.wantReason, gotTo, gotReason)
+		}
+	}
+}

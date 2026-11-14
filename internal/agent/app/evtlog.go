@@ -15,8 +15,10 @@
 //   - 只读订阅，不改任何审核策略：4625 需要"审核登录失败"开启，未开启
 //     的机器该通道无事件（不是故障也不告警）；
 //   - 游标存 evt.json（per-channel RecordID）；通道日志被清/滚动导致
-//     游标悬空时按最旧记录重置基线——清空场景的旧事件本就不在了，
-//     104 自身若被一并清掉也如实接受；
+//     游标悬空时把游标重置到通道当前最新记录（v3，2026-11-14）——重置
+//     场景下的历史要么已不存在（滚动），要么是从未见过的存量（清空后
+//     重计），按"首轮建基线"同款哲学静默跳过不重放；104/1102 若落在
+//     被跳过窗口内也随之错过，如实接受；
 //   - 首次运行只推进游标不告警（与 persist 首轮建基线同款哲学）；
 //   - 4625 聚合窗口是内存态，重启清零——重启恰是攻击窗口，但离线告警
 //     队列已保证"重启前"的告警不丢。
@@ -132,26 +134,36 @@ func (a *Agent) evtlogLoop(ctx context.Context) {
 				continue
 			}
 			alive++
-			// 游标悬空检测（空批时）：两种场景都会让通道永久失明——
-			//   ① 日志滚动：最旧匹配前进超过游标（oldest > since+1）；
-			//   ② 日志被清/重建：RecordId 归零重计，新事件全部 < since
-			//     （实测：Security 日志清空后新事件 742824 < 旧游标 742839，
-			//     而"日志被清"恰是 104/1102 要抓的场景）。
-			// 判定：用"最早匹配 RecordID E0"校验游标位置，两者明显脱节
-			// 即重置基线到 E0-1（被清掉的旧事件如实接受）。
+			// 游标悬空检测 v3（空批时，2026-11-14）：v2（b44d0a8）用
+			// "XPath 过滤后最旧匹配记录 E0"当连续性基准，但稀疏 EventID
+			// （7045/4728 等匹配之间隔数千条无关记录）下 E0 天然远落后于
+			// 游标，e0+1000 < since 恒真 → 每个空批 tick 误判"日志被清"
+			// → 重置 → 全量重放旧匹配事件再推到 tip → 再误判……死循环
+			// （单机 13 天刷出 11.5 万行告警，复盘见 TEST-REPORT）。
+			// v3 改用通道级 oldest/newest 对拍——游标只可能以两种方式悬空：
+			//   ① 日志滚动：通道最旧记录前进超过游标（oldest > since+1）；
+			//   ② 日志被清/重建：RecordID 计数器归零重计，通道最新记录
+			//     反而低于游标（newest < since，游标指向已不存在的位置）。
+			// 重置动作是把游标直接落到通道当前最新记录，不做重放——重置
+			// 场景下的历史要么已不在、要么是从未见过的存量，按首轮建基线
+			// 同款哲学静默跳过（判定逻辑纯函数化，见 evtResetDecision）。
 			if len(events) == 0 && since > 0 {
-				if probe, _, perr := winapi.EvtReadBatch(ch.name, ch.xpath, 0, 1); perr == nil {
-					e0 := uint64(0)
-					if len(probe) > 0 {
-						e0 = probe[0].RecordID
-					}
-					if e0 > 0 && (e0 > since+1 || e0+1000 < since) {
-						a.log.Warn("evtlog_cursor_reset", "channel", ch.name,
-							"old_cursor", since, "new_baseline", e0-1,
-							"hint", "通道日志被清空或滚动，游标重置")
-						cp.Channels[ch.name] = e0 - 1
-						changed = true
-					}
+				oldest, oerr := winapi.EvtChannelOldestRecordID(ch.name)
+				if oerr != nil {
+					a.log.Warn("evtlog_cursor_probe_failed", "channel", ch.name, "err", oerr)
+					continue
+				}
+				_, newest, nerr := winapi.EvtReadLatest(ch.name, "", 1)
+				if nerr != nil {
+					a.log.Warn("evtlog_cursor_probe_failed", "channel", ch.name, "err", nerr)
+					continue
+				}
+				if resetTo, reason, ok := evtResetDecision(since, oldest, newest); ok {
+					a.log.Warn("evtlog_cursor_reset", "channel", ch.name,
+						"old_cursor", since, "new_baseline", resetTo,
+						"reason", reason, "oldest", oldest, "newest", newest)
+					cp.Channels[ch.name] = resetTo
+					changed = true
 				}
 				continue
 			}
@@ -183,6 +195,34 @@ func (a *Agent) evtBaseline(ch evtChannelDef, since uint64) uint64 {
 		since = last
 	}
 	return since
+}
+
+// evtResetDecision 判定空批时游标是否悬空、重置到哪（纯函数，单测覆盖）。
+//
+// 入参是通道级（非 XPath 过滤）的最旧/最新 RecordID——v2 教训：稀疏
+// EventID 过滤下的"最旧匹配"与游标的差距是常态而非异常，不能当悬空信号。
+// 返回 (重置目标, 原因, 是否重置)。原因取值：
+//   - "cleared"：newest < since，RecordID 计数器归零重计（日志被清/重建），
+//     游标指向已不存在的位置；
+//   - "rolled"：oldest > since+1，日志滚动已淘汰游标之前的全部记录；
+//   - "empty"：通道当前为空（old=new=0）。
+//
+// 正常安静通道（游标 ≤ newest 且 oldest 未越过游标）不重置——这正是
+// v2 死循环的病灶：把"安静"误判成"被清"。
+func evtResetDecision(since, oldest, newest uint64) (uint64, string, bool) {
+	if since == 0 {
+		return 0, "", false // 首轮建基线路径，不归这里管
+	}
+	switch {
+	case oldest == 0 && newest == 0:
+		return 0, "empty", true
+	case newest < since:
+		return newest, "cleared", true
+	case oldest > since+1:
+		return newest, "rolled", true
+	default:
+		return since, "", false
+	}
 }
 
 // dispatchEvtEvents 把一批事件映射到告警策略（机制在 winapi，策略在此）。
