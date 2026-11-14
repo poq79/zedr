@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 700" font-family="ui-monospace,'Cascadia Mono',Consolas,Menlo,monospace">
+  <!-- Z-EDR architecture · Carbon dark · detection-first, user-mode -->
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3FB984"/>
+    </marker>
+    <marker id="arrG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8A9099"/>
+    </marker>
+    <marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#D9A62E"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="700" fill="#0B0C0E"/>
+  <rect x="0.5" y="0.5" width="1239" height="699" fill="none" stroke="#1F2124"/>
+
+  <!-- ================= column 1 : endpoint ================= -->
+  <text x="36" y="40" fill="#9BA1A6" font-size="12" letter-spacing="2">WINDOWS ENDPOINT · USER MODE ONLY</text>
+  <rect x="36" y="56" width="420" height="596" rx="10" fill="#101114" stroke="#26282C"/>
+
+  <!-- agent box -->
+  <rect x="58" y="78" width="376" height="452" rx="8" fill="#15171A" stroke="#3FB984" stroke-opacity="0.55"/>
+  <text x="76" y="108" fill="#E6E8EA" font-size="15" font-weight="bold">zedr-agent</text>
+  <text x="180" y="108" fill="#8A9099" font-size="11">· no driver · no hook · no injection</text>
+
+  <text x="76" y="134" fill="#9BA1A6" font-size="11" letter-spacing="1">COLLECT (polling + event streams)</text>
+  <g font-size="11" fill="#C9CDD2">
+    <rect x="76"  y="144" width="112" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="86"  y="160">process</text>
+    <rect x="196" y="144" width="112" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="206" y="160">file drop</text>
+    <rect x="316" y="144" width="100" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="326" y="160">USN</text>
+    <rect x="76"  y="174" width="112" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="86"  y="190">persistence</text>
+    <rect x="196" y="174" width="112" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="206" y="190">registry</text>
+    <rect x="316" y="174" width="100" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="326" y="190">netwatch</text>
+  </g>
+
+  <text x="76" y="226" fill="#9BA1A6" font-size="11" letter-spacing="1">5-LAYER DETECTION PIPELINE</text>
+  <g font-size="11.5">
+    <rect x="76"  y="238" width="340" height="30" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="90"  y="258" fill="#E6E8EA">L1  fingerprint  <tspan fill="#8A9099">sha256 · authenticode · path</tspan></text>
+    <rect x="76"  y="274" width="340" height="30" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="90"  y="294" fill="#E6E8EA">L2  keyword      <tspan fill="#8A9099">Aho-Corasick on cmdline</tspan></text>
+    <rect x="76"  y="310" width="340" height="30" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="90"  y="330" fill="#E6E8EA">L3  rules        <tspan fill="#8A9099">Sigma-style DSL · 44 built-in</tspan></text>
+    <rect x="76"  y="346" width="340" height="30" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="90"  y="366" fill="#E6E8EA">L4  lineage      <tspan fill="#8A9099">parent-child baselines</tspan></text>
+    <rect x="76"  y="382" width="340" height="30" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="90"  y="402" fill="#E6E8EA">L5  fusion       <tspan fill="#8A9099">score · allowlist · dedup</tspan></text>
+  </g>
+  <g stroke="#3FB984" stroke-opacity="0.7">
+    <line x1="246" y1="268" x2="246" y2="273"/>
+    <line x1="246" y1="304" x2="246" y2="309"/>
+    <line x1="246" y1="340" x2="246" y2="345"/>
+    <line x1="246" y1="376" x2="246" y2="381"/>
+  </g>
+
+  <text x="76" y="442" fill="#9BA1A6" font-size="11" letter-spacing="1">EXTRAS</text>
+  <g font-size="11" fill="#C9CDD2">
+    <rect x="76" y="452" width="164" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="86" y="468">attack-chain engine</text>
+    <rect x="248" y="452" width="168" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="258" y="468">ransom canaries</text>
+    <rect x="76" y="482" width="164" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="86" y="498">disk spool (offline)</text>
+    <rect x="248" y="482" width="168" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/><text x="258" y="498">local panel data API</text>
+  </g>
+  <text x="76" y="522" fill="#8A9099" font-size="10.5">~1.4% CPU · ~34 MB RSS · adaptive scan (TOCTOU = honest gap)</text>
+
+  <!-- zedr-ui box -->
+  <rect x="58" y="548" width="376" height="84" rx="8" fill="#15171A" stroke="#2C2F34"/>
+  <text x="76" y="576" fill="#E6E8EA" font-size="14">zedr-ui</text>
+  <text x="140" y="576" fill="#8A9099" font-size="11">local tray panel · hygiene views</text>
+  <text x="76" y="598" fill="#8A9099" font-size="10.5">WebView2 / browser fallback · talks to agent on loopback :8843 (token)</text>
+  <path d="M246 548 C 246 540, 246 538, 246 534" fill="none" stroke="#8A9099" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrG)"/>
+
+  <!-- ================= column 2 : server ================= -->
+  <text x="560" y="40" fill="#9BA1A6" font-size="12" letter-spacing="2">CONTROL SERVER</text>
+  <rect x="560" y="56" width="400" height="596" rx="10" fill="#101114" stroke="#26282C"/>
+
+  <rect x="582" y="78" width="356" height="360" rx="8" fill="#15171A" stroke="#3FB984" stroke-opacity="0.55"/>
+  <text x="600" y="108" fill="#E6E8EA" font-size="15" font-weight="bold">zedr-server</text>
+  <text x="708" y="108" fill="#8A9099" font-size="11">· single Go binary · embedded UI</text>
+
+  <g font-size="11.5" fill="#C9CDD2">
+    <rect x="600" y="126" width="320" height="28" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="145">ingest  <tspan fill="#8A9099">per-agent rate limit · backpressure</tspan></text>
+    <rect x="600" y="162" width="320" height="28" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="181">SQLite  <tspan fill="#8A9099">alerts · incidents · assets · audit</tspan></text>
+    <rect x="600" y="198" width="320" height="28" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="217">console API + JWT/RBAC + SSE</text>
+    <rect x="600" y="234" width="320" height="28" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="253">rule / IOC / intel packs  <tspan fill="#D9A62E">HMAC-signed</tspan></text>
+    <rect x="600" y="270" width="320" height="28" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="289">incident &amp; attack-chain clustering</text>
+    <rect x="600" y="306" width="320" height="28" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="325">notifications  <tspan fill="#8A9099">webhook · IM · Syslog CEF</tspan></text>
+    <rect x="600" y="342" width="320" height="28" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="361">live-query proxy  <tspan fill="#8A9099">read-only whitelist</tspan></text>
+    <rect x="600" y="378" width="320" height="28" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="397">MCP tools  <tspan fill="#8A9099">10 read-only · audited</tspan></text>
+    <rect x="600" y="414" width="320" height="24" rx="5" fill="#171A1D" stroke="#2C2F34"/><text x="614" y="431" fill="#C9CDD2">/health · /ready · /metrics <tspan fill="#8A9099">(Prometheus)</tspan></text>
+  </g>
+
+  <!-- AI box -->
+  <rect x="582" y="458" width="356" height="112" rx="8" fill="#15171A" stroke="#2C2F34"/>
+  <text x="600" y="486" fill="#E6E8EA" font-size="14">AI triage / hunting / investigation</text>
+  <text x="600" y="508" fill="#8A9099" font-size="10.5">grounded citations · prompt-injection hardened · DSL→SQL only</text>
+  <text x="600" y="526" fill="#8A9099" font-size="10.5">deterministic fallback when no model · per-slot model routing</text>
+  <rect x="600" y="536" width="320" height="24" rx="4" fill="#1B1D21" stroke="#2C2F34"/>
+  <text x="614" y="552" fill="#C9CDD2" font-size="11">pluggable provider  <tspan fill="#8A9099">(OpenAI-compatible / volc / ollama)</tspan></text>
+
+  <!-- response box -->
+  <rect x="582" y="590" width="356" height="42" rx="8" fill="#15171A" stroke="#5A3038"/>
+  <text x="600" y="609" fill="#E6E8EA" font-size="11.5">response: terminate · quarantine</text>
+  <text x="600" y="625" fill="#D98A8F" font-size="10.5">off by default · two switches · human approval · audited</text>
+
+  <!-- ================= column 3 : consumers ================= -->
+  <text x="988" y="40" fill="#9BA1A6" font-size="12" letter-spacing="2">ANALYSTS &amp; INTEGRATIONS</text>
+  <rect x="988" y="56" width="216" height="596" rx="10" fill="#101114" stroke="#26282C"/>
+
+  <rect x="1006" y="86" width="180" height="72" rx="8" fill="#15171A" stroke="#2C2F34"/>
+  <text x="1022" y="112" fill="#E6E8EA" font-size="13">web console</text>
+  <text x="1022" y="132" fill="#8A9099" font-size="10.5">React · REST + SSE</text>
+  <path d="M1006 122 C 962 122, 960 240, 952 240" fill="none" stroke="#3FB984" stroke-width="1.4" marker-end="url(#arr)"/>
+
+  <rect x="1006" y="180" width="180" height="72" rx="8" fill="#15171A" stroke="#2C2F34"/>
+  <text x="1022" y="206" fill="#E6E8EA" font-size="13">AI assistant</text>
+  <text x="1022" y="226" fill="#8A9099" font-size="10.5">scoped chat · tool trace</text>
+  <path d="M1006 216 C 962 216, 960 300, 952 300" fill="none" stroke="#3FB984" stroke-width="1.4" marker-end="url(#arr)"/>
+
+  <rect x="1006" y="274" width="180" height="72" rx="8" fill="#15171A" stroke="#2C2F34"/>
+  <text x="1022" y="300" fill="#E6E8EA" font-size="13">MCP clients</text>
+  <text x="1022" y="320" fill="#8A9099" font-size="10.5">read-only skill pack</text>
+  <path d="M1006 310 C 962 310, 960 396, 952 396" fill="none" stroke="#3FB984" stroke-width="1.4" marker-end="url(#arr)"/>
+
+  <rect x="1006" y="368" width="180" height="72" rx="8" fill="#15171A" stroke="#2C2F34"/>
+  <text x="1022" y="394" fill="#E6E8EA" font-size="13">SOC plumbing</text>
+  <text x="1022" y="414" fill="#8A9099" font-size="10.5">webhook · IM · Syslog CEF</text>
+  <path d="M1006 404 C 962 404, 960 440, 952 440" fill="none" stroke="#3FB984" stroke-width="1.4" marker-end="url(#arr)"/>
+
+  <rect x="1006" y="462" width="180" height="60" rx="8" fill="#15171A" stroke="#2C2F34" stroke-dasharray="5 4"/>
+  <text x="1022" y="486" fill="#C9CDD2" font-size="12">LLM provider</text>
+  <text x="1022" y="504" fill="#8A9099" font-size="10.5">optional · deterministic w/o</text>
+  <path d="M1006 492 C 960 492, 948 520, 940 520" fill="none" stroke="#8A9099" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrG)"/>
+
+  <text x="1006" y="560" fill="#8A9099" font-size="10.5">deploy bundle:</text>
+  <text x="1006" y="578" fill="#C9CDD2" font-size="11">install-agent.ps1</text>
+  <text x="1006" y="596" fill="#8A9099" font-size="10.5">idempotent · stable exits</text>
+  <text x="1006" y="614" fill="#8A9099" font-size="10.5">onboarding drawer in UI</text>
+
+  <!-- ================= inter-column arrows ================= -->
+  <!-- agent -> server -->
+  <path d="M434 200 L 556 200" fill="none" stroke="#3FB984" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="440" y="190" fill="#3FB984" font-size="10">alerts · heartbeat</text>
+  <text x="440" y="216" fill="#8A9099" font-size="10">inventory · results</text>
+
+  <!-- server -> agent -->
+  <path d="M556 250 L 434 250" fill="none" stroke="#D9A62E" stroke-width="1.6" marker-end="url(#arrA)"/>
+  <text x="440" y="240" fill="#D9A62E" font-size="10">signed rule packs</text>
+  <text x="440" y="266" fill="#8A9099" font-size="10">commands · drills</text>
+
+  <!-- tunnel -->
+  <path d="M434 300 C 490 300, 500 330, 556 330" fill="none" stroke="#8A9099" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrG)"/>
+  <text x="440" y="292" fill="#8A9099" font-size="10">outbound tunnel</text>
+
+  <text x="36" y="678" fill="#6E747B" font-size="10.5">Z-EDR · detection-first EDR · everything above runs in user mode — uninstall leaves no trace</text>
+</svg>

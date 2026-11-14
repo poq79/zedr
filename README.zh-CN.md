@@ -1,72 +1,131 @@
 # Z-EDR
 
-**面向 Windows 主机的检测优先、用户态 EDR。**
+**面向 Windows 主机的检测优先、用户态 EDR——配一个 AI 原生的调查控制台。**
 
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%20Server%202016%2B-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows-server)
-[![Version](https://img.shields.io/badge/version-0.9.7-informational)](#)
+[![Version](https://img.shields.io/badge/version-0.9.14-informational)](#)
 
 [English](README.md) | **中文**
 
-Z-EDR 在 Windows 终端上记录进程、文件落地与持久化遥测，用五层检测流水线
-（映射 MITRE ATT&CK）打分，并提供带**人工审批处置**的调查控制台。
+Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与事件日志遥测，用
+五层检测流水线（映射 MITRE ATT&CK）打分，把告警聚类为事件，并为分析师提供
+带 AI 研判、实时取证与**人工审批处置**的调查控制台。
 
 全部能力在**用户态、低侵入**前提下实现——**零内核驱动、零 Hook、零进程注入、
-不做执行前拦截**。Z-EDR 是 *EDR*（检测与响应），不是 *EPP*（执行前防御）。
+不做执行前拦截**。Z-EDR 是 *EDR*（检测与响应），不是 *EPP*（执行前防御），
+卸载后不留痕迹。
 
 ---
 
+## 控制台一览
+
+<p align="center">
+  <img src="assets/console-overview.png" alt="Z-EDR 管理台——值班简报、告警趋势、严重度分布、ATT&CK 命中" width="100%">
+</p>
+<p align="center"><sub>今日值班简报（确定性聚合，零模型调用）· 告警趋势与严重度分布 · 主机 / 规则 / ATT&CK 排行</sub></p>
+
+<p align="center">
+  <img src="assets/console-alert-detail.png" alt="告警证据链——分值构成、命令行、命中信号、血缘链" width="49%">
+  <img src="assets/console-attack-matrix.png" alt="ATT&CK 矩阵——命中数与规则覆盖" width="49%">
+</p>
+<p align="center"><sub>每条告警都带可解释证据链——左 · ATT&CK 覆盖矩阵（命中 vs 静态覆盖）——右</sub></p>
+
+<p align="center">
+  <img src="assets/console-incidents.png" alt="事件——告警聚类为攻击链，带处置状态机" width="49%">
+  <img src="assets/console-rules.png" alt="规则中心——44 条内置规则，严重度 / 分值 / ATT&CK / 观察模式" width="49%">
+</p>
+<p align="center"><sub>告警聚类为事件链并配处置状态机——左 · 规则中心支持观察模式与一键转正——右</sub></p>
+
+<p align="center">
+  <img src="assets/console-hosts.png" alt="主机终端——在线状态、CPU、内存、待处置、心跳" width="49%">
+  <img src="assets/console-host-onboard.png" alt="接入新主机——部署包、注册令牌、一条安装命令" width="49%">
+</p>
+<p align="center"><sub>主机终端视图，逐探针资源占用——左 · 三步接入（部署包 + 令牌 + 一条命令）——右</sub></p>
+
+<p align="center">
+  <img src="assets/console-host-detail.png" alt="主机详情——13 个调查 Tab，实时探针状态" width="49%">
+  <img src="assets/console-ai-platform.png" alt="AI 平台——统一接入、任务槽位、预算、评测门禁" width="49%">
+</p>
+<p align="center"><sub>主机详情：服务 / 计划任务 / 自启动 / 实时文件 / 资产侦查 / 安全基线 / 账户 / 变更——左 · AI 平台：一个 Provider、按任务槽位、预算与缓存热更新——右</sub></p>
+
+<p align="center">
+  <img src="assets/console-alerts.png" alt="告警中心——严重度筛选、分值、处置" width="49%">
+  <img src="assets/console-hunt.png" alt="AI 狩猎——自然语言编译为安全可审的 DSL" width="49%">
+</p>
+<p align="center"><sub>告警中心：严重度 / 结论 / 状态三向筛选——左 · 自然语言狩猎编译为安全 DSL（模型接触不到 SQL）——右</sub></p>
+
+<p align="center">
+  <img src="assets/console-login.png" alt="登录页——分屏呈现五层检测流水线" width="75%">
+</p>
+<p align="center"><sub>控制台入口：登录页同时是五层检测流水线的产品导览</sub></p>
+
 ## 核心能力
 
-- **五层检测**——静态指纹、关键词匹配、36 条内置行为规则（Sigma 风格 JSON DSL，
-  支持服务端下发与热更新）、父子链血缘基线、分值融合。每条告警都带可解释证据链。
-- **行为遥测**——文件落地监控（`ReadDirectoryChangesW` 订阅高价值目录）+
-  **USN Journal 断点补采（探针停机期间落地的文件，启动后回放）** +
-  持久化项监控（Run/RunOnce、启动目录、服务、计划任务、Winlogon、IFEO），
-  首次运行只建基线不告警。
-- **可信投递**——告警先落磁盘 spool（分段 NDJSON、有界、重启/断网后重放），
-  规则包加载期严格校验（未知字段/操作符直接拒绝，不再静默永不命中），
-  服务端按终端做上报背压，保护数据库。
-- **调查工作台**——告警聚类为事件、同主机时间线、防篡改完整性链审计、
-  AI 研判（结论强制引用证据、抗提示词注入、后端可插拔、无模型时确定性降级）、
-  自然语言狩猎（编译为安全 DSL，永不生成 SQL）。
+- **五层检测**——静态指纹、关键词匹配、Sigma 风格 JSON DSL 行为规则
+  （服务端下发、热更新）、父子链血缘基线、分值融合。每条告警都带可解释证据链。
+- **宽面行为遥测**——文件落地监控、**USN Journal 断点补采（探针停机期间落地的
+  文件，启动后回放）**、持久化项监控（首验只建基线）、注册表自启动键实时守护、
+  网络行为检测（端口扫描 / 扫探 / 横向扇出）、勒索防御（透明诱饵 +
+  删除/改名速率）、Windows 事件日志接入、主机资产清单变更事件。
+- **攻击链关联**——端侧 EQL sequence 式状态机把离散信号串成链
+  （落地→执行→C2、持久化→运行、注入→外联），每一阶段回指来源告警。
+- **AI 原生调查**——研判结论强制引用证据、抗提示词注入、无模型时确定性降级；
+  自然语言狩猎编译为安全 DSL；Agentic 告警自动调查；跨告警事件叙事；
+  控制台内 AI 助手；critical 告警值班队列——全部经统一的 AI 配置中心路由：
+  按任务槽位配模型、提示词版本化覆盖、预算/缓存热更新、44 条合成夹具 +
+  确定性评分器的评测门禁。
+- **实时取证**——纯出站 yamux 隧道（零监听），30 个只读调查端点
+  （进程、连接、文件、注册表、事件日志、计划任务、服务、驱动、登录会话、
+  ARP/路由/DNS 缓存、USN、PE 分析、证据 zip 收集），管理台与 MCP 客户端同享。
+- **规模化运营**——终端注册 + 三步接入、规则 / IOC / 情报签名下发
+  （HMAC，v1/v2 双签名兼容混合舰队）、规则中心（观察模式：观察 → 计数 → 转正）、
+  ATT&CK 覆盖矩阵、事件处置状态机与 MTTA、IM/邮件通知、每日备份、
+  Prometheus 指标、传感器失联告警、签名探针自升级。
 - **人工审批处置**——`terminate` 与文件 `quarantine`/`restore` 受服务端 + 探针
-  双层开关控制，**默认关闭**，所有动作进审计。
-- **规模化运营**——终端注册、规则/IOC 签名下发（HMAC）、ATT&CK 覆盖矩阵、
-  10 节主机资产清单与变更事件、实时调查隧道（纯出站、只读白名单）、
-  每日备份、Webhook + Syslog CEF 通知、Prometheus 指标。
-- **低占用**——250+ 进程、2s 轮询下约 1.4% CPU / 34MB 内存（空闲自适应退避）。
+  双层开关控制，**默认关闭**，所有动作进审计。检测演练（五步受控自测）
+  同样双层开关、默认关闭。
+- **低占用，有实测**——参考主机（约 250 进程、2s 扫描间隔、空闲自适应退避）
+  实测 CPU 0.68% / 内存 24.7 MB；单进程检测 ≈25ms；服务端接入 ≈871 条/s。
 
 ## 设计原则
 
 1. **只做检测，不做执行前拦截。** 不挂文件系统过滤、不阻止进程启动——
    事后负责：记录、发现、调查、响应。
-2. **用户态、低侵入。** 只用文档化的用户态 API（`NtQuerySystemInformation`、
-   `ReadDirectoryChangesW`、注册表/服务枚举），不修改系统、不注入进程，
+2. **用户态、低侵入。** 只用文档化的用户态 API，不修改系统、不注入进程，
    卸载后不留痕迹。
 3. **响应是显式可选项。** 没有明确配置与人工审批，什么都不会被杀、不会被动。
 4. **诚实接受代价。** 轮询采集对短命进程存在 TOCTOU 盲区，且无自保护——
-   刻意的取舍，理由记录在仓库历史中。
+   实测结果如实发布，包括漏检。见[测试](#测试)与已知边界清单。
 
 ## 架构
 
-```mermaid
-flowchart LR
-    subgraph Host["Windows 主机"]
-        A["zedr-agent<br/>采集 + 五层检测"]
-        U["zedr-ui<br/>本地面板 :8843"]
-    end
-    A -- "HTTPS：告警 / 心跳 / 规则" --> S["zedr-server<br/>REST + SQLite + 内嵌管理台 :8080"]
-    U -. "回环 API（令牌）" .-> A
-    S --- B["浏览器管理台"]
-```
+<p align="center">
+  <img src="assets/architecture.svg" alt="Z-EDR 架构：用户态探针五层流水线、总控服务端、分析师与集成面" width="100%">
+</p>
 
 | 组件 | 二进制 | 职责 |
 |---|---|---|
-| 总控服务端 | `zedr-server.exe` | REST API、SQLite、内嵌管理台、JWT/RBAC、规则与 IOC 下发 |
-| 终端探针 | `zedr-agent.exe` | 采集 + 检测 + 上报；可装为 Windows 服务 |
-| 桌面面板 | `zedr-ui.exe` | WebView2 本机态势窗口（缺失运行时回退浏览器） |
-| 采集自检 | `zedr-diag.exe` | 采集层自检（`-compare` 引擎对比、`-persist`、`-usn` 补采探针、`-hold`、`-spawn`） |
+| 总控服务端 | `zedr-server.exe` | REST API、SQLite、内嵌管理台、JWT/RBAC、签名规则/IOC/情报下发、AI 编排、MCP 工具 |
+| 终端探针 | `zedr-agent.exe` | 采集 + 检测 + 攻击链引擎 + 上报；可装为 Windows 服务 |
+| 桌面面板 | `zedr-ui.exe` | WebView2 本机态势与体检窗口（缺失运行时回退浏览器） |
+| 采集自检 | `zedr-diag.exe` | 采集层自检（`-compare`、`-persist`、`-usn`、`-hold`、`-spawn`、`-chaintest`、`-netburst`、`-memtestout`） |
+
+## 检测模型
+
+| 层 | 名称 | 典型信号 |
+|---|---|---|
+| L1 | 静态指纹 | 已知恶意 SHA256、Authenticode（含 catalog 目录签名）、路径信誉 |
+| L2 | 关键词 | Aho-Corasick 多模式一次扫描命令行 |
+| L3 | 行为规则 | Sigma 风格 JSON DSL 规则，服务端下发、热更新 |
+| L4 | 血缘图 | 父子链频次基线、稀有组合、孤儿进程 |
+| L5 | 融合 | 阈值定级（≥70 恶意 / ≥38 可疑）、白名单、去重、冷启动静默 |
+
+流水线之外，专职检测器族以独立告警 ID 输出：`CHAIN-*`（攻击链）、
+`NW-001..005`（网络行为）、`FILE-CANARY` / `FILE-RANSOM`（勒索防御）、
+`EVT-*`（事件日志）、`INV-*`（资产漂移）、`SEN-OFFLINE`（传感器失联）。
+检测**演练**可让单台主机端到端彩排五种受控自测（进程链、端口扫描、服务事件、
+注册表自启动、诱饵触碰）——全部自造样本、双层开关、默认关闭。
 
 ## 快速开始
 
@@ -83,15 +142,21 @@ cp .env.example .env             # 至少设置 HG_SERVER_JWT_SECRET 与 HG_SERV
 
 管理台：`http://127.0.0.1:8080` · 本地面板：`http://127.0.0.1:8843`（仅回环）。
 
+**桌面面板**：运行 `bin\zedr-ui.exe` 得到原生无边框窗口（自绘标题栏、托盘
+通知、关闭到托盘）。它自动连接本机探针，探针未运行时会拉起。UI 进程不在
+后台常驻——关窗即释放内存，托盘通知器与探针服务继续值守。
+
+检测之外，本地面板带只读体检视图：已装软件（含隐藏卸载器标记）、
+Autoruns 式自启动审计（签名 / 文件缺失标记）、安全姿势与补丁检查
+（绿黄红 + 理由）、网络暴露面（监听端口 → 进程、主机、代理）、浏览器扩展
+盘点——只给证据与指引，不做一键"修复"。
+
 把探针装成 Windows 服务（自动配置失败恢复策略）：
 
 ```powershell
 .\bin\zedr-agent.exe -install     # 安装并启动，开机自启
 .\bin\zedr-agent.exe -uninstall   # 停止并卸载
 ```
-
-全部配置走环境变量（`HG_*`），启动时集中校验——每一项见
-[`.env.example`](.env.example) 内的注释。
 
 ### 部署到第二台机器
 
@@ -103,19 +168,10 @@ cp .env.example .env             # 至少设置 HG_SERVER_JWT_SECRET 与 HG_SERV
 ```
 
 脚本幂等（重复执行 = 重装），退出码稳定（0 上线 / 2 权限 / 4 参数），
-运维平台按 `-status -json` 的 `online` 字段判断接入结果；GPO/Intune 等
-MSI 分发见 `.env.example` 的 `HG_SERVER_DEPLOY_PACKAGE` 与私仓部署文档。
-不带参数的 `-install` 仍可用（本地模式，安装期会给出明确警告）。
+运维平台按 `-status -json` 的 `online` 字段判断接入结果。
 
-## 检测模型
-
-| 层 | 名称 | 典型信号 |
-|---|---|---|
-| L1 | 静态指纹 | 已知恶意 SHA256、Authenticode（含 catalog 目录签名）、路径信誉 |
-| L2 | 关键词 | Aho-Corasick 多模式一次扫描命令行 |
-| L3 | 行为规则 | 36 条 Sigma 风格 JSON DSL 规则，服务端下发、热更新 |
-| L4 | 血缘图 | 父子链频次基线、稀有组合、孤儿进程 |
-| L5 | 融合 | 阈值定级（≥70 恶意 / ≥38 可疑）、白名单、去重、冷启动静默 |
+全部配置走环境变量（`HG_*`），启动时集中校验——每一项见
+[`.env.example`](.env.example) 内的注释。
 
 ## 安全默认
 
@@ -125,6 +181,9 @@ MSI 分发见 `.env.example` 的 `HG_SERVER_DEPLOY_PACKAGE` 与私仓部署文�
 | 文件隔离 / 恢复 | **关** | `HG_SERVER_QUARANTINE_ENABLED` + `HG_AGENT_QUARANTINE_ENABLED` |
 | 实时文件内容读取 | **关** | `HG_SERVER_LIVEQUERY_FILEREAD` |
 | 实时查询（只读） | 开 | `HG_SERVER_LIVEQUERY_ENABLED` |
+| 证据 zip 收集 | **关** | `HG_SERVER_LIVEQUERY_COLLECT` |
+| 检测演练 | **关** | `HG_SERVER_DRILL_ENABLED` + `HG_AGENT_DRILL_ENABLED` |
+| 探针自升级 | **关** | 见 `.env.example` |
 
 处置动作全部进审计、受 RBAC 管控、永不自动执行。
 
@@ -132,7 +191,9 @@ MSI 分发见 `.env.example` 的 `HG_SERVER_DEPLOY_PACKAGE` 与私仓部署文�
 
 - **终端侧**（API-Key）：注册、心跳、告警上报、规则拉取、指令回执、隧道升级。
 - **管理台**（JWT）：概览、告警、事件、主机、资产清单、指令、实时查询、
-  ATT&CK 矩阵、IOC、规则、白名单、审计、账号、SSE 实时流。
+  ATT&CK 矩阵、IOC/情报、规则、白名单、审计、账号、SSE 实时流。
+- **MCP 工具**（Bearer 令牌，只读）：告警/事件/情报查询 + `host_live`
+  端侧实时取证。每次调用进审计；控制台 AI 助手共享同一套工具。
 - **公开**：`/health`、`/ready`、`/metrics`（Prometheus 文本格式）。
 
 完整端点表与 RBAC 矩阵见仓库内部文档。
@@ -148,6 +209,16 @@ python scripts/scenarios.py all       # 场景矩阵 / 误报面 / 性能 / 压�
 
 测试样本仅限自编二进制、构造的命令行与 EICAR 字符串——**绝不下载外部可执行文件**。
 
+**实测结果，如实发布**（完整方法论见仓库内测试报告）：
+
+- 场景矩阵：17 个剧本场景——**13 个干净检出**；2 个为已知弱信号校准项、
+  2 个为环境/设计内盲区（有记录，不隐瞒）。
+- 稳态误报：长期运行的参考主机上为 **0**（历轮最差一次 1/256）。
+- 攻击链：4 条链规则中 3 条端到端验证通过；第 4 条（暴破→成功）需要
+  真实暴破流量，无法安全自造。
+- AI 评测门禁：44 条合成夹具（26 分诊 + 18 提示词注入）+ 确定性评分器；
+  首轮基线全绿（一致率 / 召回 / 注入拦截）。
+
 ## 已知边界
 
 - 采集是用户态轮询（默认 2s，自适应退避）。存活短于一个周期的进程可能漏检
@@ -160,7 +231,11 @@ python scripts/scenarios.py all       # 场景矩阵 / 误报面 / 性能 / 压�
   该批；常规情况下由服务端 fingerprint 去重吸收。
 - 按设计不做内核级阻断，也无自保护（探针可被终止）。
 - 签名校验走本地缓存，不含在线吊销检查。
-- IOC 库（SHA256）由管理台手工维护并签名下发；暂无自动情报源接入。
+- IOC/情报库由管理台手工维护并签名下发；暂无自动情报源接入。
+- **Linux 探针（实验性）**：Linux 构建与 Windows 探针共享检测引擎、procfs
+  采集、netwatch、攻击链、勒索诱饵与持久化基线（cron/systemd/ssh）。
+  目前仅交叉编译与单测验证——**尚未在真实 Linux 硬件上验收**；响应指令、
+  内存扫描、事件日志接入与 ETW 为 Windows 独有。
 
 ## 贡献
 
