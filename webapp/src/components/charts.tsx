@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { EmptyState, Skeleton } from './ui/basics';
 import { ShieldCheck } from 'lucide-react';
 import { SEV_LABEL } from '../lib/format';
@@ -7,14 +8,35 @@ import { SEV_LABEL } from '../lib/format';
 export interface HourPoint { bucket: string; total: number; critical: number }
 
 export function TimelineChart({ points, loading }: { points?: HourPoint[]; loading?: boolean }) {
-  if (loading) {
-    return <div className="px-1 py-3"><Skeleton className="h-[130px] w-full" /></div>;
-  }
-  if (!points || !points.length) {
-    return <EmptyState icon={<ShieldCheck size={20} />} title="所选时间范围内没有告警——环境安静" />;
-  }
+  // viewBox 宽度必须与容器实测像素 1:1——否则 preserveAspectRatio="none" 会把
+  // 坐标系连同 <text> 一起横向拉伸，时间刻度被拉成"2 3 : 0 0"（2026-11-14 用户实测）。
+  // 测量 div 常驻（loading/空态也不卸载），保证 observer 在数据到达前已挂上。
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [vw, setVw] = useState(0);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      setVw((prev) => (Math.abs(prev - w) < 1 ? prev : Math.round(w)));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-  const W = 680, H = 150, padL = 34, padB = 20, padT = 8;
+  let body: React.ReactNode;
+  if (loading) {
+    body = <div className="px-1 py-3"><Skeleton className="h-[130px] w-full" /></div>;
+  } else if (!points || !points.length) {
+    body = <EmptyState icon={<ShieldCheck size={20} />} title="所选时间范围内没有告警——环境安静" />;
+  } else {
+    body = <TimelineSvg points={points} width={vw} />;
+  }
+  return <div ref={wrapRef}>{body}</div>;
+}
+
+function TimelineSvg({ points, width }: { points: HourPoint[]; width: number }) {
+  const W = width || 680, H = 150, padL = 34, padB = 20, padT = 8;
   const innerW = W - padL - 8, innerH = H - padB - padT;
   const max = Math.max(1, ...points.map((p) => p.total));
   const bw = innerW / points.length;
