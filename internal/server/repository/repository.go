@@ -95,6 +95,10 @@ type AgentRepo interface {
 	List(ctx context.Context) ([]domain.Agent, error)
 	UpdateHeartbeat(ctx context.Context, id string, at time.Time, procCount int, cpu, mem float64, ruleVersion int, ip, version string) error
 	MarkOfflineBefore(ctx context.Context, threshold time.Time) (int64, error)
+	// StaleOnline 列出仍标记 online 但 last_seen 已越过阈值的终端——
+	// MarkOffline 先取转变清单再翻转：失联告警需要"逐台转变"事实，
+	// 只返回 count 的翻转查询给不了。
+	StaleOnline(ctx context.Context, before time.Time) ([]domain.Agent, error)
 	Delete(ctx context.Context, id string) error
 	Count(ctx context.Context) (int, error)
 }
@@ -110,6 +114,10 @@ type AlertRepo interface {
 	List(ctx context.Context, f domain.AlertFilter) ([]domain.Alert, int, error)
 	UpdateStatus(ctx context.Context, id string, status domain.AlertStatus, by, note string, at time.Time) error
 	CountOpenByAgent(ctx context.Context) (map[string]int, error)
+	// FindOpenByRule 返回某终端仍未终态（open/acknowledged）的指定规则告警——
+	// 失联告警（SEN-OFFLINE）的周期去重与恢复结案靠它定位；不进通用
+	// AlertFilter（那是 AI DSL 的面，不为一个服务端内部信号加字段）。
+	FindOpenByRule(ctx context.Context, agentID, ruleID string) ([]domain.Alert, error)
 	// RecycleForAllow 把命中某条白名单的未处置告警批量标记为误报（加白闭环）。
 	RecycleForAllow(ctx context.Context, typ, value, by string, at time.Time) (int64, error)
 	PurgeBefore(ctx context.Context, before time.Time) (int64, error)

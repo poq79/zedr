@@ -1,10 +1,10 @@
 package sqlite
 
 import (
-	"encoding/hex"
-	"crypto/sha256"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +39,29 @@ func (r *alertRepo) insert(ctx context.Context, a *domain.Alert) error {
 }
 
 func (r *alertRepo) Create(ctx context.Context, a *domain.Alert) error { return r.insert(ctx, a) }
+
+// FindOpenByRule 按终端 + 规则 ID 定位未终态告警。rule_ids 落库为 CSV，
+// 规则 ID 全大写带连字符且互不为前缀子串，LIKE 精确匹配足够——
+// 主机内单规则 open 告警个位数，不走通用过滤是刻意的（见接口注释）。
+func (r *alertRepo) FindOpenByRule(ctx context.Context, agentID, ruleID string) ([]domain.Alert, error) {
+	rows, err := r.s.db.QueryContext(ctx,
+		`SELECT `+alertCols+` FROM alerts WHERE agent_id = ? AND status IN ('open','acknowledged')
+		 AND ','||rule_ids||',' LIKE '%,'||?||',%'`,
+		agentID, ruleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Alert, 0, 2)
+	for rows.Next() {
+		a, err := scanAlert(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
 
 // FindDuplicates 批量查重：一批告警的指纹一次性按窗口查询，返回
 // fingerprint → 已存在条目 ID。为什么批量：上报路径是 500 条串行循环，
@@ -388,7 +411,6 @@ func (r *alertRepo) ListInventoryChanges(ctx context.Context, agentID string, li
 	}
 	return out, rows.Err()
 }
-
 
 // IntegrityDigest 计算区间内告警的完整性摘要。
 // 摘要覆盖 id/fingerprint/score/hash 四个"事后最难抵赖"的字段，

@@ -275,6 +275,26 @@ func (r *agentRepo) MarkOfflineBefore(ctx context.Context, threshold time.Time) 
 	return res.RowsAffected()
 }
 
+// StaleOnline 取转变清单：与 MarkOfflineBefore 同一判定条件，先 SELECT 再
+// UPDATE（单维护循环串行调用，微秒级窗口内的增量下一 tick 自然补上）。
+func (r *agentRepo) StaleOnline(ctx context.Context, before time.Time) ([]domain.Agent, error) {
+	rows, err := r.s.db.QueryContext(ctx,
+		`SELECT `+agentCols+` FROM agents WHERE status = 'online' AND last_seen_at < ?`, millis(before))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Agent, 0, 8)
+	for rows.Next() {
+		a, err := scanAgent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
 func (r *agentRepo) Delete(ctx context.Context, id string) error {
 	_, err := r.s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
 	return err
