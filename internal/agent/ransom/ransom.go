@@ -102,6 +102,13 @@ type Finding struct {
 	Summary  string
 	MITRE    []string
 	Notes    []string // 证据明细（路径/计数/来源），直接进告警证据链
+	// HourlyFP 置位时接线层把指纹按小时分桶（规则+小时），替代默认的
+	// "规则+证据路径"。观察级速率发现用：持续构建/churn 场景下 Top 目录
+	// 随批次漂移，路径指纹互不去重，等于每个冷却周期（15min）都出一行
+	// 新告警（实测 13 天 888 行）；按小时分桶交给服务端窗口合并，强度
+	// 仍由 duplicate 计数保留。升级级（同目录集中/诱饵关联）不置位——
+	// 真实信号值得按目标路径独立成行。
+	HourlyFP bool
 }
 
 // Options 是 Defense 的构造参数。
@@ -668,9 +675,11 @@ func (d *Defense) rateFinding(when time.Time) Finding {
 		"若同时有诱饵文件被触碰会升级为 critical"
 	sev, score := model.SeverityMedium, 45
 	title := "批量删除/改名行为（观察级，疑似勒索加密）"
+	hourly := true
 	if escalate {
 		sev, score = model.SeverityHigh, 60
 		title = "批量删除/改名行为（同目录集中爆发，疑似勒索加密）"
+		hourly = false
 	}
 	return Finding{
 		RuleID:   RuleRansom,
@@ -681,6 +690,7 @@ func (d *Defense) rateFinding(when time.Time) Finding {
 		Summary:  summary,
 		MITRE:    []string{"T1486"}, // Impact: Data Encrypted for Impact
 		Notes:    notes,
+		HourlyFP: hourly,
 	}
 }
 

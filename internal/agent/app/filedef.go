@@ -49,19 +49,25 @@ func canaryDirs() []string {
 
 // emitFileDefenseFinding 把勒索防御 Finding 转成统一告警。
 //
-// 指纹取"规则 + 证据主路径/目录"：同一诱饵的重复命中交给服务端指纹窗口
-// 吸收，不同诱饵/不同目录互不去重；agent 侧 15min 冷却已保证不刷屏。
+// 指纹默认取"规则 + 证据主路径/目录"：同一诱饵的重复命中交给服务端
+// 指纹窗口吸收，不同诱饵/不同目录互不去重；agent 侧 15min 冷却已保证
+// 不刷屏。Finding.HourlyFP 置位（观察级速率发现）时改按小时分桶——
+// 语义见 ransom.Finding 注释。
 func (a *Agent) emitFileDefenseFinding(f ransom.Finding) {
 	fp := f.RuleID
-	for _, n := range f.Notes {
-		for _, prefix := range []string{"path=", "dir="} {
-			if v, ok := strings.CutPrefix(n, prefix); ok && v != "" {
-				fp += ":" + strings.ToLower(v)
+	if f.HourlyFP {
+		fp += ":" + time.Now().UTC().Format("2006010215")
+	} else {
+		for _, n := range f.Notes {
+			for _, prefix := range []string{"path=", "dir="} {
+				if v, ok := strings.CutPrefix(n, prefix); ok && v != "" {
+					fp += ":" + strings.ToLower(v)
+					break
+				}
+			}
+			if fp != f.RuleID {
 				break
 			}
-		}
-		if fp != f.RuleID {
-			break
 		}
 	}
 	a.emitAlert(model.AlertEnvelope{

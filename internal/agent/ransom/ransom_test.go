@@ -502,3 +502,54 @@ func TestRecycleBinChurnExcluded(t *testing.T) {
 		}
 	}
 }
+
+// 观察级速率发现的指纹口径：HourlyFP 置位 → 接线层按小时分桶（持续
+// churn 下 Top 目录随批次漂移，路径指纹互不去重 = 每 15min 冷却期一行，
+// 实测 13 天 888 行）；升级级（同目录集中爆发）保持路径指纹——真实
+// 信号值得按目标独立成行。
+func TestRateFindingHourlyFPScopes(t *testing.T) {
+	// 观察级：达到阈值但未达升级条件（w < 2×阈值）
+	dir := t.TempDir()
+	d, r, ck := newDefense(t, []string{dir}, nil)
+	for i := 0; i < 20; i++ {
+		d.Consume(Event{Kind: "removed",
+			Path:   filepath.Join(dir, fmt.Sprintf("doc%d.docx", i)),
+			Source: "rdcw", When: ck.Now()})
+	}
+	if len(r.fs) != 1 {
+		t.Fatalf("observe findings = %+v, want 1", r.fs)
+	}
+	if !r.fs[0].HourlyFP {
+		t.Fatalf("观察级应置 HourlyFP: %+v", r.fs[0])
+	}
+	if r.fs[0].Severity != model.SeverityMedium {
+		t.Fatalf("观察级应为 medium: %+v", r.fs[0].Severity)
+	}
+
+	// 升级级的定级与指纹口径见 TestRateFindingEscalatedViaBulkWindow：
+	// Consume 逐事件路径到不了 2×阈值（潜伏缺陷，独立切片处理）。
+}
+
+// 升级分支的定级与指纹口径：w≥2×阈值且 Top1 目录占比≥0.6 → high +
+// 保持路径指纹。注意：该分支经 Consume 公开路径不可达（逐事件评估，
+// 每事件最大权重 2，首越值 ≤ 阈值+1 < 2×阈值——2026-11-07 引入的
+// "同目录集中度升级"实际从未在生产触发过，属潜伏缺陷，修复需重排
+// 触发时机，独立切片处理）。此处用包内 pushLocked 直填窗口锁定分支
+// 判定逻辑本身。
+func TestRateFindingEscalatedViaBulkWindow(t *testing.T) {
+	dir := t.TempDir()
+	d, _, ck := newDefense(t, []string{dir}, nil)
+	for i := 0; i < 50; i++ {
+		d.mu.Lock()
+		d.pushLocked(ck.Now(), 1, Event{Kind: "removed",
+			Path: filepath.Join(dir, fmt.Sprintf("doc%d.docx", i)), Source: "rdcw"})
+		d.mu.Unlock()
+	}
+	f := d.rateFinding(ck.Now())
+	if f.RuleID != RuleRansom || f.Severity != model.SeverityHigh {
+		t.Fatalf("集中爆发应升级 high: %+v", f)
+	}
+	if f.HourlyFP {
+		t.Fatalf("升级级不应置 HourlyFP（保持路径指纹）: %+v", f)
+	}
+}
