@@ -1,0 +1,8 @@
+# sudoers 夹具
+Defaults env_reset
+Defaults mail_badpass
+root	ALL=(ALL:ALL) ALL
+%sudo	ALL=(ALL:ALL) ALL
+deploy	ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart app
+ci-runner ALL=(ALL) NOPASSWD: ALL
+#includedir /etc/sudoers.d

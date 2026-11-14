@@ -1,0 +1,9 @@
+# sshd_config 夹具（Debian 风格：Include 在顶部）
+Include /etc/ssh/sshd_config.d/*.conf
+
+PermitRootLogin no
+PubkeyAuthentication yes
+
+Match User backup
+    PasswordAuthentication yes
+    PermitRootLogin yes

@@ -10,9 +10,11 @@
 //	✅ /processes  /netstat  /procinfo  /fs  /fs/stat  /fs/read  /fs/hash
 //	   /fs/search  /fs/grep  /collect  /info  /peers  /persistence  /recon
 //	   /ping  /_catalog
+//	   /accounts（passwd/group/shadow/login.defs）  /sessions（utmp）
+//	   /services（systemd unit）  /tasks（cron + systemd timer）
+//	   /netinfo（/proc/net/arp·route + resolv.conf）  /baseline（Linux 十项）
 //	❌ 501（Windows 专属语义，见 unsupported_linux.go）：/registry /evtlog
-//	   /services /drivers /sessions /usn /ads /analyze /handles /handleowners
-//	   /threads /memscan /netinfo /baseline /accounts /tasks
+//	   /drivers /usn /ads /analyze /handles /handleowners /threads /memscan
 //
 // 数据源接线（组合根职责，本文件只提供能力）：
 //   - Deps.Netstat = liveapi.ProcfsNetstat（/proc/net/tcp 投影）；

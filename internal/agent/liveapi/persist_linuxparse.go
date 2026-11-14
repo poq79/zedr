@@ -31,17 +31,25 @@ type linuxPersistRaw struct {
 	Enabled  bool
 }
 
-// parseCrontabFile 解析 crontab 文本为持久化条目。
+// linuxCronEntry 是一行 crontab 的解析产物。/persistence 与 /tasks 两个
+// 端点共用这一份行语法解析（拆开必漂移：cron 的 user 列/残行/环境行
+// 口径一旦分歧，两个视图对同一台主机的答案就会互相矛盾）。
+type linuxCronEntry struct {
+	Schedule string // "@reboot" 或 "m h dom mon dow"（时间列原样保留）
+	User     string // user 列（系统形态）；spool 形态为空（文件名即用户）
+	Command  string
+}
+
+// parseCrontabEntries 解析 crontab 文本为条目列表（纯行语法，无投影）。
 //
 // withUser 区分两种形态：/etc/crontab 与 /etc/cron.d/* 的行是
 // "m h dom mon dow user command"（6+ 列）；用户 spool（/var/spool/cron/*）
 // 没有 user 列（5 列即命令）。注释行/空行/环境变量行（VAR=value）跳过；
-// @reboot 特殊调度保留——它是"开机自跑"语义，恰是驻留高发位，条目
-// Name 里标注调度串。
+// @reboot 特殊调度保留——它是"开机自跑"语义，恰是驻留高发位。
 //
 // 诚实边界：行级解析不展开 cron 环境变量（PATH 等），命令原样呈现。
-func parseCrontabFile(path string, data []byte, withUser bool) []linuxPersistRaw {
-	var out []linuxPersistRaw
+func parseCrontabEntries(path string, data []byte, withUser bool) []linuxCronEntry {
+	var out []linuxCronEntry
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -52,7 +60,7 @@ func parseCrontabFile(path string, data []byte, withUser bool) []linuxPersistRaw
 			continue
 		}
 		f := strings.Fields(line)
-		var cmd, user string
+		var sched, cmd, user string
 		if strings.HasPrefix(f[0], "@") {
 			// @reboot/@daily 等单字段调度：无 5 列时间规格。
 			// 系统形态 = [@sched, user, cmd...]；spool 形态 = [@sched, cmd...]
@@ -67,6 +75,7 @@ func parseCrontabFile(path string, data []byte, withUser bool) []linuxPersistRaw
 				}
 				cmd = strings.Join(f[1:], " ")
 			}
+			sched = f[0]
 		} else {
 			// 常规行：5 列时间规格（+ user 列）+ 命令
 			minFields := 6 // 5 时间列 + 至少 1 列命令
@@ -76,22 +85,34 @@ func parseCrontabFile(path string, data []byte, withUser bool) []linuxPersistRaw
 			if len(f) < minFields {
 				continue // 残行宁缺毋滥
 			}
+			sched = strings.Join(f[:5], " ")
 			cmd = strings.Join(f[minFields-1:], " ")
 			if withUser {
 				user = f[5]
 			}
 		}
+		out = append(out, linuxCronEntry{Schedule: sched, User: user, Command: cmd})
+	}
+	return out
+}
+
+// parseCrontabFile 把 crontab 条目投影成持久化条目（驻留视角：条目
+// Name = 文件路径，@reboot 等调度语义在名字里可见；Enabled 恒 true——
+// 非 # 行即会被 cron 执行）。
+func parseCrontabFile(path string, data []byte, withUser bool) []linuxPersistRaw {
+	var out []linuxPersistRaw
+	for _, e := range parseCrontabEntries(path, data, withUser) {
 		name := path
-		if strings.HasPrefix(f[0], "@") {
-			name = path + " (" + f[0] + ")" // @reboot 等调度语义在名字里可见
+		if strings.HasPrefix(e.Schedule, "@") {
+			name = path + " (" + e.Schedule + ")" // @reboot 等调度语义在名字里可见
 		}
 		out = append(out, linuxPersistRaw{
 			Source:   "task",
 			Name:     name,
-			Command:  cmd,
-			User:     user,
+			Command:  e.Command,
+			User:     e.User,
 			Location: path,
-			Enabled:  true, // 非 # 行即会被 cron 执行
+			Enabled:  true,
 		})
 	}
 	return out

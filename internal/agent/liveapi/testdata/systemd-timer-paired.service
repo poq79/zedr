@@ -1,0 +1,8 @@
+[Unit]
+Description=Cleanup of apt archives
+ConditionPathExists=/var/cache/apt/archives
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/apt-get autoclean
+User=apt-cleaner

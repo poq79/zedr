@@ -1,0 +1,10 @@
+# /etc/login.defs 夹具（截取与本端点相关的键）
+MAIL_DIR	/var/mail
+UMASK		027
+PASS_MAX_DAYS	90
+PASS_MIN_DAYS	0
+PASS_WARN_AGE	7
+PASS_MIN_LEN	12
+ENV_SUPATH	PATH=/usr/local/sbin:...
+ENV_PATH	PATH=/usr/local/bin:...
+TTYGROUP	tty

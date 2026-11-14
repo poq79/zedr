@@ -1,0 +1,3 @@
+# /etc/profile 夹具（login.defs 无 UMASK 时的兜底口径）
+umask 077
+PATH=/usr/local/bin:...

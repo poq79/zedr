@@ -1,0 +1,8 @@
+root:x:0:
+daemon:x:1:
+bin:x:2:
+wheel:x:10:wheelmember
+sudo:x:27:legacyadmin
+adm:x:4:adm-member
+kali:x:1000:
+sddm:x:64055:

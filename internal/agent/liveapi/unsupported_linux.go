@@ -9,8 +9,13 @@
 // 语义硬凑只会输出失真数据——诚实 501 是设计决定，不是未完成（边界见
 // RESEARCH-LINUX-AGENT §3）。
 //
+// 有对等语义的端点（accounts/sessions/services/tasks/netinfo/baseline）
+// 已在本包各自的 *_linux.go 实现真身；/persistence、/recon 等此前批次
+// 已覆盖。能力矩阵总览见 platform_linux.go 头注释。
+//
 // 未在 Linux 实机验证（本机无 Linux 测试环境）；验证口径 = GOOS=linux
-// 交叉编译 + catalog 注册锁单测（Windows 侧既有）。
+// 交叉编译 + catalog 注册锁单测（Windows 侧既有）+ 各实现文件的中性
+// 解析单测。
 package liveapi
 
 // unsupported_linux.go：平台不支持端点存根。
@@ -23,11 +28,15 @@ import (
 )
 
 // errLinuxUnsupported 构造平台不支持错误（501 + 一句诚实说明）。
+// Public 必须置位：探针侧 httpx.WriteError 对 ≥500 且非 Public 的错误
+// 统一脱敏成"服务内部错误，请稍后重试"，这句行动指引会被吞掉——501 的
+// message 本身就是给操作员的边界说明（2026-11-14 Kali 实测复现）。
 func errLinuxUnsupported(what, why string) error {
 	return &apperr.Error{
 		Code:    apperr.Code("not_implemented"),
 		Message: what + " 是 Windows 专属能力，Linux 探针未实现（诚实边界）：" + why,
 		Status:  http.StatusNotImplemented,
+		Public:  true,
 	}
 }
 
@@ -48,16 +57,8 @@ func (s *server) handleEvtLog(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteError(w, r, errLinuxUnsupported("Windows 事件日志查询", "ETW/事件日志是 Windows 专属遥测面"))
 }
 
-func (s *server) handleServices(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, r, errLinuxUnsupported("Windows 服务枚举", "SCM 服务语义为 Windows 专属（Linux 对等面：systemd unit，见 /persistence）"))
-}
-
 func (s *server) handleDrivers(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteError(w, r, errLinuxUnsupported("内核驱动列表", "EnumDeviceDrivers 是 NT 语义；内核模块排查 v1 不做（用户态探针边界）"))
-}
-
-func (s *server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, r, errLinuxUnsupported("登录会话枚举", "LSA LogonSession 是 Windows 语义，Linux 无对等结构"))
 }
 
 func (s *server) handleUSN(w http.ResponseWriter, r *http.Request) {
@@ -86,25 +87,4 @@ func (s *server) handleThreads(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleMemScan(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteError(w, r, errLinuxUnsupported("内存区域扫描", "VirtualQueryEx 区域语义为 Windows 专属"))
-}
-
-func (s *server) handleNetinfo(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, r, errLinuxUnsupported("网络面快照", "ARP/路由/DNS 缓存/SMB 共享五段当前按 Windows API 采集，Linux 版 v1 未做"))
-}
-
-func (s *server) handleTasks(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, r, errLinuxUnsupported("计划任务全量详情", "Task Scheduler XML 是 Windows 语义（Linux 对等面：cron/systemd，见 /persistence）"))
-}
-
-// HandleAccounts 是 /accounts 的 Linux 存根：NetAPI 账户枚举是 Windows
-// 专属；/etc/passwd 级账户清单 v1 未接入（避免与资产清单口径漂移）。
-func HandleAccounts() http.HandlerFunc {
-	return stubHandler("本地账户枚举", "NetAPI 账户面为 Windows 专属；Linux 账户清单 v1 未接入")
-}
-
-// HandleBaseline 是 /baseline 的 Linux 存根：十项检查全部是 Windows
-// 注册表/Defender 语义，Linux 无对等检查集——输出一堆 info 项是噪音，
-// 诚实 501。
-func HandleBaseline() http.HandlerFunc {
-	return stubHandler("安全基线检查", "十项基线均为 Windows 注册表/Defender 语义，Linux 版检查集 v1 未定义")
 }

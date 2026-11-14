@@ -1,0 +1,3 @@
+# /etc/selinux/config 夹具
+SELINUX=enforcing
+SELINUXTYPE=targeted
