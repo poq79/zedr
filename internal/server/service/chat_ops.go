@@ -276,7 +276,7 @@ func (s *AIService) tryAggregateOps(ctx context.Context, a *domain.Alert) bool {
 func fillOpsFromInvestigation(item *OpsItem, inv *Investigation) {
 	item.Verdict = inv.VerdictSuggestion
 	item.Confidence = inv.Confidence
-	item.Summary = fmt.Sprintf("确定性五步调查：%s（置信 %.0f%%）——%s",
+	item.Summary = fmt.Sprintf("关联核查：%s（置信 %.0f%%）——%s",
 		VerdictLabel(inv.VerdictSuggestion), inv.Confidence*100, verdictAdvice(inv.VerdictSuggestion))
 	item.Findings = nil
 	item.Actions = nil
