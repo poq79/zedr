@@ -45,27 +45,15 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
 
 <p align="center">
   <img src="assets/console-rules.png" alt="Rules center — 44 built-in rules, severity / score / ATT&CK / shadow mode" width="49%">
-  <img src="assets/console-alerts.png" alt="Alert center — severity filters, scores, disposition" width="49%">
+  <img src="assets/console-hunt.png" alt="AI hunting — natural language to a safe, reviewable DSL" width="49%">
 </p>
-<p align="center"><sub>Rules center with shadow mode &amp; one-click promotion — left · alert center with severity / verdict / status filters — right</sub></p>
-
-<p align="center">
-  <img src="assets/console-hosts.png" alt="Host fleet — online state, CPU, memory, pending alerts, heartbeat" width="49%">
-  <img src="assets/console-host-onboard.png" alt="Onboard host — deploy bundle, enrollment token, one-line install" width="49%">
-</p>
-<p align="center"><sub>Fleet view with per-agent resource footprint — left · three-step onboarding (bundle + token + one command) — right</sub></p>
+<p align="center"><sub>Rules center with shadow mode &amp; one-click promotion — left · natural-language hunting compiled to a safe DSL (the model never sees SQL) — right</sub></p>
 
 <p align="center">
   <img src="assets/console-host-detail.png" alt="Host detail — 13 investigation tabs, live agent stats" width="49%">
-  <img src="assets/console-ai-platform.png" alt="AI platform — provider, task slots, budget, eval gate" width="49%">
+  <img src="assets/console-host-onboard.png" alt="Onboard host — deploy bundle, enrollment token, one-line install" width="49%">
 </p>
-<p align="center"><sub>Host detail: services / tasks / autoruns / live files / recon / baseline / accounts / changes — left · AI platform: one provider, per-task slots, budget & cache hot-reload — right</sub></p>
-
-<p align="center">
-  <img src="assets/console-hunt.png" alt="AI hunting — natural language to a safe, reviewable DSL" width="49%">
-  <img src="assets/console-login.png" alt="Login — split screen with the five-layer pipeline story" width="49%">
-</p>
-<p align="center"><sub>Natural-language hunting compiled to a safe DSL (the model never sees SQL) — left · console entry, doubling as a five-layer pipeline tour — right</sub></p>
+<p align="center"><sub>Host detail: services / tasks / autoruns / live files / recon / baseline / accounts / changes — left · three-step onboarding (bundle + token + one command) — right</sub></p>
 
 <p align="center">
   <img src="assets/demo-alert-ai.gif" alt="From evidence chain to AI verdict — citations, confidence, recommended actions" width="62%">

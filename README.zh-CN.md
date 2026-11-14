@@ -44,27 +44,15 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 
 <p align="center">
   <img src="assets/console-rules.png" alt="规则中心——44 条内置规则，严重度 / 分值 / ATT&CK / 观察模式" width="49%">
-  <img src="assets/console-alerts.png" alt="告警中心——严重度筛选、分值、处置" width="49%">
+  <img src="assets/console-hunt.png" alt="AI 狩猎——自然语言编译为安全可审的 DSL" width="49%">
 </p>
-<p align="center"><sub>规则中心支持观察模式与一键转正——左 · 告警中心：严重度 / 结论 / 状态三向筛选——右</sub></p>
-
-<p align="center">
-  <img src="assets/console-hosts.png" alt="主机终端——在线状态、CPU、内存、待处置、心跳" width="49%">
-  <img src="assets/console-host-onboard.png" alt="接入新主机——部署包、注册令牌、一条安装命令" width="49%">
-</p>
-<p align="center"><sub>主机终端视图，逐探针资源占用——左 · 三步接入（部署包 + 令牌 + 一条命令）——右</sub></p>
+<p align="center"><sub>规则中心支持观察模式与一键转正——左 · 自然语言狩猎编译为安全 DSL（模型接触不到 SQL）——右</sub></p>
 
 <p align="center">
   <img src="assets/console-host-detail.png" alt="主机详情——13 个调查 Tab，实时探针状态" width="49%">
-  <img src="assets/console-ai-platform.png" alt="AI 平台——统一接入、任务槽位、预算、评测门禁" width="49%">
+  <img src="assets/console-host-onboard.png" alt="接入新主机——部署包、注册令牌、一条安装命令" width="49%">
 </p>
-<p align="center"><sub>主机详情：服务 / 计划任务 / 自启动 / 实时文件 / 资产侦查 / 安全基线 / 账户 / 变更——左 · AI 平台：一个 Provider、按任务槽位、预算与缓存热更新——右</sub></p>
-
-<p align="center">
-  <img src="assets/console-hunt.png" alt="AI 狩猎——自然语言编译为安全可审的 DSL" width="49%">
-  <img src="assets/console-login.png" alt="登录页——分屏呈现五层检测流水线" width="49%">
-</p>
-<p align="center"><sub>自然语言狩猎编译为安全 DSL（模型接触不到 SQL）——左 · 控制台入口，兼五层流水线导览——右</sub></p>
+<p align="center"><sub>主机详情：服务 / 计划任务 / 自启动 / 实时文件 / 资产侦查 / 安全基线 / 账户 / 变更——左 · 三步接入（部署包 + 令牌 + 一条命令）——右</sub></p>
 
 <p align="center">
   <img src="assets/demo-alert-ai.gif" alt="从证据链到 AI 研判——引用、置信度、建议处置" width="62%">
