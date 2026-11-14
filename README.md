@@ -288,5 +288,9 @@ not make it safe).
 
 ## License
 
-A license is being selected before the first public release — see `LICENSE`
-once added. Until then, all rights reserved.
+Released under the **GNU Affero General Public License v3.0** (`AGPL-3.0-only`)
+— see [LICENSE](LICENSE). The AGPL is the same model used by comparable
+open-source DFIR platforms (e.g. Velociraptor): modifications — including those
+of a version served over a network — must stay under the AGPL.
+
+Copyright © 2026 poq79
