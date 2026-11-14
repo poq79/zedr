@@ -184,8 +184,8 @@ func LoadConfig(version string) (*Config, error) {
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
 	l.Check(strings.HasPrefix(c.ServerURL, "http://") || strings.HasPrefix(c.ServerURL, "https://"),
 		"HG_AGENT_SERVER_URL 必须以 http:// 或 https:// 开头")
-	l.Check(c.Collector == "auto" || c.Collector == "ntquery" || c.Collector == "toolhelp",
-		"HG_AGENT_COLLECTOR 只能是 auto / ntquery / toolhelp")
+	l.Check(validCollector(c.Collector),
+		"HG_AGENT_COLLECTOR 取值不合法（按平台：Windows auto/ntquery/toolhelp；Linux auto/procfs）")
 	l.Check(c.ScanInterval >= 500*time.Millisecond, "HG_AGENT_SCAN_INTERVAL 不能小于 500ms（避免采集拖垮主机）")
 	l.Check(c.ScanInterval <= 60*time.Second, "HG_AGENT_SCAN_INTERVAL 不建议大于 60s（会漏掉短命进程）")
 	l.Check(c.FullRescan >= 1*time.Minute, "HG_AGENT_FULL_RESCAN 建议 >= 1m")

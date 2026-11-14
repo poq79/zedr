@@ -21,6 +21,8 @@ type InventorySection struct {
 // inventorySectionNames 是允许上报的节名白名单（与探针侧约定的
 // 共享契约，不得随意增删）。节名是管理台展示与查询的一部分，必须收敛：
 // 开放命名会让一个失控的探针版本把清单表变成垃圾场。
+// packages/users 是 Linux 探针节（2026-11-14；adapters/defender/firewall/
+// accounts 是 Windows 专属采集面，Linux 探针不上报这些节）。
 var inventorySectionNames = map[string]struct{}{
 	"system":    {},
 	"adapters":  {},
@@ -32,11 +34,14 @@ var inventorySectionNames = map[string]struct{}{
 	"defender":  {},
 	"firewall":  {},
 	"accounts":  {},
+	"packages":  {},
+	"users":     {},
 }
 
 const (
-	// inventoryMaxSections 单次上报节数上限。白名单本身 10 节，上限给 12 节
-	// 只留容错余量，防止探针 bug 无限刷行。
+	// inventoryMaxSections 单次上报节数上限。白名单本身 12 节（Windows 10
+	// + Linux packages/users），上限给 12 节贴着白名单走——Linux 探针
+	// 注册 8 节、Windows 探针最多 10 节，都在限内；超出即探针 bug。
 	inventoryMaxSections = 12
 	// inventoryMaxPayload 单节 payload 上限（512KB）。services 一节在极端
 	// 主机上也就几十 KB，512KB 已是 10 倍余量；再大基本可判定探针实现坏了。

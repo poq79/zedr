@@ -32,6 +32,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"zedr/internal/agent/allow"
@@ -92,6 +93,12 @@ type Agent struct {
 	inv      *inventory.Manager
 	invReady bool
 
+	// policyInterval 是服务端策略下发的扫描间隔（纳秒），0=用本地配置
+	// （applyServerPolicy 热写入，scanLoop 每轮读取）。
+	policyInterval atomic.Int64
+	// cpu 是进程 CPU 占用采样器（/proc/self/stat 差分，见 policy_linux.go）。
+	cpu cpuSampler
+
 	startedAt time.Time
 	scanReq   chan bool
 }
@@ -125,8 +132,13 @@ func canaryDirsLinux() []string {
 }
 
 // persistWatchDirsLinux 是持久化实时守护的目录集合（regwatch 等价物）。
+// 刻意不含 /etc 整树：fswatch 递归挂 watch，/etc 全树会烧掉大量 watch
+// 配额（上限 2048）且与子目录重复触发。/etc/crontab 与 /etc/ld.so.preload
+// 是单文件（inotify 目录 watch 覆盖不到写入它们的父目录变更场景），
+// 由 5min 周期扫描兜底——实时面覆盖 cron.d 与 systemd 两个最高价值的
+// 持久化位已足够。
 func persistWatchDirsLinux() []string {
-	return []string{"/etc/cron.d", "/etc/systemd/system", "/etc/crontab", "/etc"}
+	return []string{"/etc/cron.d", "/etc/systemd/system"}
 }
 
 func dedupDirs(in []string) []string {
@@ -179,7 +191,18 @@ func New(version string) (*Agent, error) {
 	cfg.LocalToken = loadOrCreateLocalToken(cfg.Path("local.token"), log)
 
 	store := state.New(500)
-	coll, err := collect.New(collectorName(cfg.Collector), cfg.FullRescan)
+
+	// 采集引擎选择的优先级：终端本地显式环境变量 > 服务端策略缓存
+	//（policy.json，随规则包下发、签名保护，冷生效）> 本地默认。
+	// 与 Windows 版同口径。
+	collector := cfg.Collector
+	if _, explicit := os.LookupEnv("HG_AGENT_COLLECTOR"); !explicit {
+		if pc := readCollectorPolicy(cfg.Path("policy.json")); pc != "" {
+			collector = pc
+			log.Info("collector_from_server_policy", "collector", pc)
+		}
+	}
+	coll, err := collect.New(collectorName(collector), cfg.FullRescan)
 	if err != nil {
 		return nil, fmt.Errorf("初始化采集引擎失败: %w", err)
 	}
@@ -458,7 +481,8 @@ func (a *Agent) landedAt(path string) time.Time {
 // ---------------------------------------------------------------- 扫描与检测
 
 func (a *Agent) scanLoop(ctx context.Context) {
-	ticker := time.NewTicker(a.cfg.ScanInterval)
+	interval := a.baseInterval()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	a.scan(true) // 首轮全量建基线
@@ -469,8 +493,18 @@ func (a *Agent) scanLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.scan(false)
+
+			// 服务端策略热更新检查：间隔变了就重置节拍（与 Windows 版
+			// 同语义；自适应退避 Linux v1 未启用，见包注释诚实边界）。
+			if cur := a.baseInterval(); cur != interval {
+				interval = cur
+				ticker.Reset(interval)
+				a.store.SetRuntime(func(ri *state.RuntimeInfo) { ri.ScanInterval = interval.String() })
+			}
 		case <-a.scanReq:
 			a.scan(true)
+			interval = a.baseInterval()
+			ticker.Reset(interval)
 		}
 	}
 }
@@ -557,9 +591,11 @@ func (a *Agent) scan(deep bool) int {
 
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
+	cpu := a.cpu.sample()
 	stats := a.eng.Stats()
 	a.store.SetRuntime(func(ri *state.RuntimeInfo) {
 		ri.ProcCount = snap.Count
+		ri.CPUPercent = cpu
 		ri.MemMB = float64(mem.Sys) / 1024 / 1024
 		ri.Stats = stats
 		ri.LastScanAt = start
@@ -1343,6 +1379,10 @@ func (a *Agent) syncRules(ctx context.Context, force bool) {
 	}
 	a.alw.ReplaceServer(entries)
 	a.eng.SetIntel(bundle.Intel)
+	// 加白即回收（链侧）：服务端下发白名单时同样回收含该实体的进行中链
+	a.purgeChainsOnAllowlist()
+	// 服务端运行策略（扫描间隔热生效 / 采集器冷生效缓存）
+	a.applyServerPolicy(bundle.AgentPolicy)
 
 	a.store.SetRuntime(func(ri *state.RuntimeInfo) {
 		ri.RuleCount = ok
