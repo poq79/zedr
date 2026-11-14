@@ -102,7 +102,12 @@ func New(dirs []string, log *slog.Logger) (*Watch, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+	// IN_NONBLOCK 必须带：os.NewFile 对阻塞 fd 不会注册进 runtime
+	// poller，Read 会落在裸阻塞 syscall 上，Close 根本打断不了——
+	// wg.Wait 永挂（2026-11-14 Kali 实机验收：每次 systemctl stop
+	// 都要等 systemd 90s 超时后 SIGKILL）。非阻塞 + poller 后 Close
+	// 才能立刻打断 Read（下方 loop 注释的前提）。
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return nil, fmt.Errorf("fswatch: inotify_init1: %w", err)
 	}
