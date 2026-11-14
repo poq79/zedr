@@ -1,9 +1,10 @@
 # Z-EDR
 
-**面向 Windows 主机的检测优先、用户态 EDR——配一个 AI 原生的调查控制台。**
+**面向 Windows 与 Linux 主机的检测优先、用户态 EDR——配一个 AI 原生的调查控制台。**
 
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%20Server%202016%2B-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows-server)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%28experimental%29-F9BC00?logo=linux&logoColor=white)](https://www.kernel.org/)
 [![Version](https://img.shields.io/badge/version-0.9.14-informational)](#)
 [![License](https://img.shields.io/badge/License-AGPL_3.0--only-blue.svg)](LICENSE)
 
@@ -13,9 +14,9 @@
   <img src="assets/hero.png" alt="Z-EDR — 检测优先的用户态 EDR，五层检测流水线读数" width="100%">
 </p>
 
-Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与事件日志遥测，用
-五层检测流水线（映射 MITRE ATT&CK）打分，把告警聚类为事件，并为分析师提供
-带 AI 研判、实时取证与**人工审批处置**的调查控制台。
+Z-EDR 在 Windows 与 Linux 终端上记录进程、文件落地、持久化、网络与事件日志
+遥测，用五层检测流水线（映射 MITRE ATT&CK）打分，把告警聚类为事件，并为
+分析师提供带 AI 研判、实时取证与**人工审批处置**的调查控制台。
 
 全部能力在**用户态、低侵入**前提下实现——**零内核驱动、零 Hook、零进程注入、
 不做执行前拦截**。Z-EDR 是 *EDR*（检测与响应），不是 *EPP*（执行前防御），
@@ -65,6 +66,10 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 
 - **五层检测**——静态指纹、关键词匹配、Sigma 风格 JSON DSL 行为规则
   （服务端下发、热更新）、父子链血缘基线、分值融合。每条告警都带可解释证据链。
+- **双平台探针**——同一套五层引擎与检测族在 Windows 和 Linux 上运行：
+  Linux 经 procfs 采集、inotify 监听文件变更、以 cron/systemd/ssh 画像
+  建持久化基线，并提供回连隧道与实时调查端点（首台机器已在 Kali 2025.4
+  验收）；Windows 另有响应处置、内存扫描、事件日志接入与 ETW。
 - **宽面行为遥测**——文件落地监控、**USN Journal 断点补采（探针停机期间落地的
   文件，启动后回放）**、持久化项监控（首验只建基线）、注册表自启动键实时守护、
   网络行为检测（端口扫描 / 扫探 / 横向扇出）、勒索防御（透明诱饵 +
@@ -94,10 +99,11 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 
 ## 设计原则
 
-**Z-EDR 适合谁：** Windows 为主的终端舰队与桌面、自托管/家庭实验室、
+**Z-EDR 适合谁：** Windows 与 Linux 混合的终端舰队与桌面、自托管/家庭实验室、
 不允许装内核驱动的合规环境，以及要求每个 AI 判定都可回查证据的团队。
-**不适合：** 需要执行前拦截（EPP）的场景、需要内核级自保护的对抗环境、
-纯 Linux 资产（Linux 探针为实验性）。
+**不适合：** 需要执行前拦截（EPP）的场景、需要内核级自保护的对抗环境。
+Linux 支持还年轻——首台机器（Kali）刚完成验收、响应处置暂为 Windows 独有，
+关键业务的纯 Linux 资产请谨慎评估。
 
 1. **只做检测，不做执行前拦截。** 不挂文件系统过滤、不阻止进程启动——
    事后负责：记录、发现、调查、响应。
@@ -113,13 +119,13 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 
 | | Z-EDR | Wazuh | Falco | Velociraptor |
 |---|---|---|---|---|
-| **定位** | Windows 优先的 EDR：检测、调查、响应 | 跨平台 SIEM / HIDS 平台 | 云原生 Linux 运行时安全 | 端点可见性与数字取证 |
+| **定位** | Windows 与 Linux 的 EDR（Linux 实验性）：检测、调查、响应 | 跨平台 SIEM / HIDS 平台 | 云原生 Linux 运行时安全 | 端点可见性与数字取证 |
 | **部署形态** | 单服务端二进制（内嵌管理台、SQLite）+ 单探针 | manager + 索引 + 仪表盘多组件栈 | agent + 规则，CNCF 生态 | server + client，VQL 驱动 |
 | **采集方式** | 仅用户态 API——零驱动、零 Hook | agent（日志与状态采集） | 内核模块或 eBPF 采集系统调用 | agent（类 osquery 的 artifact） |
 | **实时行为检测** | 五层流水线 + 攻击链 + 勒索/网络/事件日志检测器族 | 基于规则的日志分析 + FIM | 系统调用规则引擎 | VQL artifact 监控（取证优先） |
 | **AI 辅助调查** | 证据锚定研判、自然语言狩猎、Agentic 调查、事件叙事 | — | — | — |
 | **响应模型** | terminate / 隔离，默认关闭、人工审批、全程审计 | active-response 脚本（可配置自动化） | 仅告警（经 Falcosidekick 转发） | 远程 shell / artifact 采集 |
-| **适用场景** | 需要 Windows 上逐进程证据与可解释 AI，且不装内核驱动 | 需要带合规内容库的完整 SIEM 栈 | 需要 Linux/容器运行时告警 | 需要深度舰队查询与取证采集 |
+| **适用场景** | 需要 Windows 与 Linux 上逐进程证据与可解释 AI，且不装内核驱动 | 需要带合规内容库的完整 SIEM 栈 | 需要 Linux/容器运行时告警 | 需要深度舰队查询与取证采集 |
 
 ## 架构
 
@@ -130,7 +136,7 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 | 组件 | 二进制 | 职责 |
 |---|---|---|
 | 总控服务端 | `zedr-server.exe` | REST API、SQLite、内嵌管理台、JWT/RBAC、签名规则/IOC/情报下发、AI 编排、MCP 工具 |
-| 终端探针 | `zedr-agent.exe` | 采集 + 检测 + 攻击链引擎 + 上报；可装为 Windows 服务 |
+| 终端探针 | `zedr-agent.exe` / `zedr-agent-linux` | 采集 + 检测 + 攻击链引擎 + 上报；Windows 服务安装，Linux 跑在 systemd/supervisor 下 |
 | 桌面面板 | `zedr-ui.exe` | WebView2 本机态势与体检窗口（缺失运行时回退浏览器） |
 | 采集自检 | `zedr-diag.exe` | 采集层自检（`-compare`、`-persist`、`-usn`、`-hold`、`-spawn`、`-chaintest`、`-netburst`、`-memtestout`） |
 
@@ -152,7 +158,8 @@ Z-EDR 在 Windows 终端上记录进程、文件落地、持久化、网络与�
 
 ## 快速开始
 
-**环境要求：** Windows 10 / Server 2016+（64 位），Go 1.22+（1.27 实测），无需 CGO。
+**环境要求：** Windows 10 / Server 2016+（64 位）；Linux 内核 3.2+（64 位，
+Kali 2025.4 已验证）；Go 1.22+（1.27 实测），无需 CGO。
 
 ```bash
 git clone https://github.com/poq79/zedr.git && cd zedr
@@ -162,6 +169,10 @@ cp .env.example .env             # 至少设置 HG_SERVER_JWT_SECRET 与 HG_SERV
 ./bin/zedr-server.exe            # 首次启动会打印初始管理员密码（仅一次）
 ./bin/zedr-agent.exe             # 通过 HG_AGENT_SERVER_URL 指向服务端
 ```
+
+**Linux 探针**：`bash scripts/build.sh linux` 产出 `bin/zedr-agent-linux`
+（含服务端）——拷到目标主机，`HG_AGENT_SERVER_URL` 指向服务端，挂在
+systemd 或你的 supervisor 下运行。平台能力差异见[已知边界](#已知边界)。
 
 管理台：`http://127.0.0.1:8080` · 本地面板：`http://127.0.0.1:8843`（仅回环）。
 
@@ -244,9 +255,10 @@ AI 评测门禁（44 条夹具含提示词注入）全绿。
 - 告警投递为 at-least-once（重发由服务端指纹去重吸收）；签名校验走本地
   缓存无在线吊销；情报库手工维护。
 - 按设计不做内核级阻断，也无自保护（探针可被终止）。
-- **Linux 探针（实验性）**：与 Windows 共享检测引擎，目前仅交叉编译与
-  单测验证——**尚未在真实 Linux 硬件上验收**；响应指令、内存扫描、
-  事件日志与 ETW 为 Windows 独有。
+- **Linux 探针（实验性）**：与 Windows 共享检测引擎与检测器族——procfs
+  采集、inotify 文件监听、cron/systemd/ssh 持久化画像、netwatch、攻击链、
+  勒索诱饵、回连隧道及其实时调查端点；首台机器已在 Kali 2025.4 验收。
+  响应处置、内存扫描、事件日志、ETW、资产侦查与桌面面板为 Windows 独有。
 
 ## 贡献
 

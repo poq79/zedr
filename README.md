@@ -1,9 +1,10 @@
 # Z-EDR
 
-**A detection-first, user-mode EDR for Windows hosts — with an AI-native investigation console.**
+**A detection-first, user-mode EDR for Windows & Linux hosts — with an AI-native investigation console.**
 
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%20Server%202016%2B-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows-server)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%28experimental%29-F9BC00?logo=linux&logoColor=white)](https://www.kernel.org/)
 [![Version](https://img.shields.io/badge/version-0.9.14-informational)](#)
 [![License](https://img.shields.io/badge/License-AGPL_3.0--only-blue.svg)](LICENSE)
 
@@ -13,10 +14,11 @@
   <img src="assets/hero.png" alt="Z-EDR — detection-first, user-mode EDR; five-layer detection pipeline readout" width="100%">
 </p>
 
-Z-EDR records process, file-drop, persistence, network and event-log telemetry on
-Windows endpoints, scores it with a five-layer detection pipeline mapped to
-MITRE ATT&CK, clusters alerts into incidents, and gives analysts an investigation
-console with AI triage, live forensics and human-approved response actions.
+Z-EDR records process, file-drop, persistence, network and event-log telemetry
+on Windows and Linux endpoints, scores it with a five-layer detection pipeline
+mapped to MITRE ATT&CK, clusters alerts into incidents, and gives analysts an
+investigation console with AI triage, live forensics and human-approved
+response actions.
 
 It runs **entirely in user mode** — no kernel driver, no hooking, no process
 injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
@@ -69,6 +71,12 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
   JSON DSL behavioral rules (server-delivered, hot-reloadable), parent-child
   lineage baselining, and score fusion. Every alert carries an explainable
   evidence chain.
+- **Dual-platform agent** — the same five-layer engine and detector families
+  run on Windows and Linux: Linux collects via procfs, watches file changes
+  through inotify, baselines persistence from cron/systemd/ssh profiles and
+  serves the live tunnel + investigation endpoints (first machine validated
+  on Kali 2025.4); Windows adds response actions, memory scanning, event-log
+  ingestion and ETW.
 - **Broad behavioral telemetry** — file-drop monitoring, USN Journal catch-up
   for drops that happened while the agent was stopped, persistence monitoring
   with baseline-on-first-run, registry autorun watch, network behavior detectors
@@ -108,11 +116,12 @@ injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
 
 ## Design principles
 
-**Who Z-EDR is for:** Windows-heavy fleets and desktops, self-hosted and homelab
-setups, regulated environments that must avoid kernel drivers, and teams that
-want every AI judgment tied to inspectable evidence. **Not for:** prevention-first
-(EPP) needs, kernel-grade tamper protection, or Linux-only estates — the Linux
-agent is experimental.
+**Who Z-EDR is for:** mixed Windows & Linux fleets and desktops, self-hosted
+and homelab setups, regulated environments that must avoid kernel drivers, and
+teams that want every AI judgment tied to inspectable evidence. **Not for:**
+prevention-first (EPP) needs or kernel-grade tamper protection. Linux support
+is young — first machine validated on Kali, response actions are Windows-only
+— so mission-critical Linux-only estates should evaluate carefully.
 
 1. **Detection, not prevention.** No inline blocking or filesystem filters —
    Z-EDR works after the fact: record, detect, investigate, respond.
@@ -132,13 +141,13 @@ time of writing (2026-11); corrections welcome.
 
 | | Z-EDR | Wazuh | Falco | Velociraptor |
 |---|---|---|---|---|
-| **Focus** | Windows-first EDR: detect, investigate, respond | Cross-platform SIEM / HIDS platform | Cloud-native runtime security for Linux | Endpoint visibility & DFIR |
+| **Focus** | Windows & Linux EDR (Linux experimental): detect, investigate, respond | Cross-platform SIEM / HIDS platform | Cloud-native runtime security for Linux | Endpoint visibility & DFIR |
 | **Deploy shape** | one server binary (embedded UI, SQLite) + one agent | manager + indexer + dashboards stack | agent + rules, CNCF ecosystem | server + client, VQL-driven |
 | **Collection model** | user-mode APIs only — no driver, no hook | agent (log & state collection) | kernel module or eBPF on syscalls | agent (osquery-like artifacts) |
 | **Real-time behavioral detection** | 5-layer pipeline + attack-chain + ransom/netwatch/event-log families | rule-based log analysis + FIM | syscall rule engine | monitoring via VQL artifacts (DFIR-first) |
 | **AI-assisted investigation** | grounded triage, NL hunting, agentic investigation, incident narratives | — | — | — |
 | **Response** | terminate / quarantine, off by default, human-approved, audited | active-response scripts (configurable automation) | alerts (forwarding via Falcosidekick) | remote shell / artifact collection |
-| **Best when** | you need per-process evidence and explainable AI on Windows, without kernel drivers | you need a full SIEM stack with compliance content | you need Linux/container runtime alerting | you need deep fleet queries and forensic collection |
+| **Best when** | you need per-process evidence and explainable AI on Windows & Linux, without kernel drivers | you need a full SIEM stack with compliance content | you need Linux/container runtime alerting | you need deep fleet queries and forensic collection |
 
 ## Architecture
 
@@ -149,7 +158,7 @@ time of writing (2026-11); corrections welcome.
 | Component | Binary | Role |
 |---|---|---|
 | Server | `zedr-server.exe` | REST API, SQLite, embedded web console, JWT/RBAC, signed rule/IOC/intel delivery, AI orchestration, MCP tools |
-| Agent | `zedr-agent.exe` | Collection + detection + attack-chain engine + uplink; installable as a Windows service |
+| Agent | `zedr-agent.exe` / `zedr-agent-linux` | Collection + detection + attack-chain engine + uplink; Windows service install, Linux run under systemd/supervisor |
 | Desktop panel | `zedr-ui.exe` | WebView2 window for local status & hygiene views (falls back to browser) |
 | Diagnostics | `zedr-diag.exe` | Collector self-check (`-compare`, `-persist`, `-usn`, `-hold`, `-spawn`, `-chaintest`, `-netburst`, `-memtestout`) |
 
@@ -173,7 +182,8 @@ default.
 
 ## Quick start
 
-**Requirements:** Windows 10 / Server 2016+ (x64), Go 1.22+ (1.27 tested), no CGO.
+**Requirements:** Windows 10 / Server 2016+ (x64); Linux kernel 3.2+ (x64,
+Kali 2025.4 validated); Go 1.22+ (1.27 tested), no CGO.
 
 ```bash
 git clone https://github.com/poq79/zedr.git && cd zedr
@@ -183,6 +193,11 @@ cp .env.example .env             # set HG_SERVER_JWT_SECRET + HG_SERVER_ENROLL_T
 ./bin/zedr-server.exe            # first run prints the bootstrap admin password once
 ./bin/zedr-agent.exe             # point it at the server via HG_AGENT_SERVER_URL
 ```
+
+**Linux agents:** `bash scripts/build.sh linux` produces `bin/zedr-agent-linux`
+(+ server) — copy to the host, point `HG_AGENT_SERVER_URL` at the server, and
+run it under systemd or your supervisor. Platform deltas are listed in
+[Known limitations](#known-limitations).
 
 Console: `http://127.0.0.1:8080` · local panel: `http://127.0.0.1:8843` (loopback only).
 
@@ -272,10 +287,12 @@ and the AI eval gate (44 fixtures incl. prompt-injection) fully green.
   fingerprint dedup); Authenticode uses local caches without online
   revocation; intel feeds are manually maintained.
 - No kernel-level blocking or tamper protection, by design.
-- **Linux agent (experimental)**: shares the detection engine with Windows,
-  cross-compile + unit-test validated only — **not yet validated on real
-  Linux hardware**; response, memory scanning, event-log and ETW are
-  Windows-only.
+- **Linux agent (experimental)**: shares the detection engine and detector
+  families with Windows — procfs collection, inotify file watch, persistence
+  baselines from cron/systemd/ssh profiles, netwatch, attack chains, ransom
+  canaries, and the callback tunnel with its live investigation endpoints.
+  First machine validated on Kali 2025.4. Response actions, memory scanning,
+  event-log ingestion, ETW, recon and the desktop panel are Windows-only.
 
 ## Contributing
 
