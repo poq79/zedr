@@ -22,6 +22,9 @@ It runs **entirely in user mode** — no kernel driver, no hooking, no process
 injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
 *EPP* (prevent & block). Uninstalling leaves no trace.
 
+> **Early stage** — the 0.x line is moving fast: APIs, rule packs and docs may
+> change without notice between releases.
+
 ---
 
 ## The console
@@ -249,63 +252,38 @@ python scripts/scenarios.py all       # detection matrix / false positives / per
 ```
 
 Samples are limited to self-built binaries, constructed command lines and the
-EICAR string — no external executables are ever downloaded.
-
-**Measured results, published as-is** (see the test report in the repo history
-for the full methodology):
-
-- Detection matrix: 17 scripted scenarios — **13 detected cleanly**; 2 are
-  known weak-signal calibration items and 2 are environment/design blind
-  spots (documented, not hidden).
-- Steady-state false positives: **0** on the long-running reference host
-  (worst round across all campaigns: 1/256).
-- Attack chains: 3 of 4 chain rules verified end-to-end; the fourth (brute
-  force → success) needs a real brute-force wave that cannot be safely
-  fabricated.
-- AI eval gate: 44 synthetic fixtures (26 triage + 18 prompt-injection) with
-  a deterministic scorer; the first baseline run was fully green
-  (agreement / recall / injection blocking).
+EICAR string — no external executables are ever downloaded. Latest measured
+round, published as-is: **13/17** scripted scenarios detected (the misses are
+documented blind spots, not hidden), steady-state false positives **0** on the
+long-running reference host, 3 of 4 attack-chain rules verified end-to-end,
+and the AI eval gate (44 fixtures incl. prompt-injection) fully green.
 
 ## Known limitations
 
-- Collection is user-mode polling (default 2 s, adaptive). Processes shorter
-  than one interval can be missed (TOCTOU); file-drop monitoring partially
-  compensates, and USN catch-up recovers drops during agent downtime. An ETW
-  consumer implementation exists behind a build tag but is **not** enabled — it
-  failed validation on Windows Server 2022.
-- USN records carry only the leaf file name, so catch-up feeds the same
-  base-name fallback used when path resolution is incomplete. Deletion records
-  are ignored by design.
-- Alert delivery is at-least-once: a crash after the server accepted a batch but
-  before the spool segment was deleted can replay that batch; server-side
-  fingerprint dedup absorbs the common case.
-- No kernel-level blocking or tamper protection by design.
-- Authenticode verification uses local caches; no online revocation checks.
-- IOC/intel libraries are manually maintained and signed for delivery; no
-  automatic intelligence feeds yet.
-- **Linux agent (experimental)**: a Linux build (`GOOS=linux`) shares the
-  detection engine, procfs collection, netwatch, attack-chain, ransom canaries
-  and persistence baselines (cron/systemd/ssh profiles) with the Windows agent.
-  It is cross-compile and unit-test validated only — **not yet validated on
-  real Linux hardware**; response commands, memory scanning, event-log
-  ingestion and ETW are Windows-only.
+- User-mode polling (2 s, adaptive) can miss processes shorter than one
+  interval (TOCTOU); file-drop monitoring and USN catch-up partially
+  compensate. An ETW consumer exists behind a build tag but failed validation
+  on Windows Server 2022 — disabled.
+- Alert delivery is at-least-once (replays absorbed by server-side
+  fingerprint dedup); Authenticode uses local caches without online
+  revocation; intel feeds are manually maintained.
+- No kernel-level blocking or tamper protection, by design.
+- **Linux agent (experimental)**: shares the detection engine with Windows,
+  cross-compile + unit-test validated only — **not yet validated on real
+  Linux hardware**; response, memory scanning, event-log and ETW are
+  Windows-only.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please run `go vet ./...` and
-`go test ./...` before opening a PR, and keep changes focused.
+Issues and PRs welcome — run `go vet ./...` and `go test ./...` first, and
+keep changes focused. Enable the local secret scanner once per clone
+(`bash scripts/install-hooks.sh`): it blocks private keys, common token
+formats and `.env`-style files at commit time.
 
-**Enable the local secret scanner** (recommended once per clone, zero dependencies):
+## Acknowledgements
 
-```bash
-bash scripts/install-hooks.sh
-```
-
-The pre-commit hook blocks commits that contain private keys, common token
-formats (AWS/GitHub/Slack/Google), `.env`-style files, or non-placeholder
-credential assignments. Bypass for a single commit with `git commit --no-verify`
-(discouraged — if a real secret was committed, rotate it; cleaning history does
-not make it safe).
+Every line of this codebase was written by **GLM-5.3-Flash**, running inside
+the ZCode coding agent — thanks to ZCode's free nightly idle-token quota.
 
 ## License
 
