@@ -35,6 +35,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -743,6 +744,15 @@ func kindText(kind string) string {
 
 // normPath 是本包内的路径规范化：统一分隔符 + 小写。与 winapi.NormalizePath
 // 同口径但不引入 winapi 依赖（本包承诺纯逻辑，不碰 Win32）。
+// normPath 归一化路径，用作 canaries 键与事件匹配的统一口径。Windows
+// 大小写不敏感且 / 与 \ 等价，统一小写+反斜杠；Linux 大小写敏感、
+// 正斜杠原生——套用同一套归一化会把 key 搅成 os.Stat 找不到的形状
+// （2026-11-14 Kali 实机：OneCanaryPath 恒空串，演练 canary_touch 被
+// 跳过）。键与事件路径都过本函数，匹配口径天然一致。
 func normPath(p string) string {
-	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(p), "/", `\`))
+	p = strings.TrimSpace(p)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(strings.ReplaceAll(p, "/", `\`))
+	}
+	return p
 }
