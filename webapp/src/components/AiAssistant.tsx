@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Eraser, Plus, Send, Square, X } from 'lucide-react';
+import { Eraser, Plus, Send, Square, X } from 'lucide-react';
 import { api, authHeaders } from '../lib/api';
 import { Badge, Button, Card, Input, Select } from './ui/basics';
 import { useToast } from './ui/overlays';
@@ -45,6 +45,37 @@ const STARTERS = [
   '当前 AI 引擎和预算状态如何？',
   '最新的 critical 告警里有没有同哈希跨主机？',
 ];
+
+/* ---- 助手标识「哨兵脉冲」（2026-11-14，用户裁决空态要有标志性动效）----
+   四点星核=助手本体（几何 SVG 重绘，替代 FAB 时代的字符 ✦——顺手修复
+   UI-DESIGN §5 禁字符图标）；外扩方环=检测信号外扩（EDR 语境，Carbon 几何
+   语言不用圆环堆叠）；边界框+方位刻度=主机取景框。动效语义：环外扩节奏
+   即助手状态——在场（慢）与工作中（快），非装饰动效。色彩全走
+   currentColor/主色变量（零新色相，双主题自适应），reduced-motion 由
+   index.css 全局块降级为静态标。 */
+function AssistantMark({ size = 44, busy = false, still = false }: { size?: number; busy?: boolean; still?: boolean }) {
+  const detail = size >= 32;
+  return (
+    <svg className="asst-mark" data-busy={busy || undefined} width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      {!still && (
+        <>
+          <rect className="am-ping" x="9" y="9" width="30" height="30" rx="8" style={{ stroke: 'var(--primary)' }} strokeWidth="1" />
+          <rect className="am-ping am-ping2" x="9" y="9" width="30" height="30" rx="8" style={{ stroke: 'var(--primary)' }} strokeWidth="1" />
+        </>
+      )}
+      <rect x="7.5" y="7.5" width="33" height="33" rx="7" style={{ stroke: 'var(--border-strong)' }} strokeWidth="1.25" />
+      {detail && (
+        <g style={{ stroke: 'var(--faint)' }} strokeWidth="1.25">
+          <line x1="24" y1="4.5" x2="24" y2="9.5" /><line x1="24" y1="38.5" x2="24" y2="43.5" />
+          <line x1="4.5" y1="24" x2="9.5" y2="24" /><line x1="38.5" y1="24" x2="43.5" y2="24" />
+        </g>
+      )}
+      <path className="am-core"
+        d="M24 13.5C25.2 20.3 27.7 22.8 34.5 24C27.7 25.2 25.2 27.7 24 34.5C22.8 27.7 20.3 25.2 13.5 24C20.3 22.8 22.8 20.3 24 13.5Z"
+        style={{ fill: 'currentColor' }} />
+    </svg>
+  );
+}
 
 // 32 位十六进制 = 告警 ID：正文里的引用渲染成可点击 chip（M365 Copilot
 // 的教训：引用不可点击等于没有引用）。哈希前缀（16 位）不命中，保持纯文本。
@@ -290,13 +321,13 @@ export function AiAssistant() {
       {!open && (
         <button onClick={() => setOpen(true)} aria-label="打开 AI 助手"
           className="fixed bottom-5 right-5 z-40 grid h-11 w-11 cursor-pointer place-items-center rounded-full border border-primary/30 bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105">
-          <span className="text-[16px]">✦</span>
+          <AssistantMark size={22} still />
         </button>
       )}
       {open && (
         <Card className="fixed bottom-5 right-5 z-40 flex h-[580px] w-[420px] flex-col overflow-hidden p-0 shadow-2xl">
           <div className="flex items-center gap-2 border-b border-border-soft px-3 py-2.5">
-            <Bot size={14} className="text-primary" />
+            <span className="grid shrink-0 place-items-center text-primary"><AssistantMark size={16} still /></span>
             <Select value={activeId} onChange={(e) => setActiveId(e.target.value)} aria-label="切换会话"
               className="h-7 max-w-[150px] flex-1 text-[11.5px]">
               {sessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -316,6 +347,9 @@ export function AiAssistant() {
           <div ref={listRef} className="flex-1 space-y-2.5 overflow-y-auto px-3.5 py-3">
             {msgs.length === 0 && (
               <div className="space-y-2">
+                <div className="anim-pop grid place-items-center pb-0.5 pt-5 text-primary">
+                  <AssistantMark size={52} />
+                </div>
                 <p className="text-[12px] leading-[1.7] text-faint">问平台里的事实（告警/事件/主机/情报/实时进程），需要时我会调用只读工具核实，每一步都实时可见。在告警或主机详情点「问 AI」会自动带上当前对象上下文。</p>
                 {STARTERS.map((s) => (
                   <button key={s} onClick={() => ask(s)}
@@ -387,8 +421,9 @@ export function AiAssistant() {
               </div>
             ))}
             {busy && thinking && (
-              <div className="mr-4 rounded-md border border-border-soft bg-secondary/50 px-3 py-1.5 text-[11.5px] text-faint">
-                <span className="animate-pulse">思考中…</span>
+              <div className="mr-4 flex items-center gap-2 rounded-md border border-border-soft bg-secondary/50 px-3 py-1.5 text-[11.5px] text-faint">
+                <span className="grid shrink-0 place-items-center text-primary"><AssistantMark size={16} busy /></span>
+                <span>思考中…</span>
               </div>
             )}
           </div>

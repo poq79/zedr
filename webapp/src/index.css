@@ -246,3 +246,24 @@ body {
   animation: bar-grow .5s var(--ease-out-smooth) backwards;
 }
 .donut-arc { animation: donut-in .7s var(--ease-out-smooth) backwards; }
+
+/* ---- AI 助手标识「哨兵脉冲」：环外扩节奏=助手状态（在场慢/工作中快）----
+   语义动效（组件 AiAssistant.AssistantMark），非装饰；
+   prefers-reduced-motion 由上方全局块自动降级为静态标 */
+@keyframes mark-ping {
+  0%   { transform: scale(.62); opacity: .5; }
+  70%  { opacity: 0; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+@keyframes mark-breathe {
+  from { transform: scale(1); }
+  to   { transform: scale(1.1); }
+}
+.asst-mark .am-ping,
+.asst-mark .am-core { transform-box: fill-box; transform-origin: 50% 50%; }
+.asst-mark .am-ping  { animation: mark-ping 2.6s var(--ease-out-smooth) infinite; }
+.asst-mark .am-ping2 { animation-delay: 1.3s; }
+.asst-mark .am-core  { animation: mark-breathe 1.3s ease-in-out infinite alternate; }
+.asst-mark[data-busy] .am-ping  { animation-duration: 1.1s; }
+.asst-mark[data-busy] .am-ping2 { animation-delay: .55s; }
+.asst-mark[data-busy] .am-core  { animation-duration: .55s; }
