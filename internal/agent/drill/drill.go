@@ -40,7 +40,7 @@ const PipelineSentinel = "__pipeline__"
 
 // 预算与节奏。
 const (
-	// TotalBudget 是整场演练的硬顶。五步窗口之和（190s）刻意超出它：
+	// TotalBudget 是整场演练的硬顶。五步窗口之和（220s）刻意超出它：
 	// 命中通常远早于窗口上限；真超预算时剩余步骤记 skipped，
 	// 演练不允许无限占用同步回执链路。
 	TotalBudget = 150 * time.Second
@@ -63,8 +63,13 @@ func stepBudget(name string) time.Duration {
 	switch name {
 	case StepProcChain:
 		return 10 * time.Second
-	case StepPortScan, StepServiceEvt:
+	case StepPortScan:
 		return 60 * time.Second
+	case StepServiceEvt:
+		// 90s：E1 事件日志层是 30s/tick 游标轮询，探针重启后的首批
+		// 读取还可能带历史回放（2026-11-14 E2E 实测：7045 在步骤起点
+		// 后 ~68s 才随回放批次到达，60s 窗口错过但事件真实被捕获）。
+		return 90 * time.Second
 	case StepRegRun, StepCanaryTouch:
 		return 30 * time.Second
 	}
