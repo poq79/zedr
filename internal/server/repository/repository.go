@@ -103,12 +103,21 @@ type AgentRepo interface {
 	Count(ctx context.Context) (int, error)
 }
 
+// DupHit 是批量查重的单指纹命中摘要：窗口内既有行数与最近一行。
+type DupHit struct {
+	AlertID    string // 最近一行 ID（duplicate 计数落点）
+	Count      int    // 窗口内已有行数（自适应抑制的升级依据）
+	LastSeenAt time.Time
+}
+
 // AlertRepo 告警数据访问。
 type AlertRepo interface {
 	Create(ctx context.Context, a *domain.Alert) error
 	FindDuplicate(ctx context.Context, fingerprint, agentID string, since time.Time) (*domain.Alert, error)
 	// FindDuplicates 批量查重（上报路径优化，见 sqlite/alerts.go 注释）。
-	FindDuplicates(ctx context.Context, agentID string, since time.Time, fingerprints []string) (map[string]string, error)
+	// 返回指纹 → 命中摘要（窗口内行数/最近行/最近时刻）——上层据此做
+	// 自适应抑制分级（固定窗口挡不住周期性重放，见 service.dupSuppress）。
+	FindDuplicates(ctx context.Context, agentID string, since time.Time, fingerprints []string) (map[string]DupHit, error)
 	BumpDuplicate(ctx context.Context, id string, at time.Time) error
 	ByID(ctx context.Context, id string) (*domain.Alert, error)
 	List(ctx context.Context, f domain.AlertFilter) ([]domain.Alert, int, error)

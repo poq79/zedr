@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"zedr/internal/server/domain"
+	"zedr/internal/server/repository"
 )
 
 type alertRepo struct{ s *Store }
@@ -64,13 +65,16 @@ func (r *alertRepo) FindOpenByRule(ctx context.Context, agentID, ruleID string) 
 }
 
 // FindDuplicates 批量查重：一批告警的指纹一次性按窗口查询，返回
-// fingerprint → 已存在条目 ID。为什么批量：上报路径是 500 条串行循环，
-// 逐条单查（每条一次 SQL prepare + 索引查找）在 modernc 纯 Go 驱动上
-// 实测 56ms/次，整批 28s 超过 agent 20s 上报超时（见
-// ingest_bench_test.go 诊断）；分块 IN 查询把读侧成本压到常数。
+// fingerprint → 命中摘要（窗口内行数 / 最近一行 ID / 最近时刻），供上层
+// 做自适应抑制分级。为什么批量：上报路径是 500 条串行循环，逐条单查
+// （每条一次 SQL prepare + 索引查找）在 modernc 纯 Go 驱动上实测 56ms/次，
+// 整批 28s 超过 agent 20s 上报超时（见 ingest_bench_test.go 诊断）；分块
+// IN 查询把读侧成本压到常数。bare column id 随 MAX(created_at) 取值是
+// SQLite 文档化行为（min/max 聚合的 bare column 来自命中行）——一次查询
+// 同时拿到"最近行"三个字段，不用为取行 ID 再发 N 条子查询。
 // fp 参数由调用方去重；SQL 参数分块规避 SQLite 变量数上限。
-func (r *alertRepo) FindDuplicates(ctx context.Context, agentID string, since time.Time, fingerprints []string) (map[string]string, error) {
-	out := make(map[string]string, len(fingerprints))
+func (r *alertRepo) FindDuplicates(ctx context.Context, agentID string, since time.Time, fingerprints []string) (map[string]repository.DupHit, error) {
+	out := make(map[string]repository.DupHit, len(fingerprints))
 	const chunk = 400
 	for start := 0; start < len(fingerprints); start += chunk {
 		end := start + chunk
@@ -85,7 +89,7 @@ func (r *alertRepo) FindDuplicates(ctx context.Context, agentID string, since ti
 			args = append(args, fp)
 			ph = append(ph, "?")
 		}
-		q := fmt.Sprintf(`SELECT fingerprint, MIN(id) FROM alerts
+		q := fmt.Sprintf(`SELECT fingerprint, COUNT(*), MAX(created_at), id FROM alerts
 			 WHERE agent_id = ? AND created_at >= ? AND fingerprint IN (%s)
 			 GROUP BY fingerprint`, strings.Join(ph, ","))
 		rows, err := r.s.db.QueryContext(ctx, q, args...)
@@ -94,11 +98,13 @@ func (r *alertRepo) FindDuplicates(ctx context.Context, agentID string, since ti
 		}
 		for rows.Next() {
 			var fp, id string
-			if err := rows.Scan(&fp, &id); err != nil {
+			var cnt int
+			var mx int64
+			if err := rows.Scan(&fp, &cnt, &mx, &id); err != nil {
 				rows.Close()
 				return nil, fmt.Errorf("批量查重扫描失败: %w", err)
 			}
-			out[fp] = id
+			out[fp] = repository.DupHit{AlertID: id, Count: cnt, LastSeenAt: time.UnixMilli(mx)}
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()

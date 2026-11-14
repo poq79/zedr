@@ -80,11 +80,46 @@ type AlertService struct {
 	bus   *AlertBus
 }
 
+// 同指纹告警的自适应抑制分级（2026-11-14 告警降噪轮）。
+// 教训：固定 DupWindow 挡不住"每 30s 重放一轮"的源头故障——E1 游标
+// 死循环下每指纹每 5min 一行全数入库，单机 13 天 11.5 万行。分级把
+// 持续复现的指纹升级到更长聚合窗口，duplicate 计数保留强度语义：
+//   - baseWindow（DupWindow，默认 5min）内再现：并入（既有行为）；
+//   - 视野内已有 ≥dupEscalateRows 行且最近 dupEscalateWindow 内出现过：
+//     并入（中频复发——长驻进程周期性命中、监听端口翻转）；
+//   - 视野内已有 ≥dupStormRows 行（不管多久前出现）：并入
+//     （风暴级——源头故障形态，一天最多一行新证据）。
+// 不升级的场景：低频重现（行数不足）每次都出新行——真实攻击的间歇性
+// 重试不该被折叠进旧行。常量不开放配置：阈值与告警语义强耦合，开放
+// 配置只会让"调静音"变成日常操作（与规则观察模式的转正流程冲突）。
+const (
+	dupObserveHorizon = 24 * time.Hour
+	dupEscalateRows   = 3
+	dupEscalateWindow = time.Hour
+	dupStormRows      = 15
+)
+
+// dupSuppress 判定同指纹命中是否并入既有行（纯函数，单测覆盖）。
+// 窗口判定一律闭区间（!Before），与原 SQL 的 created_at >= since 口径一致。
+func dupSuppress(count int, lastSeen, now time.Time, baseWindow time.Duration) bool {
+	switch {
+	case !lastSeen.Before(now.Add(-baseWindow)):
+		return true
+	case count >= dupStormRows && !lastSeen.Before(now.Add(-dupObserveHorizon)):
+		return true
+	case count >= dupEscalateRows && !lastSeen.Before(now.Add(-dupEscalateWindow)):
+		return true
+	default:
+		return false
+	}
+}
+
 // Ingest 批量接收终端上报的告警。
 //
 // 聚合策略（对应报告的"第二级降噪"）：同一 agent + 同一 fingerprint 在
-// DupWindow 内重复出现时，不新增记录，而是给原告警的 duplicate 计数 +1，
-// 这样"同一个恶意样本反复尝试执行 500 次"只会产生 1 条告警。
+// 自适应窗口内重复出现时不新增记录，而是给既有行的 duplicate 计数 +1——
+// "同一个恶意样本反复尝试执行 500 次"只会产生 1 条告警。窗口分级见
+// dupSuppress（固定 5min 窗口挡不住周期性重放的源头故障）。
 func (s *AlertService) Ingest(ctx context.Context, agent *domain.Agent, req model.AlertBatchRequest) (*model.AlertBatchResponse, error) {
 	if len(req.Alerts) == 0 {
 		return &model.AlertBatchResponse{}, nil
@@ -95,13 +130,12 @@ func (s *AlertService) Ingest(ctx context.Context, agent *domain.Agent, req mode
 
 	resp := &model.AlertBatchResponse{}
 	now := time.Now()
-	since := now.Add(-s.cfg.DupWindow)
 
 	// 批量查重（2026-11-11 诊断修复）：原实现逐条 FindDuplicate，
 	// 500 条批实测 28s（modernc 每查询 ~56ms），超过 agent 20s 上报
 	// 超时 → ctx 取消 → 500 → spool 重放同一批 → 慢性死循环（日志
-	// 3121 次）。改为批前一次分组查询 + 本地 map；批内语义不变：
-	// 同 fp 第二条起算 duplicate 并计数归首条。
+	// 3121 次）。改为批前一次分组查询 + 本地 map；查询窗口取自适应
+	// 分级的最大视野（dupObserveHorizon），窗口内细分判定在 dupSuppress。
 	fpSet := make([]string, 0, len(req.Alerts))
 	for _, in := range req.Alerts {
 		fp := in.Fingerprint
@@ -110,7 +144,7 @@ func (s *AlertService) Ingest(ctx context.Context, agent *domain.Agent, req mode
 		}
 		fpSet = append(fpSet, fp)
 	}
-	existing, err := s.repos.Alerts.FindDuplicates(ctx, agent.ID, since, fpSet)
+	existing, err := s.repos.Alerts.FindDuplicates(ctx, agent.ID, now.Add(-dupObserveHorizon), fpSet)
 	if err != nil {
 		if s.log != nil {
 			s.log.ErrorContext(ctx, "alerts_ingest_dupscan_failed",
@@ -145,12 +179,12 @@ func (s *AlertService) Ingest(ctx context.Context, agent *domain.Agent, req mode
 			resp.Duplicates++
 			continue
 		}
-		if dupID, ok := existing[fp]; ok {
-			if err := s.repos.Alerts.BumpDuplicate(ctx, dupID, now); err != nil {
+		if hit, ok := existing[fp]; ok && dupSuppress(hit.Count, hit.LastSeenAt, now, s.cfg.DupWindow) {
+			if err := s.repos.Alerts.BumpDuplicate(ctx, hit.AlertID, now); err != nil {
 				return nil, err
 			}
 			resp.Duplicates++
-			processed[fp] = dupID
+			processed[fp] = hit.AlertID
 			continue
 		}
 
