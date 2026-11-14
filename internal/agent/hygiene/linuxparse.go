@@ -4,7 +4,7 @@ package hygiene
 //
 // 为什么放中性文件：这些函数零系统 I/O，只做"文本 → 结构"；本机没有
 // Linux 测试环境，纯逻辑单测必须在 Windows 上就能跑全（验证口径见
-// AGENTS §6 与 zedr-private-docs/docs/RESEARCH-LINUX-AGENT.md）。
+// 内部验收记录）。
 // 采集入口（读文件 + 调用这些函数）在 hygiene_linux.go（linux 标签）。
 //
 // 未在 Linux 实机验证：解析口径按各发行版惯例与内核文档

@@ -20,6 +20,7 @@
 """
 import json
 import os
+import secrets
 import shutil
 import statistics
 import subprocess
@@ -293,8 +294,10 @@ def _admin_group_change():
     变更事件在探针 30s 周期 + 富化后产生 INV-ACCOUNTS 告警；
     收尾清理在 finally 由场景自身完成（用户与组成员身份都删）。"""
     user = "hg_s15_e2e"
+    # 密码每次运行随机生成：公开仓库不留硬编码凭据样例，账号收尾由 finally 删除
+    pw = "S15-" + secrets.token_urlsafe(12)
     try:
-        subprocess.run(["net", "user", user, "S15-REDACTED-PW", "/add"],
+        subprocess.run(["net", "user", user, pw, "/add"],
                        capture_output=True, text=True)
         subprocess.run(["net", "localgroup", "Administrators", user, "/add"],
                        capture_output=True, text=True)
