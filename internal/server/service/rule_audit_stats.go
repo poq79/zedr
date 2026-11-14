@@ -16,8 +16,8 @@ import (
 
 // RuleService 负责规则库的播种、下发与自定义规则管理。
 type RuleService struct {
-	repos repository.Repos
-	log   *slog.Logger
+	repos       repository.Repos
+	log         *slog.Logger
 	agentPolicy *model.AgentPolicy
 }
 
@@ -189,7 +189,7 @@ func (s *RuleService) Bundle(ctx context.Context, sinceVersion int) (*model.Rule
 		maxVer = intelVer
 	}
 
-		bundle := &model.RuleBundle{
+	bundle := &model.RuleBundle{
 		Version:     maxVer,
 		GeneratedAt: time.Now().UTC(),
 		Rules:       make([]model.RuleDTO, 0, len(enabled)),

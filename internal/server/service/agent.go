@@ -2,10 +2,10 @@ package service
 
 import (
 	"context"
-	"sync"
 	"crypto/subtle"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"zedr/internal/model"
@@ -21,9 +21,9 @@ type AgentService struct {
 	skewData map[string]time.Duration
 	dropMu   sync.RWMutex
 	dropData map[string]int64
-	repos repository.Repos
-	cfg   Config
-	log   *slog.Logger
+	repos    repository.Repos
+	cfg      Config
+	log      *slog.Logger
 }
 
 // Enroll 处理终端注册。同一 machine_id 重复注册会轮转凭证（重装/迁移场景）。

@@ -8,16 +8,16 @@ import (
 	"log/slog"
 	"time"
 
-	"zedr/internal/server/auth"
 	"zedr/internal/ai"
+	"zedr/internal/server/auth"
 	"zedr/internal/server/repository"
 )
 
 // Config 是服务层可调参数。
 type Config struct {
-	EnrollToken       string        // 终端注册预共享令牌
-	KillEnabled       bool          // 是否允许下发终止进程指令
-	QuarantineEnabled bool          // 是否允许下发文件隔离/恢复指令
+	EnrollToken       string // 终端注册预共享令牌
+	KillEnabled       bool   // 是否允许下发终止进程指令
+	QuarantineEnabled bool   // 是否允许下发文件隔离/恢复指令
 	// DrillEnabled 是检测演练指令（type=drill）的服务端闸门：演练会让
 	// 探针在目标机器上执行受控自测（自造样本、零真实恶意内容），只在
 	// 交付验收/升级回归场景显式打开。终端侧还有 HG_AGENT_DRILL_ENABLED

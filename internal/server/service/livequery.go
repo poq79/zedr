@@ -37,7 +37,7 @@ type LiveEndpoint struct {
 // LiveEndpoints 白名单预算表——**派生自 internal/livecatalog（单一事实
 // 源）**，本文件不再手维护端点清单：探针加端点只改 catalog 一处，这里
 // 与 MCP host_live 描述自动跟上。探针侧内部预算通常比代理预算短一档
-//（见 catalog 各端点 timeout_ms），保证探针的 truncated 语义有机会
+// （见 catalog 各端点 timeout_ms），保证探针的 truncated 语义有机会
 // 送达而不是被代理先掐。只读：消费方不得修改本表。
 var LiveEndpoints = func() map[string]LiveEndpoint {
 	m := make(map[string]LiveEndpoint, len(livecatalog.All()))

@@ -128,10 +128,10 @@ func (s *AIService) Hunt(ctx context.Context, nl string) (*HuntResult, error) {
 
 // HuntResult 是自然语言查询的结果。
 type HuntResult struct {
-	Query  *ai.Query        `json:"query"`
-	Total  int              `json:"total"`
-	Alerts []domain.Alert   `json:"alerts"`
-	Elapsed time.Time       `json:"elapsed"`
+	Query   *ai.Query      `json:"query"`
+	Total   int            `json:"total"`
+	Alerts  []domain.Alert `json:"alerts"`
+	Elapsed time.Time      `json:"elapsed"`
 }
 
 // Stats 返回引擎统计。

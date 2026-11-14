@@ -260,7 +260,7 @@ func (x *agentToolExec) Execute(ctx context.Context, name string, args json.RawM
 			}
 		}
 		return marshalJSON(map[string]any{"fingerprint": x.alert.Fingerprint, "count": len(same),
-			"note": "仅统计本机历史（仓储无跨主机指纹过滤）；ai_triage=该告警最近一次自动研判快照",
+			"note":    "仅统计本机历史（仓储无跨主机指纹过滤）；ai_triage=该告警最近一次自动研判快照",
 			"history": same})
 
 	case "inventory_changes":

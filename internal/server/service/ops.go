@@ -15,10 +15,10 @@ import (
 // MetricsSnapshot 是 /metrics 端点需要的全部数值。
 // 一次性取齐，handler 只负责渲染，避免在文本输出里散落数据库调用。
 type MetricsSnapshot struct {
-	TotalHosts  int
-	OnlineHosts int
-	Alerts24h   int
-	OpenAlerts  int
+	TotalHosts   int
+	OnlineHosts  int
+	Alerts24h    int
+	OpenAlerts   int
 	CriticalOpen int
 	SeverityDist map[string]int
 	AvgScore     float64
@@ -80,19 +80,19 @@ const incidentGap = 30 * time.Minute
 
 // Incident 是聚合后的视图。
 type Incident struct {
-	ID            string   `json:"id"`
-	Hostname      string   `json:"hostname"`
-	AlertCount    int      `json:"alert_count"`
-	PeakSeverity  string   `json:"peak_severity"`
-	MaxScore      int      `json:"max_score"`
-	OpenCount     int      `json:"open_count"`
-	MITRE         []string `json:"mitre"`
-	Processes     []string `json:"processes"`
-	RuleIDs       []string `json:"rule_ids"`
-	StartedAt     time.Time `json:"started_at"`
-	LastAt        time.Time `json:"last_at"`
-	DurationSec   int      `json:"duration_sec"`
-	AlertIDs      []string `json:"alert_ids"`
+	ID           string    `json:"id"`
+	Hostname     string    `json:"hostname"`
+	AlertCount   int       `json:"alert_count"`
+	PeakSeverity string    `json:"peak_severity"`
+	MaxScore     int       `json:"max_score"`
+	OpenCount    int       `json:"open_count"`
+	MITRE        []string  `json:"mitre"`
+	Processes    []string  `json:"processes"`
+	RuleIDs      []string  `json:"rule_ids"`
+	StartedAt    time.Time `json:"started_at"`
+	LastAt       time.Time `json:"last_at"`
+	DurationSec  int       `json:"duration_sec"`
+	AlertIDs     []string  `json:"alert_ids"`
 }
 
 // ListIncidents 把未处置告警聚合成事件视图。
@@ -158,14 +158,14 @@ func clusterByGap(alerts []domain.Alert, gap time.Duration) [][]domain.Alert {
 
 func buildIncident(host string, group []domain.Alert) Incident {
 	inc := Incident{
-		Hostname:  host,
+		Hostname:   host,
 		AlertCount: len(group),
-		AlertIDs:  make([]string, 0, len(group)),
-		StartedAt: group[0].CreatedAt,
-		LastAt:    group[len(group)-1].CreatedAt,
-		MITRE:     []string{},
-		Processes: []string{},
-		RuleIDs:   []string{},
+		AlertIDs:   make([]string, 0, len(group)),
+		StartedAt:  group[0].CreatedAt,
+		LastAt:     group[len(group)-1].CreatedAt,
+		MITRE:      []string{},
+		Processes:  []string{},
+		RuleIDs:    []string{},
 	}
 	inc.DurationSec = int(inc.LastAt.Sub(inc.StartedAt).Seconds())
 
@@ -213,13 +213,13 @@ func buildIncident(host string, group []domain.Alert) Incident {
 // 单台主机上无论多可疑都是端问题，同一份载荷同时出现在 N 台机器上
 // 就是事件级问题，运营视角完全不同。
 type Burst struct {
-	Hash         string   `json:"hash"`
-	Hosts        []string `json:"hosts"`
-	HostCount    int      `json:"host_count"`
-	AlertCount   int      `json:"alert_count"`
-	PeakSeverity string   `json:"peak_severity"`
-	MaxScore     int      `json:"max_score"`
-	TitleSample  string   `json:"title_sample"`
+	Hash         string    `json:"hash"`
+	Hosts        []string  `json:"hosts"`
+	HostCount    int       `json:"host_count"`
+	AlertCount   int       `json:"alert_count"`
+	PeakSeverity string    `json:"peak_severity"`
+	MaxScore     int       `json:"max_score"`
+	TitleSample  string    `json:"title_sample"`
 	FirstSeen    time.Time `json:"first_seen"`
 }
 
@@ -242,12 +242,12 @@ func (s *StatsService) ListBursts(ctx context.Context) ([]Burst, error) {
 
 	cutoff := time.Now().Add(-24 * time.Hour)
 	type agg struct {
-		hosts  map[string]bool
-		count  int
-		peak   string
-		max    int
-		title  string
-		first  time.Time
+		hosts map[string]bool
+		count int
+		peak  string
+		max   int
+		title string
+		first time.Time
 	}
 	byHash := map[string]*agg{}
 	rank := map[string]int{"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -316,8 +316,8 @@ type RuleFPStat struct {
 // （≥5 次处置才参与排序，避免"1 次误报 = 100%"的小样本噪音）。
 func (s *StatsService) ListRuleFPStats(ctx context.Context, window time.Duration) ([]RuleFPStat, error) {
 	alerts, _, err := s.repos.Alerts.List(ctx, domain.AlertFilter{
-		Status:   []domain.AlertStatus{model.StatusResolved, model.StatusFalsePositive},
-		Page:     1, PageSize: 200, Sort: "oldest",
+		Status: []domain.AlertStatus{model.StatusResolved, model.StatusFalsePositive},
+		Page:   1, PageSize: 200, Sort: "oldest",
 	})
 	if err != nil {
 		return nil, err
@@ -367,20 +367,20 @@ func (s *StatsService) ListRuleFPStats(ctx context.Context, window time.Duration
 // 设计目标：一页纸回答四个问题——发生了什么、处置得怎么样、
 // 哪些规则在制造噪音、有没有需要上报的爆发。
 type WeeklyReport struct {
-	WindowDays     int                `json:"window_days"`
-	GeneratedAt    time.Time          `json:"generated_at"`
-	AlertsCreated  int                `json:"alerts_created"`
-	AlertsHandled  int                `json:"alerts_handled"`
-	FalsePositive  int                `json:"false_positive"`
-	FPRate         float64            `json:"fp_rate"`
-	MTTRMin        float64            `json:"mttr_min"`
-	OpenAlerts     int                `json:"open_alerts"`
-	VerdictDist    map[string]int     `json:"verdict_dist"`
-	SeverityDist   map[string]int     `json:"severity_dist"`
-	TopRules       []domain.RuleStat  `json:"top_rules"`
-	TopHosts       []domain.HostAlertStat `json:"top_hosts"`
-	Bursts         []Burst            `json:"bursts"`
-	FPRanking      []RuleFPStat       `json:"fp_ranking"`
+	WindowDays    int                    `json:"window_days"`
+	GeneratedAt   time.Time              `json:"generated_at"`
+	AlertsCreated int                    `json:"alerts_created"`
+	AlertsHandled int                    `json:"alerts_handled"`
+	FalsePositive int                    `json:"false_positive"`
+	FPRate        float64                `json:"fp_rate"`
+	MTTRMin       float64                `json:"mttr_min"`
+	OpenAlerts    int                    `json:"open_alerts"`
+	VerdictDist   map[string]int         `json:"verdict_dist"`
+	SeverityDist  map[string]int         `json:"severity_dist"`
+	TopRules      []domain.RuleStat      `json:"top_rules"`
+	TopHosts      []domain.HostAlertStat `json:"top_hosts"`
+	Bursts        []Burst                `json:"bursts"`
+	FPRanking     []RuleFPStat           `json:"fp_ranking"`
 }
 
 // WeeklyReport 组装周期报表（窗口 7 天）。
@@ -435,7 +435,6 @@ func (s *StatsService) WeeklyReport(ctx context.Context, window time.Duration) (
 	}
 	return r, nil
 }
-
 
 // ---------------------------------------------------------------- 告警完整性链
 

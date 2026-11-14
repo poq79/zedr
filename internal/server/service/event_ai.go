@@ -28,10 +28,10 @@ const incidentNarrativeMaxAlerts = 40
 
 // IncidentNarrativeView 是事件叙事的 API 视图（时间线 + 结论 + 元信息）。
 type IncidentNarrativeView struct {
-	IncidentID string               `json:"incident_id"`
-	Hostname   string               `json:"hostname"`
-	AlertTotal int                  `json:"alert_total"`
-	Timeline   []ai.IncidentAlert   `json:"timeline"`
+	IncidentID string                `json:"incident_id"`
+	Hostname   string                `json:"hostname"`
+	AlertTotal int                   `json:"alert_total"`
+	Timeline   []ai.IncidentAlert    `json:"timeline"`
 	Narrative  *ai.IncidentNarrative `json:"narrative"`
 	// IncidentLastSeen 是生成叙事时事件的最后观测时间——
 	// 与当前事件不一致说明叙事已过时（新告警加入了同一事件）。

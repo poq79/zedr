@@ -64,15 +64,15 @@ type AIQualityReport struct {
 }
 
 type AIQualityDisagreement struct {
-	AlertID       string  `json:"alert_id"`
-	Title         string  `json:"title"`
-	Hostname      string  `json:"hostname"`
-	AIVerdict     string  `json:"ai_verdict"`
-	AIConfidence  float64 `json:"ai_confidence"`
-	AISource      string  `json:"ai_source"`
-	AnalystSaid   string  `json:"analyst_said"` // true_positive | false_positive | known_benign
-	Kind          string  `json:"kind"`         // ai_fp | ai_miss
-	OccurredAt    time.Time `json:"occurred_at"`
+	AlertID      string    `json:"alert_id"`
+	Title        string    `json:"title"`
+	Hostname     string    `json:"hostname"`
+	AIVerdict    string    `json:"ai_verdict"`
+	AIConfidence float64   `json:"ai_confidence"`
+	AISource     string    `json:"ai_source"`
+	AnalystSaid  string    `json:"analyst_said"` // true_positive | false_positive | known_benign
+	Kind         string    `json:"kind"`         // ai_fp | ai_miss
+	OccurredAt   time.Time `json:"occurred_at"`
 }
 
 // QualityReport 生成研判质量对账。

@@ -37,11 +37,11 @@ func TestShapeForModelItemsTruncated(t *testing.T) {
 		t.Fatalf("整形后仍超预算：%d", len(out))
 	}
 	var doc struct {
-		Items    []json.RawMessage `json:"items"`
-		Total    int               `json:"total"`
-		Truncated bool             `json:"truncated"`
-		AIShaped bool              `json:"ai_shaped"`
-		AINote   string            `json:"ai_note"`
+		Items     []json.RawMessage `json:"items"`
+		Total     int               `json:"total"`
+		Truncated bool              `json:"truncated"`
+		AIShaped  bool              `json:"ai_shaped"`
+		AINote    string            `json:"ai_note"`
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		t.Fatalf("整形后不是合法 JSON: %v", err)

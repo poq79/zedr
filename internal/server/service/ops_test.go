@@ -70,10 +70,10 @@ func inv(s []string) []string { return s }
 // TestValidatePasswordStrength 验证密码强度策略。
 func TestValidatePasswordStrength(t *testing.T) {
 	bad := []string{
-		"short1A!",                 // 太短
-		"alllowercase123",          // 缺大写与符号（两类）
-		"ALLUPPERCASE123",          // 缺小写与符号（两类）
-		"abcdefghij",               // 只有一类
+		"short1A!",        // 太短
+		"alllowercase123", // 缺大写与符号（两类）
+		"ALLUPPERCASE123", // 缺小写与符号（两类）
+		"abcdefghij",      // 只有一类
 	}
 	for _, pw := range bad {
 		if err := ValidatePasswordStrength(pw); err == nil {

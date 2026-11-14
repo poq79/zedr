@@ -35,16 +35,16 @@ type BriefRule struct {
 
 // DailyBriefing 是今日值班简报。
 type DailyBriefing struct {
-	WindowHours int          `json:"window_hours"`
-	GeneratedAt time.Time    `json:"generated_at"`
-	AlertsNew   int          `json:"alerts_new"`
-	CriticalNew int          `json:"critical_new"`
-	EventsOpen  int          `json:"events_open"` // 窗口内新开的事件（incident）
-	ChainHits   int          `json:"chain_hits"`  // 攻击链规则（CHAIN-*）新命中
-	OpsPending  int          `json:"ops_pending"` // 值班队列待审
-	HostsOffline int         `json:"hosts_offline"`
-	TopRules    []BriefRule  `json:"top_rules"`
-	RecentCrit  []BriefAlert `json:"recent_critical"`
+	WindowHours  int          `json:"window_hours"`
+	GeneratedAt  time.Time    `json:"generated_at"`
+	AlertsNew    int          `json:"alerts_new"`
+	CriticalNew  int          `json:"critical_new"`
+	EventsOpen   int          `json:"events_open"` // 窗口内新开的事件（incident）
+	ChainHits    int          `json:"chain_hits"`  // 攻击链规则（CHAIN-*）新命中
+	OpsPending   int          `json:"ops_pending"` // 值班队列待审
+	HostsOffline int          `json:"hosts_offline"`
+	TopRules     []BriefRule  `json:"top_rules"`
+	RecentCrit   []BriefAlert `json:"recent_critical"`
 }
 
 // DailyBriefing 聚合窗口内的值班盘子。全只读、全确定性——简报的可靠性
