@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -233,12 +234,18 @@ func LoadConfig(version string) (*Config, error) {
 	return c, nil
 }
 
-// defaultDataDir 默认落在 %LOCALAPPDATA%\zedr，避免污染用户目录。
+// defaultDataDir Windows 落 %LOCALAPPDATA%\zedr，Linux 落 /var/lib/zedr
+// （FHS：系统服务常驻状态数据，systemd unit 默认 root 运行可写）。
+// 必须按 GOOS 分流：否则 Linux 上会创建出字面量 "C:\ProgramData\zedr"
+// 目录（2026-11-14 Kali 实机验收踩过）。
 func defaultDataDir() string {
-	if v := os.Getenv("LOCALAPPDATA"); v != "" {
-		return filepath.Join(v, "zedr")
+	if runtime.GOOS == "windows" {
+		if v := os.Getenv("LOCALAPPDATA"); v != "" {
+			return filepath.Join(v, "zedr")
+		}
+		return `C:\ProgramData\zedr`
 	}
-	return `C:\ProgramData\zedr`
+	return "/var/lib/zedr"
 }
 
 // Path 返回数据目录下的文件路径。
