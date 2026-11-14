@@ -72,7 +72,7 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
             {[
               ['[1/5 指纹]', '进程静态画像 · 签名 / 路径 / 哈希'],
               ['[2/5 关键词]', '命令行语义扫描'],
-              ['[3/5 规则]', '36 条内置 · 签名包热下发'],
+              ['[3/5 规则]', '44 条内置 · 签名包热下发'],
               ['[4/5 血缘]', '进程祖先链 · 行为时序'],
               ['[5/5 融合]', '五层加权评分 → 判定 / 抑制'],
             ].map(([tag, desc]) => (
@@ -85,7 +85,7 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
         </div>
 
         <div className="relative font-mono text-[11px] text-faint">
-          HOSTGUARD EDR · WINDOWS AGENT + SERVER{srv ? ` · v${srv.version}` : ''}
+          Z-EDR · WINDOWS AGENT + SERVER{srv ? ` · v${srv.version}` : ''}
         </div>
       </div>
 
