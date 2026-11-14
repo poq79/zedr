@@ -22,8 +22,8 @@ It runs **entirely in user mode** — no kernel driver, no hooking, no process
 injection, and no inline blocking. Z-EDR is an *EDR* (detect & respond), not an
 *EPP* (prevent & block). Uninstalling leaves no trace.
 
-> **Early stage** — the 0.x line is moving fast: APIs, rule packs and docs may
-> change without notice between releases.
+> **Experimental** — stability is not guaranteed yet; validate against your
+> own environment before relying on it.
 
 ---
 
