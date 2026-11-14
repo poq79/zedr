@@ -78,7 +78,8 @@ async function devFixture(): Promise<LiveFixtureApi | null> {
   return m.fixture;
 }
 
-/* Authenticode / signed_state（winapi/signature.go 口径）→ 中文标签 + 徽标 tone */
+/* Authenticode / signed_state（winapi/signature.go 口径）→ 中文标签 + 徽标 tone。
+   unsupported：Linux 无 Authenticode 语义时的诚实取值（探针侧标注）。 */
 const AUTH_STATE: Record<string, [string, string]> = {
   valid: ['已签名 · 有效', 'resolved'],
   unsigned: ['未签名', 'neutral'],
@@ -86,6 +87,7 @@ const AUTH_STATE: Record<string, [string, string]> = {
   bad_digest: ['签名内容不符', 'critical'],
   expired: ['证书已过期', 'medium'],
   untrusted: ['证书链不受信', 'medium'],
+  unsupported: ['平台不支持签名校验', 'neutral'],
 };
 
 /* remote_class → 状态点（SOC 色彩契约：只有公网占用警示色，其余中性/弱化） */

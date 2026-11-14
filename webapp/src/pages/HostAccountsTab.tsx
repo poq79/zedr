@@ -212,7 +212,9 @@ export function HostAccountsTab({ agentId }: { agentId: string }) {
   const sorted = useMemo(() => [...users].sort((a, b) => {
     if (a.is_admin !== b.is_admin) return a.is_admin ? -1 : 1;
     if (a.disabled !== b.disabled) return a.disabled ? 1 : -1;
-    return a.name.localeCompare(b.name, 'zh-CN');
+    // name 兜底空串：Linux 账户枚举可能缺字段（uid 形态行），undefined 进
+    // localeCompare 会直接抛错炸掉整页
+    return (a.name || '').localeCompare(b.name || '', 'zh-CN');
   }), [users]);
 
   const policy = res?.policy;
@@ -292,7 +294,8 @@ export function HostAccountsTab({ agentId }: { agentId: string }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {sorted.map((u) => <AccountRow key={`${u.sid}:${u.name}`} u={u} />)}
+                    {/* key 容错：Linux 行 sid 可能缺失（"uid=0" 形态或空），退化到 name/序号防重复 key */}
+                    {sorted.map((u, i) => <AccountRow key={u.sid || u.name || `row-${i}`} u={u} />)}
                   </tbody>
                 </table>
               </div>

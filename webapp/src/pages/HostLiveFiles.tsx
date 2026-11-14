@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ChevronUp, CircleAlert, Copy, EyeOff, FileQuestion, Fingerprint, Folder, FolderSearch,
   Globe, Hand, RefreshCw, ScanSearch, Search, ShieldBan, ShieldCheck, TriangleAlert, Unplug,
@@ -12,6 +12,7 @@ import { fmtBytes, fmtTime } from '../lib/format';
 import { Badge, Button, Card, EmptyState, Input, Skeleton, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useConfirm, useToast } from '../components/ui/overlays';
 import { cn } from '../lib/utils';
+import { isLinuxHost } from '../lib/platform';
 import type { LiveFixtureApi } from '../lib/liveFixture';
 
 /* 主机详情「实时文件」Tab（docs/LIVE-TUNNEL.md §5.3 v1 + §11.4 v2，W1-F/F2）。
@@ -19,9 +20,11 @@ import type { LiveFixtureApi } from '../lib/liveFixture';
    现场哈希；v2 增量：目录限深搜索（fs/search，quick 速览徽标）、三哈希
    与一键复制、按需深度分析（PE 节区熵/导入分类/版本资源/字符串线索）、
    MotW 下载来源（ADS）。处置（加白/隔离）走既有 REST/指令通道，隧道本身
-   只读。错误契约：503 tunnel_not_connected → 状态条；429/403/501 → Toast。 */
+   只读。错误契约：503 tunnel_not_connected → 状态条；429/403/501 → Toast。
+   平台：路径语义（分隔符/根/校验）、初始路径、落地风险面目录与扩展名
+   按 isLinuxHost 分两套（PathTools 工厂），数据渲染不分支——Linux 探针
+   暂缺 analyze/ads 能力时走既有 501 降级文案。 */
 
-const INITIAL_PATH = 'C:\\';
 const PREVIEW_LIMIT = 64 * 1024;
 const SEARCH_DEPTH = 2; // fs/search 默认深度（契约 ≤4）
 const SEARCH_LIMIT = 100; // 结果条数（契约 ≤200）
@@ -29,66 +32,158 @@ const SEARCH_LIMIT = 100; // 结果条数（契约 ≤200）
 /* ---- 落地风险面（docs/LIVE-TUNNEL.md §16.3，F9）----
    纯前端组合：对临时/下载/公共/启动目录并行跑 fs/search，合并去重后按
    修改时间排序。fs/search 一次只接受单一 pattern，所以每个目录 × 每个
-   扩展名各发一次请求（5 目录 × 8 类 = 40 次），并发压到 3——探针侧每条
-   查询自带 30s 预算，串行会拖到几分钟，全并发又会把隧道打满。 */
-const LANDING_PATTERNS = ['*.exe', '*.dll', '*.ps1', '*.bat', '*.cmd', '*.vbs', '*.js', '*.msi'];
+   扩展名各发一次请求（Windows 5 目录 × 8 类 = 40 次），并发压到 3——探针
+   侧每条查询自带 30s 预算，串行会拖到几分钟，全并发又会把隧道打满。
+   pattern 按平台取形态：Linux 落地面是脚本/共享库/安装包（无盘符语义）。 */
+const LANDING_PATTERNS_WIN = ['*.exe', '*.dll', '*.ps1', '*.bat', '*.cmd', '*.vbs', '*.js', '*.msi'];
+const LANDING_PATTERNS_LINUX = ['*.sh', '*.py', '*.so', '*.bin', '*.elf', '*.deb', '*.rpm', '*.jar', '*.js'];
 const LANDING_DEPTH = 2;
 const LANDING_LIMIT = 100;
 const LANDING_CONCURRENCY = 3;
 
-/* ---- 路径工具（Win32：条目只含 name，全路径由前端拼接） ---- */
-
-function joinPath(dir: string, name: string): string {
-  return dir.endsWith('\\') ? dir + name : `${dir}\\${name}`;
+/* ---- 路径工具（条目只含 name，全路径由前端拼接） ----
+   Win32 与 POSIX 两套语义差异点：分隔符、根形态（盘符根 "C:\" 的上级仍是
+   自己；POSIX 根 "/" 的上级也是自己）、输入校验（盘符开头 vs "/" 开头）。
+   统一收进 PathTools 工厂，组件按平台取一份——调用点不写 if 分支，
+   避免 joinPath(a, b) 在同一页面两种拼法并存。 */
+interface PathTools {
+  /** true = POSIX（Linux）语义；false = Win32 */
+  posix: boolean;
+  /** 分隔符（面包屑间显示用） */
+  sep: '\\' | '/';
+  initialPath: string;
+  examplePath: string;
+  joinPath(dir: string, name: string): string;
+  parentPath(p: string): string;
+  baseName(p: string): string;
+  crumbs(p: string): { label: string; path: string }[];
+  atRoot(p: string): boolean;
+  /** 路径框提交：合法返回规范化路径，非法返回提示文案（探针侧会 400） */
+  normalizeInput(raw: string): { path: string } | { error: string };
 }
 
-function parentPath(p: string): string {
-  const t = p.replace(/\\+$/, '');
-  if (/^[A-Za-z]:$/.test(t)) return `${t}\\`; // 盘符根的上级仍是自己
-  const cut = t.lastIndexOf('\\');
-  if (cut <= 2) return `${t.slice(0, 2)}\\`;
-  return t.slice(0, cut);
-}
-
-function baseName(p: string): string {
-  const i = p.lastIndexOf('\\');
-  return i >= 0 ? p.slice(i + 1) : p;
-}
-
-function crumbs(p: string): { label: string; path: string }[] {
-  const out = [{ label: p.slice(0, 2), path: `${p.slice(0, 2)}\\` }];
-  let acc = p.slice(0, 2) + '\\';
-  for (const seg of p.slice(3).split('\\').filter(Boolean)) {
-    acc += seg;
-    out.push({ label: seg, path: acc });
-    acc += '\\';
+function makePathTools(posix: boolean): PathTools {
+  if (!posix) {
+    const joinPath = (dir: string, name: string) =>
+      dir.endsWith('\\') ? dir + name : `${dir}\\${name}`;
+    const parentPath = (p: string) => {
+      const t = p.replace(/\\+$/, '');
+      if (/^[A-Za-z]:$/.test(t)) return `${t}\\`; // 盘符根的上级仍是自己
+      const cut = t.lastIndexOf('\\');
+      if (cut <= 2) return `${t.slice(0, 2)}\\`;
+      return t.slice(0, cut);
+    };
+    return {
+      posix: false,
+      sep: '\\',
+      initialPath: 'C:\\',
+      examplePath: 'C:\\Windows',
+      joinPath,
+      parentPath,
+      baseName: (p) => {
+        const i = p.lastIndexOf('\\');
+        return i >= 0 ? p.slice(i + 1) : p;
+      },
+      crumbs: (p) => {
+        const out = [{ label: p.slice(0, 2), path: `${p.slice(0, 2)}\\` }];
+        let acc = p.slice(0, 2) + '\\';
+        for (const seg of p.slice(3).split('\\').filter(Boolean)) {
+          acc += seg;
+          out.push({ label: seg, path: acc });
+          acc += '\\';
+        }
+        return out;
+      },
+      atRoot: (p) => /^[A-Za-z]:\\?$/.test(p),
+      normalizeInput: (raw) => {
+        let p = raw.trim().replace(/\//g, '\\');
+        if (!/^[A-Za-z]:/.test(p)) return { error: '请输入以盘符开头的完整路径，例 C:\\Windows' };
+        if (p.length > 3) p = p.replace(/\\+$/, '');
+        return { path: p };
+      },
+    };
   }
-  return out;
+  const joinPath = (dir: string, name: string) =>
+    dir.endsWith('/') ? dir + name : `${dir}/${name}`;
+  const parentPath = (p: string) => {
+    const t = p.replace(/\/+$/, '');
+    if (!t) return '/'; // 根（以及空串兜底）的上级仍是自己
+    const cut = t.lastIndexOf('/');
+    if (cut <= 0) return '/';
+    return t.slice(0, cut);
+  };
+  return {
+    posix: true,
+    sep: '/',
+    initialPath: '/',
+    examplePath: '/var/log',
+    joinPath,
+    parentPath,
+    baseName: (p) => {
+      const t = p.replace(/\/+$/, '');
+      const i = t.lastIndexOf('/');
+      return i >= 0 ? t.slice(i + 1) : t;
+    },
+    crumbs: (p) => {
+      const out = [{ label: '/', path: '/' }];
+      let acc = '';
+      for (const seg of p.split('/').filter(Boolean)) {
+        acc += `/${seg}`;
+        out.push({ label: seg, path: acc });
+      }
+      return out;
+    },
+    atRoot: (p) => !p.replace(/\/+$/, ''),
+    normalizeInput: (raw) => {
+      // 折叠重复斜杠：POSIX 语义下 "//" 等价 "/"，对探针是无损规范化
+      let p = raw.trim().replace(/\/{2,}/g, '/');
+      if (!p.startsWith('/')) return { error: '请输入以 / 开头的绝对路径，例 /var/log' };
+      if (p.length > 1) p = p.replace(/\/+$/, '');
+      return { path: p };
+    },
+  };
 }
 
 /* fs/search 的 dir 是**相对搜索根**的目录（根层为 "."，见探针 search.go
-   buildHit）。老版本/假数据可能直接给绝对目录，这里两种都认——把相对
-   路径当绝对路径拼会得到 "sub\a.exe" 这种打不开的伪路径。 */
-function searchFullPath(root: string, en: LiveSearchEntry): string {
+   buildHit）。老版本/假数据可能直接给绝对目录，这里两种都认（盘符形态
+   与 "/" 开头都视为绝对）——把相对路径当绝对路径拼会得到 "sub\a.exe"
+   这种打不开的伪路径。拼接用当前平台的工具。 */
+function searchFullPath(pt: PathTools, root: string, en: LiveSearchEntry): string {
   const d = (en.dir || '').trim();
-  if (/^[A-Za-z]:[\\/]/.test(d)) return joinPath(d, en.name);
-  if (!d || d === '.') return joinPath(root, en.name);
-  return joinPath(joinPath(root, d), en.name);
+  if (/^[A-Za-z]:[\\/]/.test(d) || d.startsWith('/')) return pt.joinPath(d, en.name);
+  if (!d || d === '.') return pt.joinPath(root, en.name);
+  return pt.joinPath(pt.joinPath(root, d), en.name);
 }
 
 /* ---- 落地风险面：目录解析 ----
    探针 fs/search 只接受绝对路径（validateFSPath 不做环境变量展开），因此
-   契约里的 %TEMP% / %USERPROFILE% / %APPDATA% 必须由前端解析成真实目录：
+   Windows 契约里的 %TEMP% / %USERPROFILE% / %APPDATA% 必须由前端解析成
+   真实目录：
    1. 用主机注册的运行账户去 C:\Users 列表里对 profile 目录；
    2. 对不上（服务化探针通常报 NT AUTHORITY\SYSTEM）就取 mtime 最新的
       profile——单机场景一般就是最近在用的交互账户；
    3. C:\Users 都读不到时 Temp 退到 C:\Windows\Temp，两个用户级目录记入
       skipped 并在结果底部如实说明（不做静默丢弃）。
    多用户机器只覆盖一个 profile 是本轮已知取舍：逐个用户扫描会让请求数
-   随账户数线性膨胀，超出本轮 UX 预算。 */
+   随账户数线性膨胀，超出本轮 UX 预算。
+   Linux 没有环境变量展开问题：写落地高发目录固定且少量（/tmp、/var/tmp、
+   /dev/shm、/root、/home），直接扫描全量家目录比逐用户 profile 解析更便宜，
+   所以不走 Windows 那套账户匹配，skipped 恒空。 */
 interface LandingDir { label: string; path: string }
 
-async function resolveLandingDirs(agentId: string): Promise<{ dirs: LandingDir[]; skipped: string[] }> {
+async function resolveLandingDirs(agentId: string, posix: boolean): Promise<{ dirs: LandingDir[]; skipped: string[] }> {
+  if (posix) {
+    return {
+      dirs: [
+        { label: '/tmp', path: '/tmp' },
+        { label: '/var/tmp', path: '/var/tmp' },
+        { label: '/dev/shm', path: '/dev/shm' },
+        { label: '/root', path: '/root' },
+        { label: '/home', path: '/home' },
+      ],
+      skipped: [],
+    };
+  }
   let profile = '';
   try {
     const host = await api.get<{ agent: { username?: string } }>(
@@ -189,8 +284,11 @@ async function copyText(text: string): Promise<boolean> {
   } catch { return false; }
 }
 
-export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
+export function LiveFilesTab({ agentId, user, osVersion, openPath, onOpenPathDone }: {
   agentId: string; user: User;
+  /** 主机 os_version（HostDetail 已拉到 host 后才挂载 Tab，直接下传免二次请求）；
+      平台判定走 lib/platform.isLinuxHost，路径语义/落地目录/文案按此分支 */
+  osVersion?: string;
   /** 跨 Tab 联动：实时进程抽屉「分析此文件」以绝对路径打开本 Tab 的文件抽屉 */
   openPath?: string | null;
   onOpenPathDone?: () => void;
@@ -198,8 +296,12 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
   const toast = useToast();
   const canBrowse = user.role !== 'viewer'; // /live/fs = analyst+（LIVE-TUNNEL §4）
 
-  const [path, setPath] = useState(INITIAL_PATH); // 已请求路径（成功后取服务端回显）
-  const [input, setInput] = useState(INITIAL_PATH);
+  const isLinux = isLinuxHost(osVersion);
+  const pt = useMemo(() => makePathTools(isLinux), [isLinux]);
+  const landingPatterns = isLinux ? LANDING_PATTERNS_LINUX : LANDING_PATTERNS_WIN;
+
+  const [path, setPath] = useState(pt.initialPath); // 已请求路径（成功后取服务端回显）
+  const [input, setInput] = useState(pt.initialPath);
   const [list, setList] = useState<LiveFsList | null>(null);
   const [loading, setLoading] = useState(false);
   const [more, setMore] = useState(false); // 游标追加分页
@@ -221,7 +323,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
   const scanSeq = useRef(0);
 
   const canonical = list?.path || path;
-  const atRoot = /^[A-Za-z]:\\?$/.test(canonical);
+  const atRoot = pt.atRoot(canonical);
 
   const load = useCallback(async (dir: string, cursor?: string) => {
     // 任何目录导航都退出落地扫描视图：扫描结果属于发起时的上下文，
@@ -256,11 +358,11 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
   }, [agentId, toast]);
 
   useEffect(() => {
-    setList(null); setPath(INITIAL_PATH); setInput(INITIAL_PATH); setTunnelDown(false); setLoadErr(''); setOpenFile(null);
+    setList(null); setPath(pt.initialPath); setInput(pt.initialPath); setTunnelDown(false); setLoadErr(''); setOpenFile(null);
     clearSearchState();
     scanSeq.current++; // 换主机：作废上一台主机在途的落地扫描
     setScan(null);
-    if (canBrowse) void load(INITIAL_PATH);
+    if (canBrowse) void load(pt.initialPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
@@ -289,10 +391,10 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
         const full = st.path || openPath;
         setOpenFile({
           entry: {
-            name: baseName(full), size: st.size, is_dir: st.is_dir, hidden: st.hidden,
+            name: pt.baseName(full), size: st.size, is_dir: st.is_dir, hidden: st.hidden,
             system: st.system, readonly: st.readonly, reparse: st.reparse, mtime_unix: st.mtime_unix,
           },
-          dir: parentPath(full),
+          dir: pt.parentPath(full),
         });
       } catch (ex) {
         if (alive) toast(liveErrNote(ex) || (ex as Error).message, 'warn');
@@ -304,13 +406,13 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPath, agentId]);
 
-  /* 路径框跳转：容错正斜杠与结尾反斜杠；缺盘符直接提醒（探针侧会 400） */
+  /* 路径框跳转：规范化与校验按平台（Win32 容错正斜杠/结尾反斜杠、缺盘符
+     提醒；POSIX 折叠重复斜杠、要求 "/" 开头）——探针侧对不合法路径会 400 */
   const submit = () => {
-    let p = input.trim().replace(/\//g, '\\');
-    if (!/^[A-Za-z]:/.test(p)) { toast('请输入以盘符开头的完整路径，例 C:\\Windows', 'warn'); return; }
-    if (p.length > 3) p = p.replace(/\\+$/, '');
+    const r = pt.normalizeInput(input);
+    if ('error' in r) { toast(r.error, 'warn'); return; }
     clearSearchState();
-    void load(p);
+    void load(r.path);
   };
 
   /* 目录限深搜索：根 = 当前浏览目录（冻结进结果，浏览导航后结果仍在） */
@@ -333,7 +435,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
 
   /* §16.3 落地风险面：先解析目录，再把 (目录 × 扩展名) 摊平成请求队列，
      3 个 worker 共享游标。单条失败只记该目录一次（底部按"目录"汇总），
-     不让同一目录的 8 个 pattern 各刷一条失败。 */
+     不让同一目录的多个 pattern 各刷一条失败。 */
   const runLandingScan = async () => {
     const seq = ++scanSeq.current;
     clearSearchState();
@@ -342,9 +444,9 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
       truncated: 0, startedAt: Date.now(),
     });
 
-    const { dirs, skipped } = await resolveLandingDirs(agentId);
+    const { dirs, skipped } = await resolveLandingDirs(agentId, pt.posix);
     if (seq !== scanSeq.current) return;
-    const tasks = dirs.flatMap((d) => LANDING_PATTERNS.map((p) => ({ dir: d, pattern: p })));
+    const tasks = dirs.flatMap((d) => landingPatterns.map((p) => ({ dir: d, pattern: p })));
     const total = tasks.length;
     setScan((s) => (s ? { ...s, dirCount: dirs.length, total, skipped } : s));
 
@@ -381,9 +483,9 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
           if (r.truncated) truncated++;
           for (const en of r.entries || []) {
             if (en.is_dir) continue;
-            const full = searchFullPath(r.path || t.dir.path, en);
+            const full = searchFullPath(pt, r.path || t.dir.path, en);
             const key = full.toLowerCase();
-            if (!hits.has(key)) hits.set(key, { key, path: full, dir: parentPath(full), entry: en });
+            if (!hits.has(key)) hits.set(key, { key, path: full, dir: pt.parentPath(full), entry: en });
           }
         } catch (e) {
           if (seq !== scanSeq.current) return;
@@ -401,19 +503,19 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
   const enterRow = (en: LiveFsEntry & { dir?: string }) => {
     if (searchRes) {
       // 搜索结果：dir 是相对搜索根（根层 "."），先换成完整路径再打开
-      const full = searchFullPath(searchRes.path, en);
+      const full = searchFullPath(pt, searchRes.path, en);
       if (en.is_dir) { clearSearchState(); void load(full); return; }
-      setOpenFile({ entry: en, dir: parentPath(full) });
+      setOpenFile({ entry: en, dir: pt.parentPath(full) });
       return;
     }
-    if (en.is_dir) { clearSearchState(); void load(joinPath(canonical, en.name)); }
+    if (en.is_dir) { clearSearchState(); void load(pt.joinPath(canonical, en.name)); }
     else setOpenFile({ entry: en, dir: canonical }); // 冻结点击时的目录，防浏览中途漂移
   };
 
   /* 刷新语义随模式切换：落地扫描 → 重跑扫描；搜索结果 → 重跑同参搜索；
      目录浏览 → 重列目录 */
   const refresh = () => {
-    if (scan?.running) return; // 扫描进行中不重启，避免白白作废在途的 40 次查询
+    if (scan?.running) return; // 扫描进行中不重启，避免白白作废在途的数十次查询
     if (scan) void runLandingScan();
     else if (searchRes) void runSearch(searchRes.path);
     else void load(canonical);
@@ -426,14 +528,14 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
         {canBrowse && (
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Button size="icon" aria-label="上一级目录" title="上一级" disabled={atRoot || loading}
-              onClick={() => { clearSearchState(); void load(parentPath(canonical)); }}>
+              onClick={() => { clearSearchState(); void load(pt.parentPath(canonical)); }}>
               <ChevronUp size={15} strokeWidth={1.8} />
             </Button>
             <nav aria-label="路径导航"
               className="flex min-w-0 flex-1 flex-wrap items-center gap-x-0.5 gap-y-1 rounded-md border border-border-soft bg-secondary/40 px-2 py-1">
-              {crumbs(canonical).map((c, i, arr) => (
+              {pt.crumbs(canonical).map((c, i, arr) => (
                 <span key={c.path} className="flex min-w-0 items-center">
-                  {i > 0 && <span className="px-0.5 font-mono text-[11px] text-ghost" aria-hidden>\</span>}
+                  {i > 0 && <span className="px-0.5 font-mono text-[11px] text-ghost" aria-hidden>{pt.sep}</span>}
                   <button onClick={() => { clearSearchState(); void load(c.path); }} title={c.path}
                     className={cn('cursor-pointer rounded px-1 py-0.5 font-mono text-[12px] transition-colors hover:bg-accent hover:text-foreground',
                       i === arr.length - 1 ? 'font-medium text-foreground' : 'text-muted-foreground')}>
@@ -444,7 +546,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
             </nav>
             <Input value={input} onChange={(ev) => setInput(ev.target.value)}
               onKeyDown={(ev) => { if (ev.key === 'Enter') submit(); }}
-              placeholder="输入完整路径，回车跳转" spellCheck={false} aria-label="路径输入框"
+              placeholder={`输入完整路径，例 ${pt.examplePath}，回车跳转`} spellCheck={false} aria-label="路径输入框"
               className="h-8 w-[230px] font-mono text-[12px]" />
             <Button size="icon" aria-label="刷新" title="刷新" disabled={loading || searching || !!scan?.running}
               onClick={() => void refresh()}>
@@ -469,7 +571,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
             </Button>
             <Button size="sm" variant="ghost" disabled={searching || !!scan?.running}
               onClick={() => void runLandingScan()}
-              title="并行扫描临时/下载/公共/启动目录中的可执行与脚本文件（约 40 次查询，可能超过 25 秒）">
+              title={`并行扫描${isLinux ? ' /tmp、/var/tmp、/dev/shm、/root、/home 中的脚本与可执行文件' : '临时/下载/公共/启动目录中的可执行与脚本文件'}（约 ${landingPatterns.length * 5} 次查询，可能超过 25 秒）`}>
               <ScanSearch size={13} />
               {scan?.running
                 ? (scan.total ? `已完成 ${scan.done}/${scan.total} 次请求` : '解析扫描目录…')
@@ -503,7 +605,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
               <span>
                 {scan.running ? '正在扫描落地风险面' : '落地风险面扫描完成'}
                 {scan.dirCount > 0 && (
-                  <span className="text-faint">（{scan.dirCount} 个目录 × {LANDING_PATTERNS.length} 类扩展名）</span>
+                  <span className="text-faint">（{scan.dirCount} 个目录 × {landingPatterns.length} 类扩展名）</span>
                 )}
               </span>
               <span className="font-mono text-[11px] text-ghost">{scan.hits.length} 个文件</span>
@@ -531,7 +633,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
               <SkeletonRows rows={6} />
             ) : !scan.hits.length ? (
               <EmptyState tone="info" icon={<ScanSearch size={20} />} title="没有在落地目录发现可执行/脚本文件"
-                sub={`已扫描临时、下载、公共与启动目录（深度 ≤${LANDING_DEPTH}）。此处只覆盖这些落地区域，不代表主机上没有其它可执行文件。`} />
+                sub={`已扫描${isLinux ? ' /tmp、/var/tmp、/dev/shm、/root、/home' : '临时、下载、公共与启动目录'}（深度 ≤${LANDING_DEPTH}）。此处只覆盖这些落地区域，不代表主机上没有其它可执行文件。`} />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-[12.5px]">
@@ -609,7 +711,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
               </div>
               {!searchRes.entries.length ? (
                 <EmptyState tone="info" icon={<Search size={20} />} title="没有命中"
-                  sub={`在 ${searchRes.path} 以下 ${SEARCH_DEPTH} 层内没有匹配 “${patternUsed}” 的文件名。可放大通配范围（如 *.dll）或先进入更深的目录再搜。`} />
+                  sub={`在 ${searchRes.path} 以下 ${SEARCH_DEPTH} 层内没有匹配 “${patternUsed}” 的文件名。可放大通配范围（如 ${isLinux ? '*.so' : '*.dll'}）或先进入更深的目录再搜。`} />
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-[12.5px]">
@@ -623,7 +725,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
                     </thead>
                     <tbody>
                       {searchRes.entries.map((en, i) => {
-                        const full = searchFullPath(searchRes.path, en);
+                        const full = searchFullPath(pt, searchRes.path, en);
                         return (
                           <tr key={`${en.dir || ''}-${en.name}-${i}`} tabIndex={0}
                             title={full}
@@ -729,7 +831,7 @@ export function LiveFilesTab({ agentId, user, openPath, onOpenPathDone }: {
       </Card>
 
       {/* canWrite 与 canBrowse 同一谓词：/live/fs 与指令通道都是 analyst+ */}
-      <FileDrawer agentId={agentId} sel={openFile} canWrite={canBrowse} onClose={() => setOpenFile(null)} />
+      <FileDrawer agentId={agentId} sel={openFile} canWrite={canBrowse} pt={pt} onClose={() => setOpenFile(null)} />
     </>
   );
 }
@@ -743,7 +845,8 @@ type PrevState =
   | { state: 'off' }
   | { state: 'error'; note: string };
 
-/* Authenticode state（winapi/signature.go）→ 中文标签 + 徽标 tone */
+/* Authenticode state（winapi/signature.go）→ 中文标签 + 徽标 tone。
+   unsupported：Linux 探针无 Authenticode 语义，fs/hash 恒回该值（诚实标注）。 */
 const AUTH_STATE: Record<string, [string, string]> = {
   valid: ['已签名 · 有效', 'resolved'],
   unsigned: ['未签名', 'neutral'],
@@ -751,6 +854,7 @@ const AUTH_STATE: Record<string, [string, string]> = {
   bad_digest: ['签名内容不符', 'critical'],
   expired: ['证书已过期', 'medium'],
   untrusted: ['证书链不受信', 'medium'],
+  unsupported: ['平台不支持签名校验', 'neutral'],
 };
 
 /* MotW ZoneId → 展示（zone_name 服务端/探针已给，这里只定徽标语义） */
@@ -774,12 +878,14 @@ function attrBadges(en: LiveFsEntry & { quick?: LiveSearchEntry['quick'] }): Rea
   return out.length ? out : <span className="text-faint">—</span>;
 }
 
-function FileDrawer({ agentId, sel, canWrite, onClose }: {
-  agentId: string; sel: { entry: LiveFsEntry; dir: string } | null; canWrite: boolean; onClose: () => void;
+function FileDrawer({ agentId, sel, canWrite, pt, onClose }: {
+  agentId: string; sel: { entry: LiveFsEntry; dir: string } | null; canWrite: boolean;
+  /** 与宿主 Tab 同一份平台路径工具：fullPath 拼接/展示必须与打开它时同语义 */
+  pt: PathTools; onClose: () => void;
 }) {
   const toast = useToast();
   const confirm = useConfirm();
-  const fullPath = sel ? joinPath(sel.dir, sel.entry.name) : '';
+  const fullPath = sel ? pt.joinPath(sel.dir, sel.entry.name) : '';
   const [preview, setPreview] = useState<PrevState>({ state: 'loading' });
   const [previewTick, setPreviewTick] = useState(0);
   const [hash, setHash] = useState<LiveHash | null>(null);
@@ -1147,9 +1253,16 @@ function FileDrawer({ agentId, sel, canWrite, onClose }: {
               <div className="text-[12.5px] text-destructive">{anaErr}</div>
             )}
             {!anaBusy && !anaErr && !ana && (
-              <p className="text-xs leading-[1.8] text-faint">
-                单遍流式计算三哈希，并对 PE 文件解析节区熵、导入表分类、版本资源与字符串线索（文件 ≤64MB）。解析有真实成本，按需执行。
-              </p>
+              pt.posix ? (
+                // Linux 探针暂未提供 ELF 深度分析端点（请求会 501），先诚实说清现有能力边界
+                <p className="text-xs leading-[1.8] text-faint">
+                  ELF 深度分析暂未提供，哈希与文本预览可用；能力随探针版本跟进。
+                </p>
+              ) : (
+                <p className="text-xs leading-[1.8] text-faint">
+                  单遍流式计算三哈希，并对 PE 文件解析节区熵、导入表分类、版本资源与字符串线索（文件 ≤64MB）。解析有真实成本，按需执行。
+                </p>
+              )
             )}
             {!anaBusy && ana && <AnalyzeReport ana={ana} fileName={sel.entry.name} />}
           </Section>

@@ -127,9 +127,12 @@ function SigCheck({ agentId, path, canLive }: { agentId: string; path: string; c
         <>
           <Badge tone={meta.tone}>{meta.label}</Badge>
           {cached && <span className="text-[10.5px] text-ghost" title="30 秒内重复查询，未重新哈希">缓存</span>}
-          <span className="font-mono text-[11px] text-muted-foreground" title={res.sha256}>
-            {res.sha256.slice(0, 16)}…
-          </span>
+          {/* sha256 容错：探针异常路径可能只回签名状态没有摘要，缺字段不崩行 */}
+          {res.sha256 && (
+            <span className="font-mono text-[11px] text-muted-foreground" title={res.sha256}>
+              {res.sha256.slice(0, 16)}…
+            </span>
+          )}
         </>
       )}
     </div>

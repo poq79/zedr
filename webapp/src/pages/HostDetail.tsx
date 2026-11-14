@@ -8,6 +8,7 @@ import { Badge, Button, Card, CardTitle, Input, SkeletonRows, Tabs } from '../co
 import { useToast, useConfirm } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
+import { isLinuxHost } from '../lib/platform';
 import { LiveFilesTab } from './HostLiveFiles';
 import { LiveProcsTab, LiveProbeInfo } from './HostLiveProcs';
 import { HostReconTab } from './HostReconTab';
@@ -36,7 +37,9 @@ const str = (v: unknown) => (v == null ? '' : String(v));
 
 /* 从服务路径或任务动作字符串里提取第一个绝对可执行路径。
    任务动作可能是 `"C:\x\a.exe" --arg` 或 `C:\x\a.bat /c ...`；非贪婪
-   匹配到第一个扩展名即停，后面的参数不会混进哈希请求。 */
+   匹配到第一个扩展名即停，后面的参数不会混进哈希请求。
+   只认 Win32 盘符形态——Linux 主机的 /usr/bin/... 提取返回空，调用方
+   按"无路径"降级（校验按钮禁用并说明原因），属设计内行为而非缺陷。 */
 const EXE_RE = /[A-Za-z]:\\[^"]+?\.(?:exe|dll|com|bat|cmd|ps1)/i;
 
 function extractExePath(raw: string): string {
@@ -65,6 +68,8 @@ const WRITABLE_RULES: { re: RegExp; label: string }[] = [
 
 function writableRiskLabel(path: string): string | null {
   const p = (path || '').trim().replace(/"/g, '');
+  // 盘符门槛兼作平台闸：Linux 路径（/usr/...）在此恒返回 null、不显示风险
+  // 标签——规则表是 Win32 目录画像，对 Linux 强行套用只会产出误导性命中
   if (!/^[a-z]:\\/i.test(p)) return null;
   return WRITABLE_RULES.find((r) => r.re.test(p))?.label || null;
 }
@@ -310,6 +315,9 @@ export function HostDetailPage({ user }: { user: User }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [host, setHost] = useState<Host | null>(null);
+  /* 平台判定（os_version 前缀法，见 lib/platform）：只影响用户可见文案
+     （隔离指令路径示例等）；host 未加载时按 Windows 取值，加载后即正确 */
+  const isLinux = isLinuxHost(host?.os_version);
   const [recent, setRecent] = useState<Alert[] | null>(null);
   const [sections, setSections] = useState<HostInventorySection[] | null>(null);
   const [cmds, setCmds] = useState<AgentCommand[] | null>(null);
@@ -540,7 +548,7 @@ export function HostDetailPage({ user }: { user: User }) {
                 onAnalyzeFile={(p) => { setLiveFileTarget(p); setTab('live'); }} />
             )}
             {tab === 'live' && (
-              <LiveFilesTab agentId={id} user={user}
+              <LiveFilesTab agentId={id} user={user} osVersion={host.os_version}
                 openPath={liveFileTarget} onOpenPathDone={() => setLiveFileTarget(null)} />
             )}
             {tab === 'recon' && <HostReconTab agentId={id} />}
@@ -590,7 +598,7 @@ export function HostDetailPage({ user }: { user: User }) {
                 <CardTitle className="mb-2.5">处置指令</CardTitle>
                 <div className="flex flex-col gap-2 rounded-md border border-border-soft bg-destructive-soft/40 p-3.5">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Input value={qPath} onChange={(e) => setQPath(e.target.value)} placeholder="文件完整路径，例 C:\Users\...\sample.exe" className="min-w-[280px] flex-1 font-mono text-[12px]" spellCheck={false} />
+                    <Input value={qPath} onChange={(e) => setQPath(e.target.value)} placeholder={isLinux ? '文件完整路径，例 /home/.../sample' : '文件完整路径，例 C:\\Users\\...\\sample.exe'} className="min-w-[280px] flex-1 font-mono text-[12px]" spellCheck={false} />
                     <Button variant="danger" size="sm" disabled={!qPath.trim() || !!cmdBusy}
                       onClick={() => send('quarantine_file', qPath.trim(), {
                         title: '隔离该文件？', danger: true, okText: '隔离',
