@@ -495,6 +495,17 @@ CREATE TABLE IF NOT EXISTS audit_seal_anchor (
 INSERT OR IGNORE INTO audit_seal_anchor(id, seq, mac) VALUES (1, 0, '');
 `,
 	},
+	{
+		name: "012_mfa",
+		sql: `
+-- 管理台 TOTP MFA（RFC 6238）：按用户自愿启用，无全局开关——
+-- enrollment 是用户级事实，全局开关只会造成"配了码却不生效"的歧义。
+-- totp_secret 存 base32 密钥明文：它是"第二把钥匙"不是敏感数据本身，
+-- 且校验需要原文做 HMAC；依赖 DB 文件权限（0600 目录）+ TLS 传输保护。
+ALTER TABLE users ADD COLUMN totp_secret  TEXT    NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

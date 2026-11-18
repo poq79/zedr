@@ -65,6 +65,11 @@ type User struct {
 	Disabled     bool       `json:"disabled"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+	// TOTP MFA（RFC 6238，迁移 012）。Secret 是"第二把钥匙"的 base32
+	// 原文，校验需要它做 HMAC——绝不序列化出去（json:"-"）；
+	// Enabled 对外叫 mfa_enabled（前端展示口径）。
+	TotpSecret  string `json:"-"`
+	TotpEnabled bool   `json:"mfa_enabled"`
 }
 
 // RefreshToken 记录服务端持有的刷新令牌（仅存哈希）。

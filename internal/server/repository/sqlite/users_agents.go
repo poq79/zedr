@@ -14,16 +14,17 @@ type userRepo struct{ s *Store }
 
 func (r *userRepo) Create(ctx context.Context, u *domain.User) error {
 	_, err := r.s.db.ExecContext(ctx,
-		`INSERT INTO users(id, username, display_name, password_hash, role, disabled, created_at)
-		 VALUES(?,?,?,?,?,?,?)`,
-		u.ID, u.Username, u.DisplayName, u.PasswordHash, string(u.Role), boolInt(u.Disabled), millis(u.CreatedAt))
+		`INSERT INTO users(id, username, display_name, password_hash, role, disabled, created_at, totp_secret, totp_enabled)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		u.ID, u.Username, u.DisplayName, u.PasswordHash, string(u.Role), boolInt(u.Disabled), millis(u.CreatedAt),
+		u.TotpSecret, boolInt(u.TotpEnabled))
 	if err != nil {
 		return fmt.Errorf("创建用户失败: %w", err)
 	}
 	return nil
 }
 
-const userCols = `id, username, display_name, password_hash, role, disabled, created_at, last_login_at`
+const userCols = `id, username, display_name, password_hash, role, disabled, created_at, last_login_at, totp_secret, totp_enabled`
 
 func scanUser(sc interface{ Scan(...any) error }) (*domain.User, error) {
 	var (
@@ -32,14 +33,17 @@ func scanUser(sc interface{ Scan(...any) error }) (*domain.User, error) {
 		disabled int
 		created  int64
 		last     sql.NullInt64
+		totpOn   int
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &role, &disabled, &created, &last); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &role, &disabled, &created, &last,
+		&u.TotpSecret, &totpOn); err != nil {
 		return nil, err
 	}
 	u.Role = domain.Role(role)
 	u.Disabled = disabled != 0
 	u.CreatedAt = fromMillis(created)
 	u.LastLoginAt = fromNullMillis(last)
+	u.TotpEnabled = totpOn != 0
 	return &u, nil
 }
 
@@ -103,6 +107,16 @@ func (r *userRepo) UpdatePassword(ctx context.Context, id, hash string) error {
 
 func (r *userRepo) SetDisabled(ctx context.Context, id string, disabled bool) error {
 	_, err := r.s.db.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE id = ?`, boolInt(disabled), id)
+	return err
+}
+
+// SetTotp 写入/清除 TOTP 绑定。enroll 阶段 secret 落库但 enabled=false
+//（扫码确认前不算启用，防止把半途而废的绑定留在账号上）；verify 通过
+// 才翻转 enabled。解绑 = 空密钥 + false，单语句原子完成。
+func (r *userRepo) SetTotp(ctx context.Context, id, secret string, enabled bool) error {
+	_, err := r.s.db.ExecContext(ctx,
+		`UPDATE users SET totp_secret = ?, totp_enabled = ? WHERE id = ?`,
+		secret, boolInt(enabled), id)
 	return err
 }
 

@@ -76,6 +76,9 @@ type UserRepo interface {
 	List(ctx context.Context) ([]domain.User, error)
 	UpdatePassword(ctx context.Context, id, hash string) error
 	SetDisabled(ctx context.Context, id string, disabled bool) error
+	// SetTotp 写入/清除 TOTP 绑定（迁移 012）。secret 空 + enabled=false
+	// 即解绑；确认前 secret 先落库（enabled=false），verify 通过才翻转。
+	SetTotp(ctx context.Context, id, secret string, enabled bool) error
 }
 
 // TokenRepo 刷新令牌数据访问（只存哈希）。
