@@ -285,7 +285,7 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 	return s.repos.Agents.Delete(ctx, id)
 }
 
-// EnqueueCommand 下发指令（terminate/quarantine_file/quarantine_restore/rescan/sync_rules/collect）。
+// EnqueueCommand 下发指令（terminate/quarantine_file/quarantine_restore/rescan/sync_rules/collect/self_upgrade）。
 // 处置类指令走双层开关：服务端在这里拦一道，终端侧再各自配置确认——
 // 单侧误开不会让破坏性动作真正生效。
 func (s *AgentService) EnqueueCommand(ctx context.Context, agentID, typ, payload, by string) (*domain.AgentCommand, error) {
@@ -310,6 +310,14 @@ func (s *AgentService) EnqueueCommand(ctx context.Context, agentID, typ, payload
 		// 服务端总开关 + 终端本地开关双层闸门，默认双侧关闭。
 		if !s.cfg.DrillEnabled {
 			return nil, apperr.Forbidden("服务端未启用检测演练（HG_SERVER_DRILL_ENABLED）")
+		}
+	case "self_upgrade":
+		// 升级会让探针进程退出重启（服务模式由 SCM 拉起新版本），且版本
+		// 只升不降、方向不可逆——与 drill 同纪律走服务端总开关 + 终端
+		// 本地开关双层闸门。物料（HG_SERVER_UPGRADE_FILE/VERSION）未配置
+		// 时探针侧拉清单会 503，回执 failed，不会换出坏状态。
+		if !s.cfg.UpgradeEnabled {
+			return nil, apperr.Forbidden("服务端未启用探针自升级（HG_SERVER_UPGRADE_ENABLED）")
 		}
 	case "rescan", "sync_rules", "collect":
 		// 只读类动作始终允许

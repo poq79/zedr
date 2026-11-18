@@ -13,6 +13,22 @@ import (
 	"zedr/internal/platform/rulehash"
 )
 
+// availableUpgrade 面向管理台的升级物料元信息：是否启用、目标版本、包大小。
+// 与探针侧 manifest 端点的区别：这条给前端渲染"升级探针"入口与确认弹窗，
+// 未启用时返回 enabled=false 而不是 503——前端按"功能未启用"静默隐藏入口。
+// size 用 stat 而不是整包哈希：这里只要展示量级，manifest 端点才承担完整性。
+func (h *adminHandler) availableUpgrade(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]any{"enabled": false, "version": "", "size": int64(0)}
+	if h.deps.UpgradeEnabled && h.deps.UpgradeFile != "" && h.deps.UpgradeVersion != "" {
+		if st, err := os.Stat(h.deps.UpgradeFile); err == nil && !st.IsDir() {
+			resp["enabled"] = true
+			resp["version"] = h.deps.UpgradeVersion
+			resp["size"] = st.Size()
+		}
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, resp)
+}
+
 // upgradeManifest 下发探针自升级包描述（版本/哈希/大小 + HMAC 签名）。
 // 未配置 HG_SERVER_UPGRADE_FILE/HG_SERVER_UPGRADE_VERSION 时返回 503——
 // 这是显式"未启用"语义，探针侧收到后按无升级处理而不是报错刷屏。

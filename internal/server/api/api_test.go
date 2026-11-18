@@ -47,6 +47,12 @@ func newTestEnv(t *testing.T) *testEnv {
 
 // newTestEnvWith 允许用例在路由构建前改 Deps（如 deploy 端点的包路径/token）。
 func newTestEnvWith(t *testing.T, extra func(*Deps)) *testEnv {
+	return newTestEnvFull(t, extra, nil)
+}
+
+// newTestEnvFull 在 newTestEnvWith 基础上再放开 service.Config 的定制口
+// （升级/处置等服务层闸门默认关，开关打开路径的用例需要显式置位）。
+func newTestEnvFull(t *testing.T, extra func(*Deps), svcExtra func(*service.Config)) *testEnv {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -65,13 +71,17 @@ func newTestEnvWith(t *testing.T, extra func(*Deps)) *testEnv {
 		t.Fatalf("构造令牌管理器失败: %v", err)
 	}
 
-	svc := service.New(repos, tokens, service.Config{
+	svcCfg := service.Config{
 		EnrollToken:       testEnrollTok,
 		KillEnabled:       false,
 		HeartbeatInterval: 30 * time.Second,
 		ScanInterval:      2 * time.Second,
 		DupWindow:         5 * time.Minute,
-	}, log, ai.NewEngine(ai.Config{Provider: "none"}, log))
+	}
+	if svcExtra != nil {
+		svcExtra(&svcCfg)
+	}
+	svc := service.New(repos, tokens, svcCfg, log, ai.NewEngine(ai.Config{Provider: "none"}, log))
 
 	if _, err := svc.Rule.SeedBuiltins(t.Context()); err != nil {
 		t.Fatalf("播种规则失败: %v", err)

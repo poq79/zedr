@@ -52,6 +52,9 @@ type Deps struct {
 	// 服务端配置；任一为空 = 升级端点按"未启用"返回 503
 	UpgradeFile    string
 	UpgradeVersion string
+	// UpgradeEnabled 是自升级的服务端总开关（availableUpgrade 据此返回
+	// enabled，指令白名单在 service 层复检同一开关）
+	UpgradeEnabled bool
 	// DeployPackage/DeployVersion 是"接入新主机"部署包（zip，管理台下载）；
 	// 空 = 部署端点按"未启用"返回 503，管理台据此隐藏下载入口。
 	// EnrollToken 是终端注册预共享令牌（接入引导展示用，adminOnly + 审计）；
@@ -235,6 +238,9 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/hosts/{id}", viewer(adminH.getHost))
 	mux.Handle("DELETE /api/v1/hosts/{id}", adminOnly(adminH.deleteHost))
 	mux.Handle("POST /api/v1/hosts/{id}/commands", writer(adminH.sendCommand))
+	// 探针自升级可用性元信息（viewer 可读）：前端据此渲染升级入口与目标版本。
+	// 发起指令仍走 /hosts/{id}/commands（服务端白名单 + admin 角色闸把门）。
+	mux.Handle("GET /api/v1/upgrade/available", viewer(adminH.availableUpgrade))
 	// 检测演练：发起（analyst+，服务端总开关 HG_SERVER_DRILL_ENABLED 把门）
 	// 与报告列表（viewer 可读，复盘/验收场景常需要只读角色能看到结果）
 	mux.Handle("POST /api/v1/hosts/{id}/drill", writer(adminH.startDrill))

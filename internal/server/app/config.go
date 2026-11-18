@@ -65,6 +65,14 @@ type Config struct {
 	// UpgradeFile/UpgradeVersion 探针自升级包路径与版本；空=升级端点不可用
 	UpgradeFile    string
 	UpgradeVersion string
+	// UpgradeEnabled 是探针自升级的服务端总开关（HG_SERVER_UPGRADE_ENABLED，
+	// 默认关）。升级会让探针进程退出重启（服务模式由 SCM 拉起新版本），且
+	// 版本只升不降、方向不可逆——"包已就位但还没准备好放号"是真实运维状态
+	// （先传包、验证、再开放），所以除物料外还需要显式的意图开关。
+	UpgradeEnabled bool
+	// UpgradeWaveSize/WaveTimeout 是批量升级的波次参数（0=服务层默认 10/10m）。
+	UpgradeWaveSize    int
+	UpgradeWaveTimeout time.Duration
 	// DeployPackage/DeployVersion 是"接入新主机"部署包（zip：探针+托盘+安装脚本）。
 	// 与自升级包的区别：面向还没装探针的新机器，由管理台管理员经 JWT 下载；
 	// 空=部署端点返回"未启用"，管理台据此隐藏下载入口。
@@ -189,6 +197,7 @@ func LoadConfig() (*Config, error) {
 	c.OpenAlertTTL = l.Duration("HG_SERVER_OPEN_ALERT_TTL", 0)
 	c.UpgradeFile = l.Env("HG_SERVER_UPGRADE_FILE", "")
 	c.UpgradeVersion = l.Env("HG_SERVER_UPGRADE_VERSION", "")
+	c.UpgradeEnabled = l.Bool("HG_SERVER_UPGRADE_ENABLED", false)
 	c.DeployPackage = l.Env("HG_SERVER_DEPLOY_PACKAGE", "")
 	c.DeployVersion = l.Env("HG_SERVER_DEPLOY_VERSION", "")
 	c.LiveQueryEnabled = l.Bool("HG_SERVER_LIVEQUERY_ENABLED", true)

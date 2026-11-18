@@ -287,6 +287,12 @@ func (h *adminHandler) sendCommand(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
+	// 升级是唯一方向不可逆的指令（版本只升不降，降级必须走运维通道），
+	// 且会让探针进程退出重启——收口到 admin；其余指令维持 writer 口径。
+	if req.Type == "self_upgrade" && p.Role != domain.RoleAdmin {
+		httpx.WriteError(w, r, apperr.Forbidden("探针自升级仅管理员可发起"))
+		return
+	}
 	id := r.PathValue("id")
 	c, err := h.deps.Services.Agent.EnqueueCommand(r.Context(), id, req.Type, req.Payload, p.Username)
 	if err != nil {

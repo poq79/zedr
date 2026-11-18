@@ -23,6 +23,11 @@ type Config struct {
 	// 交付验收/升级回归场景显式打开。终端侧还有 HG_AGENT_DRILL_ENABLED
 	// 第二道闸，单侧误开不会真的跑起来。
 	DrillEnabled bool // 是否允许下发检测演练指令
+	// UpgradeEnabled 是探针自升级指令（type=self_upgrade）的服务端闸门：
+	// 升级会让探针进程退出重启（服务模式由 SCM 拉起新版本），且版本只升不降、
+	// 方向不可逆。与 drill 同纪律：服务端总开关 + 终端侧 HG_AGENT_UPGRADE_ENABLED
+	// 第二道闸，单侧误开不会真的换装。物料（升级包路径/版本）另行配置。
+	UpgradeEnabled bool
 	// SensorOfflineAlerts/Severity 是传感器失联告警（SEN-OFFLINE）的开关
 	// 与严重度，语义见 app.Config 同名字段注释。
 	SensorOfflineAlerts   bool
