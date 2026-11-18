@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Eraser, Plus, Send, Square, X } from 'lucide-react';
 import { api, authHeaders } from '../lib/api';
+import { stripDSML } from '../lib/aiContext';
 import { Badge, Button, Card, Input, Select } from './ui/basics';
 import { useToast } from './ui/overlays';
 
@@ -45,6 +46,10 @@ const STARTERS = [
   '当前 AI 引擎和预算状态如何？',
   '最新的 critical 告警里有没有同哈希跨主机？',
 ];
+
+// "/" 斜杠命令候选：与快捷动作同源（快捷动作的输入栏入口）。
+// 刻意不做宏替换——选中后整句填充，发送前仍可编辑（发送前可见）。
+const SLASH_CMDS = STARTERS;
 
 /* ---- 助手标识「哨兵脉冲」（2026-11-14，用户裁决空态要有标志性动效）----
    四点星核=助手本体（几何 SVG 重绘，替代 FAB 时代的字符 ✦——顺手修复
@@ -140,11 +145,13 @@ export function AiAssistant() {
   const [activeId, setActiveId] = useState<string>(boot.active);
   const [scope, setScope] = useState(''); // 待发送的上下文 chip（可摘除）
   const [lastEngine, setLastEngine] = useState<string>('');
+  const [slashOpen, setSlashOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
 
   const active = sessions.find((s) => s.id === activeId) || sessions[0];
+  const slashCandidates = SLASH_CMDS.filter((c) => c.toLowerCase().includes(input.replace(/^\/+/, '').toLowerCase())).slice(0, 6);
   const msgs = active?.msgs || [];
 
   useEffect(() => {
@@ -152,7 +159,7 @@ export function AiAssistant() {
     try {
       const clean = sessions.map((s) => ({
         ...s, updated: s.id === activeId ? Date.now() : s.updated,
-        msgs: s.msgs.slice(-60).map((m) => ({ ...m, streaming: false })),
+        msgs: s.msgs.slice(-60).map((m) => ({ ...m, streaming: false, thinking: m.thinking ? stripDSML(m.thinking) : undefined })),
       }));
       localStorage.setItem(LS_KEY, JSON.stringify(clean.slice(0, 20)));
     } catch { /* 配额满等静默放弃 */ }
@@ -371,7 +378,7 @@ export function AiAssistant() {
                     {m.thinking && (
                       <details className="rounded-md border border-border-soft bg-secondary/50 px-2.5 py-1.5 text-[11px] text-faint">
                         <summary className="cursor-pointer select-none">思考过程</summary>
-                        <div className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap font-mono text-[10.5px] leading-[1.6]">{m.thinking}</div>
+                        <div className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap font-mono text-[10.5px] leading-[1.6]">{stripDSML(m.thinking)}</div>
                       </details>
                     )}
                     <div className="rounded-lg rounded-bl-sm border border-border-soft bg-card px-3 py-2 text-[12.5px] leading-[1.7] whitespace-pre-wrap">
@@ -440,10 +447,26 @@ export function AiAssistant() {
             </div>
           )}
 
-          <form onSubmit={(e) => { e.preventDefault(); ask(input); }}
+          {/* "/" 斜杠快捷命令（2026 对话标配：快捷动作的输入栏入口）：
+              候选=快捷问题，选中整句填充而非宏替换，发送前仍可编辑 */}
+          {slashOpen && slashCandidates.length > 0 && (
+            <div className="border-t border-border-soft px-2.5 py-1.5">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-faint">快捷命令</div>
+              <div className="grid gap-0.5">
+                {slashCandidates.map((c) => (
+                  <button key={c} type="button" onClick={() => { setInput(c); setSlashOpen(false); }}
+                    className="cursor-pointer rounded px-2 py-1 text-left text-[12px] text-muted-foreground hover:bg-secondary hover:text-foreground">
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <form onSubmit={(e) => { e.preventDefault(); ask(input); setSlashOpen(false); }}
             className="flex items-center gap-2 border-t border-border-soft p-2.5">
-            <Input value={input} onChange={(e) => setInput(e.target.value)} maxLength={500}
-              placeholder="问点什么…（Enter 发送）" className="h-9 flex-1" disabled={busy} />
+            <Input value={input} onChange={(e) => { setInput(e.target.value); setSlashOpen(e.target.value === '/' || e.target.value.startsWith('/ ')); }} maxLength={500}
+              placeholder="问点什么…（输入 / 看快捷命令）" className="h-9 flex-1" disabled={busy} />
             {busy ? (
               <Button type="button" variant="ghost" size="sm" onClick={stop} aria-label="停止生成" title="停止生成（保留已生成内容）">
                 <Square size={12} />
