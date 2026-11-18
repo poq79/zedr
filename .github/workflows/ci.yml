@@ -1,0 +1,59 @@
+# CI 门禁：Windows/Linux 双平台 vet+test + 前端构建。
+#
+# 为什么 Windows 也跑全量 test：探针的 Windows 专属包（winapi/regwatch/
+# evtlog）占检测面大头，只在 Linux 上跑测试等于放行了半座仓库。
+# 注意：部分 winapi 测试在非管理员环境可能受限——首跑失败属"发现 CI
+# 环境差异"而非代码问题，按实际输出收窄范围，不要静默 skip。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+      - name: cross-compile windows agent/server
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./cmd/server
+          GOOS=windows GOARCH=amd64 go build ./cmd/agent
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm ci
+      - run: npm run build
