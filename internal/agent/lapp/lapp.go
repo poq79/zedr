@@ -232,6 +232,11 @@ func New(version string) (*Agent, error) {
 	if up.LoadCredentials() {
 		log.Info("agent_credentials_loaded", "agent_id", up.AgentID())
 	}
+	// 私有 CA 信任池（与 Windows 组合根同口径：上报/下载/隧道同链）
+	if cfg.TLSCAPool != nil {
+		up.SetTLSRootCAs(cfg.TLSCAPool)
+		log.Info("tls_private_ca_enabled", "ca_file", cfg.TLSCAFile)
+	}
 	if cfg.RuleSignKey != "" {
 		up.SetRuleSignKey([]byte(cfg.RuleSignKey))
 		log.Info("rule_signature_verification_enabled")
@@ -397,6 +402,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		mgr := tunnel.New(a.log, tunnel.Options{
 			ServerURL: a.cfg.ServerURL,
 			Creds:     a.up.TunnelCreds,
+			TLSCAPool: a.cfg.TLSCAPool,
 			Handler: liveapi.New(liveapi.Deps{
 				Version:   a.cfg.Version,
 				Hostname:  a.hostName(),

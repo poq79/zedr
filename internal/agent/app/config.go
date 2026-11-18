@@ -1,7 +1,10 @@
 package agentapp
 
 import (
+	"crypto/x509"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,6 +27,16 @@ type Config struct {
 	LocalAddr   string
 	Tags        []string
 	Version     string
+
+	// 服务端身份校验（传输安全）：探针→服务端通道承载终端凭证与服务端
+	// 指令（terminate/quarantine 无应用层签名），明文即指令可被伪造。
+	// RequireTLS=auto 口径 = 非回环地址必须 https，回环放行本地开发；
+	// TLSCAFile 用于私有 CA 签发的服务端证书（系统根池不认的场景）。
+	TLSCAFile  string
+	RequireTLS string
+	// TLSCAPool 是加载后的私有 CA 信任池（nil=系统根池），由 uplink 与
+	// 隧道拨号共用；加载失败在配置期即拒绝启动。
+	TLSCAPool *x509.CertPool
 
 	// Collector 选择进程采集引擎：auto / ntquery / toolhelp
 	Collector    string
@@ -145,6 +158,8 @@ func LoadConfig(version string) (*Config, error) {
 	c.DataDir = l.Env("HG_AGENT_DATA_DIR", defaultDataDir())
 	c.LocalAddr = l.Env("HG_AGENT_LOCAL_ADDR", "127.0.0.1:8843")
 	c.Tags = l.CSV("HG_AGENT_TAGS", nil)
+	c.TLSCAFile = l.Env("HG_AGENT_TLS_CA_FILE", "")
+	c.RequireTLS = l.Env("HG_AGENT_REQUIRE_TLS", "auto")
 
 	c.Collector = l.Env("HG_AGENT_COLLECTOR", "auto")
 	c.ScanInterval = l.Duration("HG_AGENT_SCAN_INTERVAL", 2*time.Second)
@@ -185,6 +200,42 @@ func LoadConfig(version string) (*Config, error) {
 	l.Check(c.ServerURL != "", "HG_AGENT_SERVER_URL 不能为空")
 	l.Check(strings.HasPrefix(c.ServerURL, "http://") || strings.HasPrefix(c.ServerURL, "https://"),
 		"HG_AGENT_SERVER_URL 必须以 http:// 或 https:// 开头")
+
+	// 服务端身份校验（传输安全）。auto 口径：非回环地址必须 https——
+	// 探针→服务端通道承载终端凭证与服务端指令，指令无应用层签名，
+	// 明文等于"中间人可伪造 terminate/quarantine"。回环放行是给本地
+	// 开发/同机部署留的口子；跨网段明文要显式 REQUIRE_TLS=false（运维
+	// 自己签字）。私有 CA 用 HG_AGENT_TLS_CA_FILE，加载失败启动即拒。
+	l.Check(c.RequireTLS == "auto" || c.RequireTLS == "true" || c.RequireTLS == "false",
+		"HG_AGENT_REQUIRE_TLS 只能是 auto/true/false")
+	serverURL, perr := url.Parse(c.ServerURL)
+	l.Check(perr == nil && serverURL != nil && serverURL.Host != "",
+		"HG_AGENT_SERVER_URL 无法解析出主机地址")
+	if perr == nil && serverURL != nil {
+		isHTTPS := strings.EqualFold(serverURL.Scheme, "https")
+		loopback := isLoopbackHost(serverURL.Host)
+		switch c.RequireTLS {
+		case "true":
+			l.Check(isHTTPS, "HG_AGENT_REQUIRE_TLS=true 要求 https 连接，当前 "+c.ServerURL)
+		case "auto":
+			l.Check(isHTTPS || loopback,
+				"非回环地址禁止明文 http 连接（服务端指令可被中间人伪造）：改用 https 并按需配置 HG_AGENT_TLS_CA_FILE；确要明文请显式 HG_AGENT_REQUIRE_TLS=false")
+		}
+		l.Check(!(c.TLSCAFile != "" && !isHTTPS),
+			"HG_AGENT_TLS_CA_FILE 只对 https 连接有意义（明文连接无证书可校验）")
+	}
+	if c.TLSCAFile != "" {
+		caPEM, rerr := os.ReadFile(c.TLSCAFile)
+		l.Check(rerr == nil, "HG_AGENT_TLS_CA_FILE 无法读取: "+c.TLSCAFile)
+		if rerr == nil {
+			pool := x509.NewCertPool()
+			if pool.AppendCertsFromPEM(caPEM) {
+				c.TLSCAPool = pool
+			} else {
+				l.Check(false, "HG_AGENT_TLS_CA_FILE 不含有效 PEM 证书: "+c.TLSCAFile)
+			}
+		}
+	}
 	l.Check(validCollector(c.Collector),
 		"HG_AGENT_COLLECTOR 取值不合法（按平台：Windows auto/ntquery/toolhelp；Linux auto/procfs）")
 	l.Check(c.ScanInterval >= 500*time.Millisecond, "HG_AGENT_SCAN_INTERVAL 不能小于 500ms（避免采集拖垮主机）")
@@ -250,3 +301,21 @@ func defaultDataDir() string {
 
 // Path 返回数据目录下的文件路径。
 func (c *Config) Path(name string) string { return filepath.Join(c.DataDir, name) }
+
+// isLoopbackHost 判断服务端地址是否回环（127.0.0.0/8、::1、localhost）。
+// 回环明文连接不出主机边界，REQUIRE_TLS=auto 下放行本地开发/同机部署。
+func isLoopbackHost(hostport string) bool {
+	h := hostport
+	// SplitHostPort 同时吃 "127.0.0.1:8080" 与 "[::1]:8080" 两种形态；
+	// 不带端口的裸主机名/裸 IPv6 走 Trim 分支
+	if hp, _, err := net.SplitHostPort(hostport); err == nil {
+		h = hp
+	} else {
+		h = strings.Trim(hostport, "[]")
+	}
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}

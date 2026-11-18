@@ -10,6 +10,8 @@ package uplink
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,6 +78,25 @@ func (c *Client) SetRuleSignKey(key []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ruleSignKey = key
+}
+
+// SetTLSRootCAs 配置私有 CA 信任池（企业内部 CA 签发服务端证书、系统根池
+// 不认的场景）。nil = 回到系统根池。必须在首网请求前调用（构造后立即
+// 调用是唯一合法时机）：会整体替换两个客户端的 Transport。
+// 升级下载走独立的 upgradeHTTP 客户端（10min 超时），必须一并覆盖，
+// 否则"上报走 TLS、下载走明文/系统根"的分裂会被用来绕过证书校验。
+func (c *Client) SetTLSRootCAs(pool *x509.CertPool) {
+	tlsCfg := func() *tls.Config {
+		return &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+	c.mu.Lock()
+	tr := c.http.Transport.(*http.Transport).Clone()
+	tr.TLSClientConfig = tlsCfg()
+	c.http.Transport = tr
+	c.mu.Unlock()
+	upg := upgradeHTTP.Transport.(*http.Transport).Clone()
+	upg.TLSClientConfig = tlsCfg()
+	upgradeHTTP.Transport = upg
 }
 
 // New 创建客户端。

@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,11 @@ type Options struct {
 
 	// KeepAlive yamux 保活间隔，默认 20s（契约 §3.1）
 	KeepAlive time.Duration
+
+	// TLSCAPool 私有 CA 信任池（与 uplink 共用同一份，nil=系统根池）。
+	// 隧道承载终端凭证与实时查询通道，信任链必须与上报一致——否则
+	// "上报走私有 CA、隧道走系统根"的分裂就是证书校验的旁路。
+	TLSCAPool *x509.CertPool
 
 	// ---- 以下为内部可调参数（零值 = 默认），单测注入用 ----
 	retryBase        time.Duration // 指数退避起点，默认 1s
@@ -318,9 +324,12 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		return d.DialContext(ctx, "tcp", u.Host)
 	case "https":
 		// 默认根证书校验（ServerName 由 crypto/tls 从拨号地址推导），
-		// 与 uplink 的 http.Client 同一套信任链。隧道承载终端身份
-		// 凭证，绝不引入 InsecureSkipVerify
-		td := tls.Dialer{NetDialer: d, Config: &tls.Config{}}
+		// 与 uplink 的 http.Client 同一套信任链（私有 CA 经 Options.
+		// TLSCAPool 传入）。隧道承载终端身份凭证，绝不引入 InsecureSkipVerify
+		td := tls.Dialer{NetDialer: d, Config: &tls.Config{
+			RootCAs:    m.opts.TLSCAPool,
+			MinVersion: tls.VersionTLS12,
+		}}
 		return td.DialContext(ctx, "tcp", u.Host)
 	default:
 		return nil, errBadConfig
