@@ -2,7 +2,7 @@
 
 **面向 Windows 与 Linux 主机的检测优先、用户态 EDR——配一个 AI 原生的调查控制台。**
 
-[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%20Server%202016%2B-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows-server)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%28experimental%29-F9BC00?logo=linux&logoColor=white)](https://www.kernel.org/)
 [![Version](https://img.shields.io/badge/version-0.9.14-informational)](#)
@@ -159,7 +159,7 @@ Linux 支持还年轻——首台机器（Kali）刚完成验收、响应处置�
 ## 快速开始
 
 **环境要求：** Windows 10 / Server 2016+（64 位）；Linux 内核 3.2+（64 位，
-Kali 2025.4 已验证）；Go 1.22+（1.27 实测），无需 CGO。
+Kali 2025.4 已验证）；Go 1.27+，无需 CGO。
 
 ```bash
 git clone https://github.com/poq79/zedr.git && cd zedr

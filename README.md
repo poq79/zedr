@@ -2,7 +2,7 @@
 
 **A detection-first, user-mode EDR for Windows & Linux hosts — with an AI-native investigation console.**
 
-[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%20Server%202016%2B-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows-server)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%28experimental%29-F9BC00?logo=linux&logoColor=white)](https://www.kernel.org/)
 [![Version](https://img.shields.io/badge/version-0.9.14-informational)](#)
@@ -183,7 +183,7 @@ default.
 ## Quick start
 
 **Requirements:** Windows 10 / Server 2016+ (x64); Linux kernel 3.2+ (x64,
-Kali 2025.4 validated); Go 1.22+ (1.27 tested), no CGO.
+Kali 2025.4 validated); Go 1.27+ (no CGO).
 
 ```bash
 git clone https://github.com/poq79/zedr.git && cd zedr
