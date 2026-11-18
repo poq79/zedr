@@ -100,6 +100,7 @@ type Config struct {
 	// Zero-click：critical+malicious 告警自动触发 Agentic 调查（带实时
 	// 取证），三道闸（指纹 30 分钟去重 / 每主机每小时上限 / token 预算）
 	// 全过才跑，任何一道不过回落确定性五步。默认开（2026-11-10 裁决）。
+	AIAutoTriage          bool
 	AIZeroClick           bool
 	AIZeroClickMaxPerHost int
 	// SettingEncKey 是后台配置敏感字段（模型 API Key）的静态加密密钥，
@@ -207,6 +208,9 @@ func LoadConfig() (*Config, error) {
 	c.AIAgentMaxSteps = l.Int("HG_AI_AGENT_MAX_STEPS", 0)            // 0 = 引擎默认（6）
 	c.AIAgentToolTimeout = l.Duration("HG_AI_AGENT_TOOL_TIMEOUT", 0) // 0 = 引擎默认（10s）
 	c.AIZeroClick = l.Bool("HG_AI_ZEROCLICK", true)
+	// 自动预研判默认关：覆盖全部 critical（而非 malicious 子集），量大于
+	// zero-click，且每次都是一次模型调用——显式开启才花这份预算
+	c.AIAutoTriage = l.Bool("HG_AI_AUTO_TRIAGE", false)
 	c.AIZeroClickMaxPerHost = l.Int("HG_AI_ZEROCLICK_MAX_PER_HOST", 3)
 	c.AITimeout = l.Duration("HG_AI_TIMEOUT", 45*time.Second)
 	c.AITokenBudget = l.Int("HG_AI_HOURLY_TOKEN_BUDGET", 200000)

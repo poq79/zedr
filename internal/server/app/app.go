@@ -302,6 +302,14 @@ func New() (*App, error) {
 					// AutoOps = 确定性调查 + 值班队列入队（方向 C）；
 					// 刻意不用 LLM 自动调查：critical 爆发时每条都跑 agent 循环会烧穿预算。
 					svc.AI.AutoOps(ctx, id)
+					if cfg.AIAutoTriage {
+						// 自动预研判独立 goroutine + 独立超时：不挤占调查的 30s 预算
+						go func(tid string) {
+							tctx, tcancel := context.WithTimeout(context.Background(), 60*time.Second)
+							defer tcancel()
+							svc.AI.AutoTriage(tctx, tid)
+						}(alert.ID)
+					}
 				}(alert.ID)
 			}
 		}()

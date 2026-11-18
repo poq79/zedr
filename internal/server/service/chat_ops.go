@@ -100,6 +100,17 @@ func (s *AIService) ChatStream(ctx context.Context, question, scope string, hist
 	s.eng.AgentChatStream(ctx, q, history, mcpToolsAsAgentTools(), chatToolExec{ex: NewMCPExecutor(s, s.live)}, emit)
 }
 
+// AutoTriage 是 critical 告警的自动预研判（HG_AI_AUTO_TRIAGE，默认关）：
+// 与 zero-click 自动调查互补——调查回答"周围有没有呼应"，预研判回答
+// "本条告警是什么"。值班人员/抽屉打开时结论已就位（MTTA↓），研判
+// 台账随之自动积累（质量对账的样本来源）。预算由引擎统一执法
+// （耗尽降级 heuristic 并如实记台账），triage 缓存按告警 ID 去重。
+func (s *AIService) AutoTriage(ctx context.Context, alertID string) {
+	if _, err := s.Triage(ctx, alertID); err != nil && s.log != nil {
+		s.log.WarnContext(ctx, "ai_auto_triage_failed", "alert_id", alertID, "err", err)
+	}
+}
+
 // ---------------- C：AI 值班队列（2026-11 方向 C） ----------------
 
 // 设计依据（2026-11 取证）：agentic 工作流应"只读/仅建议起步 + 人审批门 +
