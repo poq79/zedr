@@ -1116,13 +1116,23 @@ func (a *Agent) persistScanOnce() {
 
 func (a *Agent) heartbeatLoop(ctx context.Context) {
 	interval := time.Duration(a.cfg.HeartbeatSec) * time.Second
-	ticker := time.NewTicker(interval)
+	// 首拍 ≤5s 内随机错峰 + 之后每拍 ±15% 抖动：同批重启的机器不再同拍
+	// （SCALE.md §2.3 重连风暴）。首拍不能等满一个 interval——服务端
+	// 3 分钟无心跳即判离线（SEN-OFFLINE）。Reset 紧跟在收到节拍之后：
+	// 循环体内的 continue（未注册/上报失败）不会再带着旧周期重进 select。
+	// 与 Windows 组合根（agentapp）逐行同构，抖动原语共用。
+	firstMax := interval
+	if firstMax > 5*time.Second {
+		firstMax = 5 * time.Second
+	}
+	ticker := time.NewTicker(agentapp.JitterDuration(firstMax))
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			ticker.Reset(agentapp.JitterInterval(interval, agentapp.HeartbeatJitterFrac))
 			if !a.up.Enrolled() {
 				continue
 			}
@@ -1298,11 +1308,13 @@ func (a *Agent) enrollLoop(ctx context.Context) {
 		resp, err := a.up.Enroll(cctx, req)
 		cancel()
 		if err != nil {
-			a.log.Warn("enroll_failed", "err", err)
+			// 重试去同拍（与 Windows 组合根同口径）：±30% 抖动打散同批注册。
+			wait := agentapp.JitterInterval(15*time.Second, 0.3)
+			a.log.Warn("enroll_failed", "err", err, "retry_in", wait.String())
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(15 * time.Second):
+			case <-time.After(wait):
 			}
 			continue
 		}
