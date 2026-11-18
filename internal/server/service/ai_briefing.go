@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -45,11 +46,16 @@ type DailyBriefing struct {
 	HostsOffline int          `json:"hosts_offline"`
 	TopRules     []BriefRule  `json:"top_rules"`
 	RecentCrit   []BriefAlert `json:"recent_critical"`
+	// Narrative 是 AI 态势叙述（narrative 槽位，30min 缓存）。仅当调用方
+	// 显式请求且模型可用时非空——确定性骨架永远在，AI 只做解读层。
+	Narrative string `json:"narrative,omitempty"`
+	// NarrativeState: "ai"（成功）/ 降级原因（空串=未请求纯统计）。
+	NarrativeState string `json:"narrative_state,omitempty"`
 }
 
 // DailyBriefing 聚合窗口内的值班盘子。全只读、全确定性——简报的可靠性
 // 优先于聪明：AI 解读由用户显式点击"追问 AI"进入作用域对话。
-func (s *AIService) DailyBriefing(ctx context.Context, hours int) (*DailyBriefing, error) {
+func (s *AIService) DailyBriefing(ctx context.Context, hours int, wantNarrative bool) (*DailyBriefing, error) {
 	if hours <= 0 || hours > 168 {
 		hours = 24
 	}
@@ -116,6 +122,28 @@ func (s *AIService) DailyBriefing(ctx context.Context, hours int) (*DailyBriefin
 			if a.Status != domain.AgentOnline {
 				b.HostsOffline++
 			}
+		}
+	}
+
+	// AI 态势叙述：数字聚合完成后才生成（叙述的事实源就是上面这些数字）。
+	// 生成失败诚实降级为纯统计，State 里带原因——简报永远可用，AI 是加分项。
+	if wantNarrative && s.eng != nil {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("统计窗口 %d 小时：新增告警 %d（critical %d），新开事件 %d，攻击链命中 %d，",
+			b.WindowHours, b.AlertsNew, b.CriticalNew, b.EventsOpen, b.ChainHits))
+		sb.WriteString(fmt.Sprintf("值班队列待审 %d，失联主机 %d。", b.OpsPending, b.HostsOffline))
+		if len(b.TopRules) > 0 {
+			ids := make([]string, 0, len(b.TopRules))
+			for _, r := range b.TopRules {
+				ids = append(ids, fmt.Sprintf("%s×%d", r.RuleID, r.Count))
+			}
+			sb.WriteString("高发规则：" + strings.Join(ids, "、") + "。")
+		}
+		if text, state := s.eng.BriefNarrative(ctx, sb.String()); state == "ai" {
+			b.Narrative = text
+			b.NarrativeState = "ai"
+		} else {
+			b.NarrativeState = state
 		}
 	}
 	return b, nil

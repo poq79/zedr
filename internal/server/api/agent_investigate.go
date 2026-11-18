@@ -159,14 +159,17 @@ func (h *adminHandler) aiOpsQueue(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, list)
 }
 
-// aiBriefing 返回今日值班简报（纯确定性聚合，零模型调用——
-// 简报的可靠性优先于聪明；AI 解读由用户点击"追问 AI"进作用域对话）。
+// aiBriefing 返回今日值班简报：确定性聚合骨架 + 可选 AI 态势叙述
+// （?narrative=1 时生成，narrative 槽位 30min 缓存；无模型/预算耗尽
+// 诚实降级为纯统计，NarrativeState 带原因）。AI 解读仍走用户点击
+// 的作用域对话——叙述只是解读层，不替用户做判断。
 func (h *adminHandler) aiBriefing(w http.ResponseWriter, r *http.Request) {
 	hours := 24
 	if v, err := strconv.Atoi(r.URL.Query().Get("hours")); err == nil && v > 0 && v <= 168 {
 		hours = v
 	}
-	b, err := h.deps.Services.AI.DailyBriefing(r.Context(), hours)
+	wantNarrative := r.URL.Query().Get("narrative") == "1"
+	b, err := h.deps.Services.AI.DailyBriefing(r.Context(), hours, wantNarrative)
 	if err != nil {
 		httpx.WriteError(w, r, err)
 		return

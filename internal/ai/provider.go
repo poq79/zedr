@@ -491,6 +491,18 @@ type chatResponse struct {
 
 // chat 发起一次对话请求，返回内容与消耗的 token 数。
 func (o *OpenAICompatible) chat(ctx context.Context, sys, user string, maxTokens int) (string, int, error) {
+	return o.chatOpts(ctx, sys, user, maxTokens, true)
+}
+
+// chatText 是不带 response_format 的纯文本变体：叙述/摘要类输出要的是
+// 正文而不是 JSON 对象。方舟等网关对 json_object 模式强制要求提示词
+// 含 "json" 字样（2026-11-19 实测 400 InvalidParameter），纯文本调用
+// 刻意绕开该模式——两种形态都保留，按输出契约选择。
+func (o *OpenAICompatible) chatText(ctx context.Context, sys, user string, maxTokens int) (string, int, error) {
+	return o.chatOpts(ctx, sys, user, maxTokens, false)
+}
+
+func (o *OpenAICompatible) chatOpts(ctx context.Context, sys, user string, maxTokens int, wantJSON bool) (string, int, error) {
 	body := chatRequest{
 		Model:       o.model,
 		Temperature: o.temperature,
@@ -499,7 +511,9 @@ func (o *OpenAICompatible) chat(ctx context.Context, sys, user string, maxTokens
 			{Role: "system", Content: sys},
 			{Role: "user", Content: user},
 		},
-		ResponseFormat: map[string]string{"type": "json_object"},
+	}
+	if wantJSON {
+		body.ResponseFormat = map[string]string{"type": "json_object"}
 	}
 	if o.effort != "" && o.effort != "off" {
 		body.ReasoningEffort = o.effort

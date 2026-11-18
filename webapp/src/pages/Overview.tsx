@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { dispatchAIContext } from '../lib/aiContext';
 import { Badge, Button, Card, CardTitle, EmptyState, Skeleton } from '../components/ui/basics';
 import { TimelineChart, SeverityDonut, BarList, type HourPoint } from '../components/charts';
 import { useError } from '../lib/hooks';
@@ -123,16 +124,13 @@ interface Briefing {
   chain_hits: number; ops_pending: number; hosts_offline: number;
   top_rules?: { rule_id: string; count: number }[];
   recent_critical?: { id: string; title: string; hostname: string; score: number; occurred_at: string }[];
-}
-
-function dispatchAIContext(text: string) {
-  window.dispatchEvent(new CustomEvent('zedr:ai-context', { detail: { text, open: true } }));
+  narrative?: string; narrative_state?: string;
 }
 
 function BriefingCard() {
   const [b, setB] = useState<Briefing | null>(null);
   useEffect(() => {
-    api.get<Briefing>('/api/v1/ai/briefing?hours=24').then(setB).catch(() => setB(null));
+    api.get<Briefing>('/api/v1/ai/briefing?hours=24&narrative=1').then(setB).catch(() => setB(null));
   }, []);
 
   const askText = b ? `结合这份值班简报，指出过去 ${b.window_hours} 小时最需要处理的三件事：` +
@@ -146,7 +144,9 @@ function BriefingCard() {
       <div className="mb-2.5 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <CardTitle>今日值班简报</CardTitle>
-          <Badge tone="neutral" title="纯确定性聚合，零模型调用——AI 解读由你点击后进入对话">统计汇总 · 近 {b?.window_hours ?? 24}h</Badge>
+          {b?.narrative_state === 'ai'
+            ? <Badge tone="info" title="统计骨架为确定性聚合；态势叙述由 AI 基于统计生成（narrative 槽位，30min 缓存）">AI 叙述 · 统计骨架 · 近 {b.window_hours}h</Badge>
+            : <Badge tone="neutral" title={b?.narrative_state ? `AI 叙述未生成：${b.narrative_state}` : '纯确定性聚合，零模型调用'}>统计汇总 · 近 {b?.window_hours ?? 24}h</Badge>}
         </div>
         {!!b && (
           <Button size="sm" variant="ghost" onClick={() => dispatchAIContext(askText)}
@@ -159,6 +159,11 @@ function BriefingCard() {
         <div className="text-[12px] text-faint">简报加载中…</div>
       ) : (
         <>
+          {b.narrative && (
+            <div className="mb-2.5 border-l-2 border-primary/30 pl-3 text-[12.5px] leading-[1.8] text-muted-foreground">
+              {b.narrative}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             {[
               { label: '需立即关注', value: attention, tone: attention ? 'crit' : 'ok', sub: `critical ${b.critical_new} · 新事件 ${b.events_open}` },
