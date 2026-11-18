@@ -46,3 +46,32 @@ func TestSelectMemCandidates(t *testing.T) {
 		t.Fatalf("落地关联进程应优先: %+v", got)
 	}
 }
+
+// avVendorSigner：已知安全厂商签名跳过的判定表（MEM-1055 误报治理）。
+func TestAVVendorSigner(t *testing.T) {
+	yes := []string{
+		"奇虎360计算机技术（北京）有限公司",
+		"Qihoo 360 Software Co., Ltd.",
+		"北京火绒网络科技有限公司", "Huorong Internet Security",
+		"Kingsoft Corporation", "金山软件",
+		"Kaspersky Lab", "ESET, spol. s r.o.", "AVAST Software s.r.o.",
+		"Bitdefender SRL", "McAfee, Inc.", "Symantec Corporation",
+		"北京瑞星信息技术股份有限公司", "Rising Information Technology",
+	}
+	for _, s := range yes {
+		if !avVendorSigner(s) {
+			t.Fatalf("avVendorSigner(%q) = false, want true", s)
+		}
+	}
+	no := []string{
+		"",                                   // 空签名者恒否
+		"Microsoft Corporation",              // 发行面太宽，由 InSystem 兜底
+		"Tencent Technology (Shenzhen)",      // 同上：签名覆盖全产品线
+		"SomeRandom Software Ltd.",
+	}
+	for _, s := range no {
+		if avVendorSigner(s) {
+			t.Fatalf("avVendorSigner(%q) = true, want false", s)
+		}
+	}
+}

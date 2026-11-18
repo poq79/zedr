@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"zedr/internal/agent/chain"
@@ -33,6 +34,37 @@ import (
 	"zedr/internal/agent/winapi"
 	"zedr/internal/model"
 )
+
+// avVendorSigners 是已知安全软件厂商的签名者特征（Contains 匹配，小写）。
+// 为什么需要：AV 引擎为对抗特征扫描普遍加壳/自加密，内存形态恰好是
+// "大量私有可执行区域"，是 MEM-1055 的系统性误报源（2026-11-14 实测
+// 360 全家桶；Windows 侧 memwatch 由此长期背上"对杀软误报"的债）。
+// 有效签名（存在且校验通过）+ 已知安全厂商 = 可以放心跳过：伪造签名
+// 过不了 SignatureOK， stolen 证书不属于这层的威胁模型。厂商清单只收
+// 安全软件厂商——不收 Microsoft/Tencent 这类"签名覆盖面太宽"的发行者
+//（它们由 InSystem 与各自路径判断兜底）。
+var avVendorSigners = []string{
+	"360", "qihoo", "奇虎",
+	"huorong", "火绒",
+	"kingsoft", "金山",
+	"kaspersky", "eset", "avast", "avg", "bitdefender",
+	"mcafee", "symantec", "norton",
+	"rising", "瑞星", "jiangmin", "江民",
+}
+
+// avVendorSigner 判定签名者是否属于已知安全软件厂商（空签名者恒否）。
+func avVendorSigner(signer string) bool {
+	if signer == "" {
+		return false
+	}
+	low := strings.ToLower(signer)
+	for _, v := range avVendorSigners {
+		if strings.Contains(low, v) {
+			return true
+		}
+	}
+	return false
+}
 
 // memWatchBudget 是单轮扫描的进程数上限：每轮 5min，10 个 × 单进程
 // 元数据扫描（毫秒级~几十毫秒）——对探针 CPU 的贡献可忽略，同时保证
@@ -173,11 +205,15 @@ func (a *Agent) memwatchOnce() {
 		}
 		var meta enrich.Meta
 		// 签名富化：系统目录内签名有效的进程几乎不会有异常私有可执行
-		//（.NET JIT 的区域无 MZ 头，不会到这里）——命中即值得上报
+		//（.NET JIT 的区域无 MZ 头，不会到这里）——命中即值得上报。
+		// 第二分支（2026-11-18）：已知安全厂商的有效签名进程同样跳过
+		// ——AV 引擎为对抗特征扫描普遍加壳，"异常私有可执行区域"对它们
+		// 是常态而非注入痕迹（360 全家桶实测误报，MEM-1055 误报治理）。
 		if c.Path != "" {
 			meta = a.enr.Describe(c.Path)
-			if meta.Signed && meta.SignatureOK && meta.InSystem {
-				a.log.Debug("memwatch_signed_skip", "pid", c.PID, "path", c.Path)
+			if meta.Signed && meta.SignatureOK && (meta.InSystem || avVendorSigner(meta.Signer)) {
+				a.log.Debug("memwatch_signed_skip", "pid", c.PID, "path", c.Path,
+					"reason", map[bool]string{true: "av_vendor", false: "in_system"}[!meta.InSystem])
 				continue
 			}
 			if hit, _ := a.alw.Match(meta.Hash, c.Path, meta.Signer, "", c.Name, ""); hit {
