@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Eraser, Plus, Send, Square, X } from 'lucide-react';
+import { ArrowDown, Copy, Eraser, Plus, Send, Square, X } from 'lucide-react';
 import { api, authHeaders } from '../lib/api';
 import { stripDSML } from '../lib/aiContext';
 import { Badge, Button, Card, Input, Select } from './ui/basics';
@@ -181,6 +181,19 @@ function newSession(): Session {
   return { id: `s${Date.now()}${Math.floor(Math.random() * 1000)}`, name: '新会话', updated: Date.now(), msgs: [] };
 }
 
+// 剪贴板：127.0.0.1 是安全上下文，但经 LAN IP 的 http 访问不是——
+// navigator.clipboard 缺失/拒绝时 execCommand 兜底（现场两种入口并存）
+async function copyText(t: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(t); return true; } catch { /* 非安全上下文走兜底 */ }
+  const ta = document.createElement('textarea');
+  ta.value = t;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); return true; } finally { ta.remove(); }
+}
+
 function loadSessions(): { list: Session[]; active: string } {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -210,6 +223,10 @@ export function AiAssistant() {
   const [scope, setScope] = useState(''); // 待发送的上下文 chip（可摘除）
   const [lastEngine, setLastEngine] = useState<string>('');
   const [slashOpen, setSlashOpen] = useState(false);
+  // 智能滚动状态：贴底=跟随新内容；用户上翻回看时不再被流式输出拖走
+  // （2026 AI 对话标配），超过 120px 出现"回到底部"pill
+  const stickRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
@@ -248,8 +265,21 @@ export function AiAssistant() {
   }, []);
 
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
+    if (stickRef.current) listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
   }, [msgs, busy, thinking]);
+
+  const onListScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickRef.current = dist < 48;
+    setShowJump(!stickRef.current && dist > 120);
+  };
+  const jumpToBottom = () => {
+    stickRef.current = true;
+    setShowJump(false);
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
+  };
 
   const updateActive = (fn: (s: Session) => Session) =>
     setSessions((prev) => prev.map((s) => (s.id === activeId ? fn(s) : s)));
@@ -383,6 +413,8 @@ export function AiAssistant() {
 
   const createSession = () => {
     const s = newSession();
+    stickRef.current = true; // 切会话无条件贴底
+    setShowJump(false);
     setSessions((prev) => [s, ...prev].slice(0, 20));
     setActiveId(s.id);
   };
@@ -396,10 +428,10 @@ export function AiAssistant() {
         </button>
       )}
       {open && (
-        <Card className="fixed bottom-5 right-5 z-40 flex h-[580px] w-[420px] flex-col overflow-hidden p-0 shadow-2xl">
+        <Card className="anim-pop fixed bottom-5 right-5 z-40 flex h-[min(580px,calc(100dvh-2.5rem))] w-[min(420px,calc(100vw-2.5rem))] flex-col overflow-hidden p-0 shadow-2xl">
           <div className="flex items-center gap-2 border-b border-border-soft px-3 py-2.5">
             <span className="grid shrink-0 place-items-center text-primary"><AssistantMark size={16} still /></span>
-            <Select value={activeId} onChange={(e) => setActiveId(e.target.value)} aria-label="切换会话"
+            <Select value={activeId} onChange={(e) => { stickRef.current = true; setShowJump(false); setActiveId(e.target.value); }} aria-label="切换会话"
               className="h-7 max-w-[150px] flex-1 text-[11.5px]">
               {sessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </Select>
@@ -415,7 +447,8 @@ export function AiAssistant() {
               className="cursor-pointer rounded p-1 text-faint hover:bg-secondary hover:text-foreground"><X size={14} /></button>
           </div>
 
-          <div ref={listRef} className="flex-1 space-y-2.5 overflow-y-auto px-3.5 py-3">
+          <div className="relative min-h-0 flex-1">
+            <div ref={listRef} onScroll={onListScroll} className="h-full space-y-2.5 overflow-y-auto px-3.5 py-3">
             {msgs.length === 0 && (
               <div className="space-y-2">
                 <div className="anim-pop grid place-items-center pb-0.5 pt-5 text-primary">
@@ -471,9 +504,14 @@ export function AiAssistant() {
                     )}
                     {m.reply && (
                       <>
-                        <div className="flex gap-3 text-[10.5px] text-ghost">
+                        <div className="flex items-center gap-3 text-[10.5px] text-ghost">
                           <span>{m.reply.engine === 'llm' ? m.reply.model : '确定性/降级'}</span>
                           <span>{m.reply.latency_ms || 0}ms</span>
+                          {m.content && (
+                            <button onClick={async () => { await copyText(m.content); toast('回答已复制'); }}
+                              aria-label="复制回答" title="复制回答全文"
+                              className="cursor-pointer hover:text-foreground"><Copy size={11} /></button>
+                          )}
                         </div>
                         {!!m.reply.followups?.length && i === msgs.length - 1 && !busy && (
                           <div className="flex flex-wrap gap-1">
@@ -496,6 +534,13 @@ export function AiAssistant() {
                 <span className="grid shrink-0 place-items-center text-primary"><AssistantMark size={16} busy /></span>
                 <span>思考中…</span>
               </div>
+            )}
+            </div>
+            {showJump && (
+              <button onClick={jumpToBottom} aria-label="回到底部" title="回到底部（跟随最新回答）"
+                className="anim-pop absolute bottom-2.5 right-3 flex cursor-pointer items-center gap-1 rounded-full border border-border-strong bg-popover px-2.5 py-1 text-[11px] text-muted-foreground shadow-lg hover:text-foreground">
+                <ArrowDown size={11} /> 回到底部
+              </button>
             )}
           </div>
 
