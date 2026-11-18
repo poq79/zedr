@@ -183,6 +183,18 @@ func WriteNoContent(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// DisableWriteTimeout 清除当前请求的响应写截止时间。
+//
+// Server 的 WriteTimeout（默认 60s）从请求开始统一计时，对"响应时长由
+// 数据量/事件流决定"的端点是硬伤：SSE 告警流、AI 流式推理、实时文件/
+// 取证包直通都会被 60s 硬切（实测 /api/v1/stream/alerts 连接 duration_ms
+// 恒 ≈60000）。调用本函数后连接寿命由 handler 自管——SSE 靠 ctx.Done
+// 与心跳、直通靠 body 读尽/断开。只应在 handler 自身有生命周期出口时
+// 调用（三者都满足）；普通请求绝不清写截止（慢速攻击防护依赖它）。
+func DisableWriteTimeout(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+}
+
 // WriteError 是全局唯一错误出口：任何错误都会被归一化成稳定结构。
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	e := apperr.From(err)

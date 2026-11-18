@@ -52,6 +52,9 @@ func (h *adminHandler) liveForward(w http.ResponseWriter, r *http.Request, rest 
 			w.Header().Set(hd, v)
 		}
 	}
+	// 字节流直通（fs/read 整文件、collect 取证 zip）时长由数据量决定，
+	// 全局 60s 写截止会把大文件掐断在半路；清掉后由 body 读尽/断开收尾
+	httpx.DisableWriteTimeout(w)
 	w.WriteHeader(conn.Status)
 	_, _ = io.Copy(w, conn.Body)
 }

@@ -57,6 +57,10 @@ func (h *adminHandler) streamAlerts(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Cache-Control", "no-cache, no-transform")
 	hdr.Set("Connection", "keep-alive")
 	hdr.Set("X-Accel-Buffering", "no")
+	// 告警流是长连接，全局 WriteTimeout(60s) 会把它硬切（实测连接
+	// duration_ms 恒 ≈60000，前端每分钟断连重连一次，断连窗口还会丢帧）。
+	// 清写截止后寿命由 ctx.Done（客户端断开）与心跳管理。
+	httpx.DisableWriteTimeout(w)
 	w.WriteHeader(http.StatusOK)
 
 	subID, ch := h.deps.Bus.Subscribe()

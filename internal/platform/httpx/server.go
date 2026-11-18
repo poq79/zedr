@@ -17,6 +17,10 @@ type ServerConfig struct {
 	Handler         http.Handler
 	Logger          *slog.Logger
 	ShutdownTimeout time.Duration
+	// WriteTimeout 覆盖默认 60s：0 取默认。全局写截止对普通请求是
+	// 慢速攻击防护，对长连接端点（SSE/AI 流/取证直通）是误伤——
+	// 那类 handler 应显式 DisableWriteTimeout 自管生命周期。
+	WriteTimeout time.Duration
 	// TLSCertFile/TLSKeyFile 非空时以 HTTPS 监听（PEM 证书对）。
 	// 留空 = 明文 HTTP；由反向代理终结 TLS 的部署在配置层用
 	// HG_SERVER_TLS_TERMINATED 声明（只参与配置校验，不影响监听）。
@@ -40,13 +44,17 @@ func NewServer(c ServerConfig) *Server {
 	if c.ShutdownTimeout <= 0 {
 		c.ShutdownTimeout = 15 * time.Second
 	}
+	writeTO := c.WriteTimeout
+	if writeTO <= 0 {
+		writeTO = 60 * time.Second
+	}
 	return &Server{
 		srv: &http.Server{
 			Addr:              c.Addr,
 			Handler:           c.Handler,
 			ReadHeaderTimeout: 10 * time.Second,
 			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      60 * time.Second,
+			WriteTimeout:      writeTO,
 			IdleTimeout:       90 * time.Second,
 			MaxHeaderBytes:    1 << 20,
 			ErrorLog:          nil,

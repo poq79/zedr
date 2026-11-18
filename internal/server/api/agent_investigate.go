@@ -3,8 +3,8 @@ package api
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"net/http"
+	"strconv"
 
 	"zedr/internal/ai"
 	"zedr/internal/platform/apperr"
@@ -60,8 +60,8 @@ func boolText(v bool) string {
 // aiChat 是管理台 AI 助手的对话端点（方向 B）。
 func (h *adminHandler) aiChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Question string      `json:"question"`
-		History  []aiTurn    `json:"history"`
+		Question string   `json:"question"`
+		History  []aiTurn `json:"history"`
 	}
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		httpx.WriteError(w, r, err)
@@ -113,6 +113,10 @@ func (h *adminHandler) aiChatStream(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
 	hdr.Set("Cache-Control", "no-cache, no-transform")
 	hdr.Set("X-Accel-Buffering", "no")
+	// 长推理流会被全局 WriteTimeout(60s) 硬切：模型思考+长答案轻松超过
+	// 60s，答案在半路被掐。清写截止，寿命由 r.Context()（客户端断开）
+	// 与 writeErr 出口管理。
+	httpx.DisableWriteTimeout(w)
 	w.WriteHeader(http.StatusOK)
 
 	hist := make([]ai.ChatTurn, 0, len(req.History))

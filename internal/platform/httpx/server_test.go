@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -136,5 +137,46 @@ func TestServerTLSBadCertPath(t *testing.T) {
 	}
 	if want := "加载 TLS 证书"; !strings.Contains(err.Error(), want) {
 		t.Fatalf("错误应包含 %q，got: %v", want, err)
+	}
+}
+
+// TestDisableWriteTimeout 用短 WriteTimeout 证明机制：普通长响应被写截止
+// 硬切（客户端拿到截断响应/连接错误），调用 DisableWriteTimeout 的同款
+// handler 完整写出。用毫秒级超时而不是真的等 60s。
+func TestDisableWriteTimeout(t *testing.T) {
+	mux := http.NewServeMux()
+	slow := func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte("tail-of-stream"))
+	}
+	mux.HandleFunc("/plain", slow)
+	mux.HandleFunc("/long", func(w http.ResponseWriter, r *http.Request) {
+		DisableWriteTimeout(w)
+		slow(w, r)
+	})
+	s := start(t, ServerConfig{Addr: "127.0.0.1:0", Handler: mux, WriteTimeout: 150 * time.Millisecond})
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	base := "http://" + s.Addr()
+
+	// 普通端点：写截止生效，300ms > 150ms，响应被掐
+	resp, err := client.Get(base + "/plain")
+	if err == nil {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if strings.Contains(string(body), "tail-of-stream") {
+			t.Fatal("写截止应把慢响应掐断（尾巴不应到达客户端）")
+		}
+	} // err != nil 也算"被掐"，两种现象都证明截止生效
+
+	// 清写截止端点：同样慢，但完整写出
+	resp2, err := client.Get(base + "/long")
+	if err != nil {
+		t.Fatalf("清写截止后不应失败: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if !strings.Contains(string(body2), "tail-of-stream") {
+		t.Fatalf("清写截止后慢响应应完整到达, got: %q", string(body2))
 	}
 }
