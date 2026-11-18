@@ -79,6 +79,12 @@ func (s *statusRecorder) Flush() {
 	}
 }
 
+// Unwrap 让 http.ResponseController 能穿透包装器找到底层连接控制
+// （SetWriteDeadline/SetReadDeadline）。缺了它 DisableWriteTimeout
+// 在真实中间件链下静默失效——SSE 连接仍被全局 WriteTimeout 60s 掐断
+// （单测直连 mux 测不出来，必须经中间件链才暴露；2026-11-19 实测抓到）。
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // Hijack 透传，保证 101 协议升级（实时隧道）可用。
 // 为什么必须显式转发：内嵌接口只提升接口自身的方法集，
 // 动态类型的 Hijack 不会自动出现在包装器的方法集里——

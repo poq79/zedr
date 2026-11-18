@@ -1,12 +1,12 @@
 package api
 
 import (
-	"zedr/internal/platform/apperr"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"zedr/internal/platform/apperr"
 
 	"zedr/internal/platform/httpx"
 	"zedr/internal/server/auth"
@@ -34,10 +34,18 @@ func pageResp(items any, total, page, size int) map[string]any {
 
 func (h *adminHandler) me(w http.ResponseWriter, r *http.Request) {
 	p := principal(r)
+	// mfa_enabled 是登录后前端判断"是否已绑双因素"的事实源（设置页
+	// 绑定卡片状态）；principal 只带 JWT claims 里的固定身份字段，
+	// 这个运行时可变状态必须查库。
+	mfaEnabled := false
+	if u, err := h.deps.Services.Auth.Me(r.Context(), p.UserID); err == nil && u != nil {
+		mfaEnabled = u.TotpEnabled
+	}
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
-		"id":       p.UserID,
-		"username": p.Username,
-		"role":     string(p.Role),
+		"id":          p.UserID,
+		"username":    p.Username,
+		"role":        string(p.Role),
+		"mfa_enabled": mfaEnabled,
 	})
 }
 
@@ -69,10 +77,10 @@ func (h *adminHandler) attackMatrix(w http.ResponseWriter, r *http.Request) {
 func (h *adminHandler) listAlerts(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := domain.AlertFilter{
-		AgentID: q.Get("agent_id"),
-		Query:   q.Get("q"),
-		Sort:    q.Get("sort"),
-		Mitre:   strings.ToUpper(strings.TrimSpace(q.Get("mitre"))),
+		AgentID:  q.Get("agent_id"),
+		Query:    q.Get("q"),
+		Sort:     q.Get("sort"),
+		Mitre:    strings.ToUpper(strings.TrimSpace(q.Get("mitre"))),
 		Page:     clampInt(atoiDefault(q.Get("page"), 1), 1, 10000),
 		PageSize: clampInt(atoiDefault(q.Get("page_size"), 20), 1, 200),
 	}
@@ -484,7 +492,7 @@ func (h *adminHandler) exportAllowlist(w http.ResponseWriter, r *http.Request) {
 // importAllowlistReq 导入载荷：与导出格式对称，便于"导出→导入"直通。
 type importAllowlistReq struct {
 	Entries []struct {
-		Type string `json:"type"`
+		Type  string `json:"type"`
 		Value string `json:"value"`
 		Note  string `json:"note"`
 	} `json:"entries"`
