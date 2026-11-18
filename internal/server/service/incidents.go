@@ -152,24 +152,36 @@ func (s *IncidentService) applyOpenAlertTTL(ctx context.Context, now time.Time) 
 		return
 	}
 	cutoff := now.Add(-s.cfg.OpenAlertTTL)
-	n, _, err := s.repos.Alerts.List(ctx, domain.AlertFilter{
-		Status:        []domain.AlertStatus{model.StatusOpen},
-		CreatedBefore: cutoff,
-		Page:          1,
-		PageSize:      200,
-	})
-	if err != nil {
-		s.log.WarnContext(ctx, "open_alert_ttl_scan_failed", "err", err)
-		return
-	}
-	for _, a := range n {
-		if err := s.repos.Alerts.UpdateStatus(ctx, a.ID, model.StatusAcknowledged,
-			"system", "超期自动归档（超过 OpenAlertTTL 未处置）", now); err != nil {
-			s.log.WarnContext(ctx, "open_alert_ttl_archive_failed", "alert_id", a.ID, "err", err)
+	// 循环收敛到清空而不是只吃一页：存量迁移/洪水过后超期 open 可能远超
+	// 单页 200 条，单页语义要几十个同步周期才能追平。上限 100 页（2 万条
+	// /次）只是防长尾拖住懒同步——正常环境第一轮就命中空页退出。
+	const ttlMaxBatches = 100
+	archived := 0
+	for range ttlMaxBatches {
+		n, _, err := s.repos.Alerts.List(ctx, domain.AlertFilter{
+			Status:        []domain.AlertStatus{model.StatusOpen},
+			CreatedBefore: cutoff,
+			Page:          1,
+			PageSize:      200,
+		})
+		if err != nil {
+			s.log.WarnContext(ctx, "open_alert_ttl_scan_failed", "err", err)
+			return
+		}
+		if len(n) == 0 {
+			break
+		}
+		for _, a := range n {
+			if err := s.repos.Alerts.UpdateStatus(ctx, a.ID, model.StatusAcknowledged,
+				"system", "超期自动归档（超过 OpenAlertTTL 未处置）", now); err != nil {
+				s.log.WarnContext(ctx, "open_alert_ttl_archive_failed", "alert_id", a.ID, "err", err)
+				continue
+			}
+			archived++
 		}
 	}
-	if len(n) > 0 {
-		s.log.InfoContext(ctx, "open_alert_ttl_archived", "count", len(n))
+	if archived > 0 {
+		s.log.InfoContext(ctx, "open_alert_ttl_archived", "count", archived)
 	}
 }
 

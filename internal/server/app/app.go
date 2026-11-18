@@ -480,8 +480,9 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 			// 水位降级（2026-11-18 保留策略裁决的一部分）：库体积超
 			// HG_SERVER_RETENTION_MAX_MB 时，已处置告警的保留窗按半衰
 			// 逐档收缩（180→90→45→...→7 天下限），防止磁盘异常场景下
-			// 无限增长。只动已处置数据（Purge 本就只清 resolved/false_positive），
-			// open 告警始终不受水位影响；水位回落即自动恢复原保留窗。
+			// 无限增长。只动已处置数据（Purge 清 resolved/false_positive/
+			// acknowledged，open 豁免），open 告警始终不受水位影响；水位
+			// 回落即自动恢复原保留窗。
 			// 判定走 data 目录 db 文件尺寸（WAL 检查点后近似真实占用），
 			// 每分钟一次的 stat 成本可忽略。
 			if maxMB := a.Cfg.RetentionMaxMB; maxMB > 0 {

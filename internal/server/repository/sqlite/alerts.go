@@ -383,9 +383,14 @@ func (r *alertRepo) RecycleForAllow(ctx context.Context, typ, value, by string, 
 	return res.RowsAffected()
 }
 
+// PurgeBefore 清理超过保留窗的「已处置」告警。acknowledged 必须纳入：
+// OpenAlertTTL 归档只是把 open 挪进 ack（incidents.go），ack 再豁免等于
+// 把存储黑洞换个桶——11-14 洪水复盘（TEST-REPORT §十九）的教训。
+// open 永不在此清理：那是正在处置的工作集，出口只有人工处置与
+// 显式开启的 OpenAlertTTL。
 func (r *alertRepo) PurgeBefore(ctx context.Context, before time.Time) (int64, error) {
 	res, err := r.s.db.ExecContext(ctx,
-		`DELETE FROM alerts WHERE created_at < ? AND status IN ('resolved','false_positive')`, millis(before))
+		`DELETE FROM alerts WHERE created_at < ? AND status IN ('resolved','false_positive','acknowledged')`, millis(before))
 	if err != nil {
 		return 0, err
 	}
