@@ -380,10 +380,18 @@ func New() (*App, error) {
 		Handler:         router,
 		Logger:          log,
 		ShutdownTimeout: cfg.ShutdownTimeout,
+		TLSCertFile:     cfg.TLSCertFile,
+		TLSKeyFile:      cfg.TLSKeyFile,
 	})
 	if err := srv.Listen(); err != nil {
 		_ = store.Close()
 		return nil, apperr.Unavailable(fmt.Sprintf("端口 %s 无法监听: %v", cfg.Addr, err))
+	}
+	// 明文启动要留痕：配置层已有生产警告，这里是运行期事实（日志检索用）
+	if !srv.IsTLS() && !cfg.TLSTerminated {
+		log.Warn("server_plaintext_listener",
+			"addr", cfg.Addr,
+			"hint", "未启用 TLS 也未声明代理终结，管理台与探针通道为明文（配置 HG_SERVER_TLS_CERT/KEY 或 HG_SERVER_TLS_TERMINATED）")
 	}
 
 	return &App{
@@ -402,7 +410,7 @@ func New() (*App, error) {
 func (a *App) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
-		a.Log.Info("server_listening", "addr", a.Server.Addr())
+		a.Log.Info("server_listening", "addr", a.Server.Addr(), "tls", a.Server.IsTLS())
 		errCh <- a.Server.Serve()
 	}()
 

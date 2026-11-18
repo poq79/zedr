@@ -24,6 +24,15 @@ type Config struct {
 	CORSOrigins []string
 	RuleSignKey string // 规则包签名密钥；空则从 JWTSecret 派生
 
+	// TLS 监听（PEM 证书对，配齐即 HTTPS）：探针上报与管理台访问共用同一
+	// 监听口。规则/IOC/升级清单本就有 HMAC 签名，但指令通道（terminate/
+	// quarantine 等）只依赖传输层机密性——明文 HTTP 下中间人可伪造服务端
+	// 下发处置指令，这是引入 TLS 的直接动因（TRADEOFFS §3.5 的"先服务端
+	// TLS"升级路径）。反向代理终结 TLS 的部署用 TLSTerminated 声明。
+	TLSCertFile   string
+	TLSKeyFile    string
+	TLSTerminated bool
+
 	// Webhook 告警推送：URL 为空表示不启用。
 	WebhookURL     string
 	WebhookSecret  string // HMAC-SHA256 签名密钥（X-ZEDR-Signature 头）
@@ -150,6 +159,9 @@ func LoadConfig() (*Config, error) {
 
 	c.Addr = l.Env("HG_SERVER_ADDR", "0.0.0.0:8080")
 	c.DBPath = l.Env("HG_SERVER_DB_PATH", "./data/zedr-server.db")
+	c.TLSCertFile = l.Env("HG_SERVER_TLS_CERT", "")
+	c.TLSKeyFile = l.Env("HG_SERVER_TLS_KEY", "")
+	c.TLSTerminated = l.Bool("HG_SERVER_TLS_TERMINATED", false)
 	c.CORSOrigins = l.CSV("HG_SERVER_CORS_ORIGINS", []string{"http://localhost:8080", "http://127.0.0.1:8080"})
 	c.JWTSecret = l.Required("HG_SERVER_JWT_SECRET")
 	c.RuleSignKey = l.Env("HG_SERVER_RULE_SIGN_KEY", "")
@@ -304,12 +316,22 @@ func LoadConfig() (*Config, error) {
 	l.Check(c.ScanSec >= 1 && c.ScanSec <= 300, "HG_SERVER_SCAN_SEC 需在 1-300 之间")
 	l.Check(c.RetentionDays >= 1, "HG_SERVER_RETENTION_DAYS 至少为 1")
 	l.Check(c.Addr != "", "HG_SERVER_ADDR 不能为空")
+	l.Check((c.TLSCertFile == "") == (c.TLSKeyFile == ""),
+		"HG_SERVER_TLS_CERT 与 HG_SERVER_TLS_KEY 必须成对配置（PEM 证书与私钥）")
+	l.Check(!c.TLSTerminated || c.TLSCertFile == "",
+		"HG_SERVER_TLS_TERMINATED 与 HG_SERVER_TLS_CERT 二选一：要么服务端自带 TLS，要么代理层终结")
 
 	isProd := strings.EqualFold(c.Env, "production")
 	if isProd {
 		l.Check(c.CookieSecure, "生产环境必须开启 HG_SERVER_COOKIE_SECURE=true（需配合 HTTPS）")
 		l.Check(len(c.CORSOrigins) > 0 && !containsWildcard(c.CORSOrigins),
 			"生产环境 CORS 必须使用显式来源，禁止通配符 *")
+		// 明文传输的实质风险不在"密码被看到"而在指令通道：规则/升级包有
+		// HMAC 签名，terminate/quarantine 没有且永远不该有（指令需要人工
+		// 下发，签名密钥已在 server 手里）——加密传输是唯一防线，所以
+		// 这里用警告而非硬失败：已有反代部署不该被升级打断。
+		l.SecurityWarning(c.TLSCertFile != "" || c.TLSTerminated,
+			"生产环境既未配置服务端 TLS（HG_SERVER_TLS_CERT/KEY）也未声明代理终结（HG_SERVER_TLS_TERMINATED），管理台与探针通道为明文，指令可被中间人伪造")
 		l.SecurityWarning(c.JWTSecret != "change-me-to-a-long-random-secret-at-least-32-bytes",
 			"JWT 密钥仍是示例默认值，请更换为随机密钥")
 		l.SecurityWarning(c.EnrollToken != "" && c.EnrollToken != "change-me-enroll-token",
