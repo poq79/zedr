@@ -120,6 +120,11 @@ func (a *Agent) diffInventoryEvents(sections []model.InventorySection, keyFns ma
 	if !wasReady {
 		return
 	}
+	// 进程存活快照（listeners 生命周期过滤用），一轮构建一次。
+	alive := make(map[uint32]struct{}, 256)
+	for _, p := range a.store.Procs(2000) {
+		alive[p.PID] = struct{}{}
+	}
 	for _, s := range sections {
 		keyFn, ok := keyFns[s.Name]
 		if !ok {
@@ -135,6 +140,10 @@ func (a *Agent) diffInventoryEvents(sections []model.InventorySection, keyFns ma
 			continue
 		}
 		for _, ev := range evs {
+			if benignInventoryChangeLinux(ev, alive) {
+				a.log.Debug("inventory_benign_skipped", "section", ev.Section, "kind", ev.Kind, "key", ev.Key)
+				continue
+			}
 			sev, score, mitre := classifyInventoryEventLinux(ev)
 			if sev == "" {
 				continue
@@ -153,6 +162,60 @@ func (a *Agent) diffInventoryEvents(sections []model.InventorySection, keyFns ma
 			})
 		}
 	}
+}
+
+// benignInventoryChangeLinux 过滤 listeners 节的稳态噪声（与 Windows 版
+// benignInventoryChange 同语义，Linux 节集只有 listeners 需要）：
+//   - added 动态端口段（49152-65535）：瞬态端口常态。Linux 版 classify
+//     对 added 一律 High，不过滤的话开发工具的随机端口每天能刷几十条
+//     high——比 Windows 侧噪声更贵；
+//   - removed 且属主 pid 已退出：进程生命周期事件，不是服务监听面
+//     变更（存活进程主动关监听仍告警；pid 未知不抑制，保持诚实）。
+func benignInventoryChangeLinux(ev inventory.ChangeEvent, alive map[uint32]struct{}) bool {
+	if ev.Section != "listeners" {
+		return false
+	}
+	port, hasPort := listenerPortFromKeyLinux(ev.Key)
+	switch ev.Kind {
+	case inventory.DiffAdded:
+		return hasPort && port >= 49152
+	case inventory.DiffRemoved:
+		if hasPort && port >= 49152 {
+			return true
+		}
+		if pid := listenerPidFromEntry(ev.Before); pid > 0 {
+			if _, ok := alive[pid]; !ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// listenerPortFromKeyLinux 从 "tcp|8080" 形态的事件键取端口（与 Windows
+// 版同实现，lapp 不依赖 agentapp，各自持有副本——双组合根的既有纪律）。
+func listenerPortFromKeyLinux(key string) (int, bool) {
+	parts := strings.Split(key, "|")
+	if len(parts) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil || n < 0 || n > 65535 {
+		return 0, false
+	}
+	return n, true
+}
+
+// listenerPidFromEntry 从监听条目取 pid（Diff 后数字字段是 float64）。
+func listenerPidFromEntry(m map[string]any) uint32 {
+	if m == nil {
+		return 0
+	}
+	f, ok := m["pid"].(float64)
+	if !ok || f <= 0 {
+		return 0
+	}
+	return uint32(f)
 }
 
 // classifyInventoryEventLinux 是 Linux 版分级口径（对齐 Windows 版的

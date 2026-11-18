@@ -53,6 +53,12 @@ func (a *Agent) emitInventoryEvents(ctx context.Context, changes []inventory.Cha
 	if len(changes) == 0 || ctx.Err() != nil {
 		return
 	}
+	// 进程存活快照（供 listeners removed 的生命周期过滤判 pid 死活）：
+	// 一轮一次，事件再多也不重复扫进程表。
+	alive := make(map[uint32]struct{}, 256)
+	for _, p := range a.store.Procs(2000) {
+		alive[p.PID] = struct{}{}
+	}
 	emitted := 0
 	dropped := 0
 	skippedBenign := 0
@@ -60,7 +66,7 @@ func (a *Agent) emitInventoryEvents(ctx context.Context, changes []inventory.Cha
 	for _, ev := range changes {
 		// 稳态噪声先过滤：清单快照照常更新（资产页所见即所得），
 		// 但这些事件不值得打扰值班（实测一天能刷十几条 low 噪声）
-		if benignInventoryChange(ev) {
+		if benignInventoryChange(ev, alive) {
 			skippedBenign++
 			a.log.Debug("inventory_benign_skipped", "section", ev.Section, "kind", ev.Kind, "key", ev.Key)
 			continue
@@ -90,9 +96,14 @@ func (a *Agent) emitInventoryEvents(ctx context.Context, changes []inventory.Cha
 //     服务一天启停多次（实测一轮能刷四五条 low），状态变化不是攻击语义；
 //     路径/账户/display_name 变化仍告警（那才是服务被替换的证据）；
 //   - 监听 pid 漂移：同一端口换 pid 多为服务重启；
-//   - 动态端口段（49152-65535）新增监听：RPC/临时服务的瞬态端口常态，
-//     低端口的 added 仍告警。
-func benignInventoryChange(ev inventory.ChangeEvent) bool {
+//   - 动态端口段（49152-65535）新增/移除监听：RPC/临时服务的瞬态端口
+//     常态，低端口的 added 仍告警；
+//   - removed 的监听端口若属主 pid 已退出：那是进程生命周期事件（开发
+//     工具/客户端进程退出带走 socket），服务监听面其实没变（2026-11-18
+//     实测 ZCode/node 类工具的随机端口反复增删，单日 37 条 low 噪声）。
+//     存活进程主动关闭监听（配置重载类）仍告警——"还在运行的进程停止
+//     对外服务"才是值得看的变更。pid 未知（0/缺失）不抑制，保持诚实。
+func benignInventoryChange(ev inventory.ChangeEvent, alive map[uint32]struct{}) bool {
 	switch ev.Section {
 	case "services":
 		if ev.Kind != inventory.DiffChanged {
@@ -111,9 +122,18 @@ func benignInventoryChange(ev inventory.ChangeEvent) bool {
 		if ev.Kind == inventory.DiffChanged {
 			return true // pid 漂移
 		}
+		port, hasPort := listenerPortFromKey(ev.Key)
 		if ev.Kind == inventory.DiffAdded {
-			if port, ok := listenerPortFromKey(ev.Key); ok {
-				return port >= 49152 // 动态端口段
+			return hasPort && port >= 49152 // 动态端口段
+		}
+		if ev.Kind == inventory.DiffRemoved {
+			if hasPort && port >= 49152 {
+				return true // 动态端口段对称过滤
+			}
+			if pid := numAny(ev.Before, "pid"); pid > 0 {
+				if _, ok := alive[pid]; !ok {
+					return true // 属主进程已退出：生命周期事件，不是服务面变更
+				}
 			}
 		}
 		return false
