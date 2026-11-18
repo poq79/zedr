@@ -198,6 +198,8 @@ func LoadConfig() (*Config, error) {
 	c.UpgradeFile = l.Env("HG_SERVER_UPGRADE_FILE", "")
 	c.UpgradeVersion = l.Env("HG_SERVER_UPGRADE_VERSION", "")
 	c.UpgradeEnabled = l.Bool("HG_SERVER_UPGRADE_ENABLED", false)
+	c.UpgradeWaveSize = l.Int("HG_SERVER_UPGRADE_WAVE_SIZE", 10)
+	c.UpgradeWaveTimeout = l.Duration("HG_SERVER_UPGRADE_WAVE_TIMEOUT", 10*time.Minute)
 	c.DeployPackage = l.Env("HG_SERVER_DEPLOY_PACKAGE", "")
 	c.DeployVersion = l.Env("HG_SERVER_DEPLOY_VERSION", "")
 	c.LiveQueryEnabled = l.Bool("HG_SERVER_LIVEQUERY_ENABLED", true)

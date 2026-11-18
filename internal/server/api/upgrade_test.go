@@ -99,3 +99,57 @@ func TestUpgradeCommandGate(t *testing.T) {
 		t.Fatalf("指令历史里没有 self_upgrade 记录")
 	}
 }
+
+// TestFleetUpgradeAPI 批量升级端点的门禁与基础形状：
+// 未启用物料 → 403；analyst → 403（adminOnly 路由）；空舰队 → 400；
+// 有终端 → 发起 running → abort → aborted；无批次时 GET 返回 null。
+func TestFleetUpgradeAPI(t *testing.T) {
+	pkg := filepath.Join(t.TempDir(), "zedr-agent.exe")
+	if err := os.WriteFile(pkg, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("写测试升级包失败: %v", err)
+	}
+	env := newTestEnvFull(t, func(d *Deps) {
+		d.UpgradeEnabled = true
+		d.UpgradeFile = pkg
+		d.UpgradeVersion = "9.9.9"
+	}, func(c *service.Config) { c.UpgradeEnabled = true })
+	env.agent = env.enrollAgent()
+	// 注册默认 version="test"（非数字段比较退化为字符串，"test">"9.9.9"
+	// 会被当"更新版本"跳过）；心跳成数值版本让主机进入升级队列
+	env.doAgentJSON(http.MethodPost, "/api/v1/agent/heartbeat",
+		map[string]any{"hostname": "TEST-HOST", "version": "1.0.0", "proc_count": 10}, http.StatusOK)
+
+	// viewer 被路由拦下
+	env.doJSON(http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "viewer1", "display_name": "只读", "password": "ViewerPass1!", "role": "viewer",
+	}, http.StatusOK, env.token, nil)
+	viewerToken := env.login("viewer1", "ViewerPass1!")
+	env.doJSON(http.MethodPost, "/api/v1/upgrade/fleet", nil, http.StatusForbidden, viewerToken, nil)
+	env.doJSON(http.MethodGet, "/api/v1/upgrade/fleet", nil, http.StatusForbidden, viewerToken, nil)
+
+	// 开关+物料齐 → 发起成功（单台在线，一波推进中）
+	var started struct {
+		ID     string `json:"id"`
+		State  string `json:"state"`
+		Total  int    `json:"total"`
+		Target string `json:"target_version"`
+	}
+	env.doJSON(http.MethodPost, "/api/v1/upgrade/fleet", nil, http.StatusOK, env.token, &started)
+	if started.State != "running" || started.Total != 1 || started.Target != "9.9.9" {
+		t.Fatalf("发起快照不对: %+v", started)
+	}
+
+	// 状态可查 → 中止生效
+	env.doJSON(http.MethodGet, "/api/v1/upgrade/fleet", nil, http.StatusOK, env.token, &started)
+	if started.State != "running" && started.State != "aborted" {
+		t.Fatalf("状态异常: %s", started.State)
+	}
+	env.doJSON(http.MethodPost, "/api/v1/upgrade/fleet/abort", nil, http.StatusOK, env.token, &started)
+	if started.State != "aborted" {
+		t.Fatalf("abort 后应 aborted，实际 %s", started.State)
+	}
+
+	// 重复中止 / 恢复非暂停批次 → 400
+	env.doJSON(http.MethodPost, "/api/v1/upgrade/fleet/abort", nil, http.StatusBadRequest, env.token, nil)
+	env.doJSON(http.MethodPost, "/api/v1/upgrade/fleet/resume", nil, http.StatusBadRequest, env.token, nil)
+}

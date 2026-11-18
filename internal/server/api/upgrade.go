@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -27,6 +30,90 @@ func (h *adminHandler) availableUpgrade(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, resp)
+}
+
+// upgradeMaterialReady 是批量升级端点的公共前置：总开关 + 物料三件齐 +
+// 包文件实际可读。批次发起来时把"包不可读"拦在门外，而不是让每台探针
+// 下载时失败、污染波次统计。
+func (h *adminHandler) upgradeMaterialReady() (version string, err error) {
+	if !h.deps.UpgradeEnabled {
+		return "", apperr.Forbidden("服务端未启用探针自升级（HG_SERVER_UPGRADE_ENABLED）")
+	}
+	if h.deps.UpgradeFile == "" || h.deps.UpgradeVersion == "" {
+		return "", apperr.Unavailable("服务端未配置升级包（HG_SERVER_UPGRADE_FILE/VERSION）")
+	}
+	if st, serr := os.Stat(h.deps.UpgradeFile); serr != nil || st.IsDir() {
+		return "", apperr.Unavailable("升级包文件不可读，请检查 HG_SERVER_UPGRADE_FILE 路径")
+	}
+	return h.deps.UpgradeVersion, nil
+}
+
+// startFleetUpgrade 发起批量升级（adminOnly）。body 可空 = 全部终端；
+// {"agent_ids":[...]} 指定子集。编排语义见 service/upgrade.go。
+func (h *adminHandler) startFleetUpgrade(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	version, err := h.upgradeMaterialReady()
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	var req struct {
+		AgentIDs []string `json:"agent_ids"`
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil {
+		httpx.WriteError(w, r, apperr.Invalid("请求体读取失败"))
+		return
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			httpx.WriteError(w, r, apperr.Invalid("请求体格式错误: %v", err))
+			return
+		}
+	}
+
+	snap, err := h.deps.Services.Upgrade.StartFleet(r.Context(), req.AgentIDs, version, p.Username)
+	if err != nil {
+		httpx.WriteError(w, r, apperr.Invalid("%s", err.Error()))
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "upgrade.fleet.start",
+		snap.ID, fmt.Sprintf("target=%s queued=%d/%d", snap.TargetVersion, snap.QueueRemain, snap.Total),
+		httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, snap)
+}
+
+// fleetUpgradeStatus 当前/最近一次批次快照；无批次返回 null。
+func (h *adminHandler) fleetUpgradeStatus(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteJSON(w, r, http.StatusOK, h.deps.Services.Upgrade.Snapshot())
+}
+
+// abortFleetUpgrade 中止批次（已下发未执行的指令不召回，快照如实保留 pending）。
+func (h *adminHandler) abortFleetUpgrade(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	snap, err := h.deps.Services.Upgrade.Abort()
+	if err != nil {
+		httpx.WriteError(w, r, apperr.Invalid("%s", err.Error()))
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "upgrade.fleet.abort",
+		snap.ID, "", httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, snap)
+}
+
+// resumeFleetUpgrade 恢复熔断暂停的批次（人工放行）。
+func (h *adminHandler) resumeFleetUpgrade(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	snap, err := h.deps.Services.Upgrade.Resume()
+	if err != nil {
+		httpx.WriteError(w, r, apperr.Invalid("%s", err.Error()))
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "upgrade.fleet.resume",
+		snap.ID, "", httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, snap)
 }
 
 // upgradeManifest 下发探针自升级包描述（版本/哈希/大小 + HMAC 签名）。

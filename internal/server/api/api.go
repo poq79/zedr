@@ -241,6 +241,12 @@ func Router(d Deps) http.Handler {
 	// 探针自升级可用性元信息（viewer 可读）：前端据此渲染升级入口与目标版本。
 	// 发起指令仍走 /hosts/{id}/commands（服务端白名单 + admin 角色闸把门）。
 	mux.Handle("GET /api/v1/upgrade/available", viewer(adminH.availableUpgrade))
+	// 批量升级编排（adminOnly）：波次推进/失败熔断暂停/中止恢复，语义见
+	// service/upgrade.go。批次状态只对 admin 开放——升级是全舰队影响面。
+	mux.Handle("POST /api/v1/upgrade/fleet", adminOnly(adminH.startFleetUpgrade))
+	mux.Handle("GET /api/v1/upgrade/fleet", adminOnly(adminH.fleetUpgradeStatus))
+	mux.Handle("POST /api/v1/upgrade/fleet/abort", adminOnly(adminH.abortFleetUpgrade))
+	mux.Handle("POST /api/v1/upgrade/fleet/resume", adminOnly(adminH.resumeFleetUpgrade))
 	// 检测演练：发起（analyst+，服务端总开关 HG_SERVER_DRILL_ENABLED 把门）
 	// 与报告列表（viewer 可读，复盘/验收场景常需要只读角色能看到结果）
 	mux.Handle("POST /api/v1/hosts/{id}/drill", writer(adminH.startDrill))

@@ -199,6 +199,18 @@ func (r *commandRepo) Create(ctx context.Context, c *domain.AgentCommand) error 
 	return nil
 }
 
+func (r *commandRepo) ByID(ctx context.Context, id string) (*domain.AgentCommand, error) {
+	row := r.s.db.QueryRowContext(ctx, `SELECT `+cmdCols+` FROM agent_commands WHERE id = ?`, id)
+	c, err := scanCmd(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询指令失败: %w", err)
+	}
+	return c, nil
+}
+
 func (r *commandRepo) PendingForAgent(ctx context.Context, agentID string, limit int) ([]domain.AgentCommand, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20

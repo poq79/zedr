@@ -28,6 +28,11 @@ type Config struct {
 	// 方向不可逆。与 drill 同纪律：服务端总开关 + 终端侧 HG_AGENT_UPGRADE_ENABLED
 	// 第二道闸，单侧误开不会真的换装。物料（升级包路径/版本）另行配置。
 	UpgradeEnabled bool
+	// UpgradeWaveSize/WaveTimeout 是批量升级编排的波次参数（0=服务内默认
+	// 10 台 / 10min）：波次越小爆炸半径越小，但批次拖得越长——按舰队规模
+	// 与维护窗口权衡。
+	UpgradeWaveSize    int
+	UpgradeWaveTimeout time.Duration
 	// SensorOfflineAlerts/Severity 是传感器失联告警（SEN-OFFLINE）的开关
 	// 与严重度，语义见 app.Config 同名字段注释。
 	SensorOfflineAlerts   bool
@@ -59,6 +64,7 @@ type Services struct {
 	Stats    *StatsService
 	Incident *IncidentService
 	Sensor   *SensorWatchService
+	Upgrade  *UpgradeService
 	Bus      *AlertBus
 	AI       *AIService
 }
@@ -70,16 +76,18 @@ func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Log
 	}
 	bus := NewAlertBus()
 	sensor := &SensorWatchService{repos: repos, bus: bus, cfg: cfg, log: log}
+	agent := &AgentService{repos: repos, cfg: cfg, log: log, sensor: sensor}
 
 	return &Services{
 		Auth:     &AuthService{repos: repos, tokens: tokens, log: log},
-		Agent:    &AgentService{repos: repos, cfg: cfg, log: log, sensor: sensor},
+		Agent:    agent,
 		Alert:    &AlertService{repos: repos, cfg: cfg, log: log, bus: bus},
 		Rule:     &RuleService{repos: repos, log: log},
 		Audit:    &AuditService{repos: repos},
 		Stats:    &StatsService{repos: repos},
 		Incident: &IncidentService{repos: repos, cfg: cfg, log: log},
 		Sensor:   sensor,
+		Upgrade:  NewUpgradeService(repos, cfg, agent, log),
 		Bus:      bus,
 		AI:       &AIService{repos: repos, eng: aiEngine, log: log, cfg: cfg, bootstrap: cfg.AIBootstrap, encKey: cfg.SettingEncKey},
 	}

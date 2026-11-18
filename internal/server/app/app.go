@@ -121,6 +121,8 @@ func New() (*App, error) {
 		QuarantineEnabled:     cfg.QuarantineEnabled,
 		DrillEnabled:          cfg.DrillEnabled,
 		UpgradeEnabled:        cfg.UpgradeEnabled,
+		UpgradeWaveSize:       cfg.UpgradeWaveSize,
+		UpgradeWaveTimeout:    cfg.UpgradeWaveTimeout,
 		SensorOfflineAlerts:   cfg.SensorOfflineAlerts,
 		SensorOfflineSeverity: cfg.SensorOfflineSeverity,
 		HeartbeatInterval:     time.Duration(cfg.HeartbeatSec) * time.Second,

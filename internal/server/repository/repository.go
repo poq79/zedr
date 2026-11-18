@@ -238,6 +238,9 @@ type AuditRepo interface {
 // CommandRepo 终端指令。
 type CommandRepo interface {
 	Create(ctx context.Context, c *domain.AgentCommand) error
+	// ByID 单条查询（批量升级编排用：波内轮询各主机指令的回执状态）；
+	// 不存在返回 (nil, nil)。
+	ByID(ctx context.Context, id string) (*domain.AgentCommand, error)
 	PendingForAgent(ctx context.Context, agentID string, limit int) ([]domain.AgentCommand, error)
 	MarkDelivered(ctx context.Context, ids []string, at time.Time) error
 	Complete(ctx context.Context, id, status, result string, at time.Time) error
