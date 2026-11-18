@@ -28,6 +28,7 @@ export function Alerts({ user }: { user: User }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIdx, setFocusIdx] = useState(-1);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [drawerTab, setDrawerTab] = useState<'evidence' | 'ai' | 'investigate' | 'agent' | undefined>(undefined);
   const [refreshTick, setRefreshTick] = useState(0);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -37,6 +38,10 @@ export function Alerts({ user }: { user: User }) {
     const mitre = searchParams.get('mitre');
     const q = searchParams.get('q');
     if (open) { setOpenId(open); }
+    const drawerTab = searchParams.get('tab');
+    if (drawerTab === 'ai' || drawerTab === 'investigate' || drawerTab === 'agent' || drawerTab === 'evidence') {
+      setDrawerTab(drawerTab);
+    }
     // ATT&CK 矩阵格子下钻：?mitre=T1059 精确过滤（后端 CSV 定界匹配，不会误中 T1059.001）
     if (mitre) { setFilters((f) => ({ ...f, mitre })); }
     // 事件页/主机页跳转：?q=hostname 按关键词定位（同搜索框语义）
@@ -266,6 +271,7 @@ export function Alerts({ user }: { user: User }) {
 
       <AlertDrawer
         alertId={openId}
+        initialTab={drawerTab}
         onClose={() => setOpenId(null)}
         onChanged={() => setRefreshTick((t) => t + 1)}
         canWrite={canWrite}

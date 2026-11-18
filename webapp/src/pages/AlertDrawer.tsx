@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { BrainCircuit, ShieldBan } from 'lucide-react';
 import { api } from '../lib/api';
+import { dispatchAIContext } from '../lib/aiContext';
 import type { Alert, Investigation } from '../lib/types';
 import { SEV_LABEL, VERDICT_LABEL, LAYER_LABEL, fmtTime } from '../lib/format';
 import { Badge, Button, Card, EmptyState, Skeleton, Tabs } from '../components/ui/basics';
@@ -31,8 +32,9 @@ const TRIAGE_VERDICT: Record<string, [string, string]> = {
   benign: ['倾向误报', 'resolved'], inconclusive: ['证据不足', 'info'],
 };
 
-export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
+export function AlertDrawer({ alertId, onClose, onChanged, canWrite, initialTab }: {
   alertId: string | null; onClose: () => void; onChanged: () => void; canWrite: boolean;
+  initialTab?: 'evidence' | 'ai' | 'investigate' | 'agent';
 }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -43,7 +45,10 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
      三级分工（2026-11-14 文案裁决）：研判=只看本条已有证据定性（轻）；
      关联核查=零模型规则式跨主机/情报/驻留核查（中，与值班队列同一份）；
      深度调查=模型自主决定查什么（重，多次只读工具调用）。 */
-  const [tab, setTab] = useState<'evidence' | 'ai' | 'investigate' | 'agent'>('evidence');
+  // initialTab 支持深链定位（研判质量分歧样本 → 直接跳深度调查）；
+  // alertId 变化时回到指定 Tab——每次打开同一份对象不残留上次位置
+  const [tab, setTab] = useState<'evidence' | 'ai' | 'investigate' | 'agent'>(initialTab || 'evidence');
+  useEffect(() => { setTab(initialTab || 'evidence'); }, [alertId, initialTab]);
 
   useEffect(() => {
     if (alertId == null) { setA(null); setErr(''); return; }
@@ -123,12 +128,11 @@ export function AlertDrawer({ alertId, onClose, onChanged, canWrite }: {
           <Button onClick={() => setStatus('resolved')}>标记已解决</Button>
           <Button onClick={() => setStatus('false_positive')}>标记误报</Button>
           <div className="flex-1" />
-          <Button variant="ghost" onClick={() => window.dispatchEvent(new CustomEvent('zedr:ai-context', {
-            detail: { open: true, text: '告警 ' + (a?.id || '') + '：' + (a?.title || '') +
-              '（严重度 ' + (a?.severity || '') + '，' + (a?.score || 0) + ' 分' +
-              (a?.process_name ? '，进程 ' + a.process_name : '') +
-              (a?.image_path ? '，路径 ' + a.image_path : '') + '）' },
-          }))} title="打开 AI 助手并带上这条告警的上下文">问 AI</Button>
+          <Button variant="ghost" onClick={() => dispatchAIContext('告警 ' + (a?.id || '') + '：' + (a?.title || '') +
+            '（严重度 ' + (a?.severity || '') + '，' + (a?.score || 0) + ' 分' +
+            (a?.process_name ? '，进程 ' + a.process_name : '') +
+            (a?.image_path ? '，路径 ' + a.image_path : '') + '）')}
+            title="打开 AI 助手并带上这条告警的上下文">问 AI</Button>
           <Button variant="ghost" onClick={() => allow('path')}><ShieldBan size={13} /> 信任此路径</Button>
           {a.hash_sha256 && <Button variant="ghost" onClick={() => allow('hash')}>按哈希加白</Button>}
           {a.hash_sha256 && <Button variant="ghost" onClick={blacklist}>加入黑名单</Button>}
@@ -554,6 +558,12 @@ function AgentPanel({ alertId }: { alertId: string }) {
             {rep.degraded && <Badge tone="medium" title={rep.degraded_reason}>降级</Badge>}
             <span className="text-xs text-faint">{rep.tool_calls} 次工具调用 · {rep.latency_ms}ms</span>
             <div className="flex-1" />
+            <Button size="sm" variant="ghost" onClick={() => dispatchAIContext(
+              '基于告警的深度调查报告继续分析：' + rep.summary +
+              (rep.findings?.length ? '\n关键发现：' + rep.findings.slice(0, 3).map((f) => f.text).join('；') : ''),
+              true,
+            )} disabled={!rep.summary}
+              title="把调查结论作为上下文发给 AI 助手，继续追问">带给 AI 助手</Button>
             <Button size="sm" variant="ghost" onClick={run} disabled={busy}>{busy ? '重算中…' : '重新调查'}</Button>
           </div>
 

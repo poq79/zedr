@@ -823,7 +823,7 @@ function QualityCard() {
                       AI：{VERDICT_META[d.ai_verdict]?.label || d.ai_verdict} {Math.round((d.ai_confidence || 0) * 100)}%
                     </span>
                     <span className="text-faint">分析师：{d.analyst_said === 'true_positive' ? '真阳性' : d.analyst_said === 'known_benign' ? '良性' : '误报'}</span>
-                    <Link to={`/alerts?open=${encodeURIComponent(d.alert_id)}`} className="text-[11px] text-primary underline-offset-2 hover:underline">复核</Link>
+                    <Link to={`/alerts?open=${encodeURIComponent(d.alert_id)}&tab=agent`} className="text-[11px] text-primary underline-offset-2 hover:underline">深度调查</Link>
                   </div>
                 ))}
               </div>
