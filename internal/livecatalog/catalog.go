@@ -391,10 +391,10 @@ var catalog = []Endpoint{
 	{
 		Name:    "services",
 		Cate:    CateSys,
-		Summary: "Win32 服务实时全量（刻意不含驱动，驱动归 drivers）",
+		Summary: "服务实时全量（Windows=Win32 服务；Linux=systemd unit，state 为启用口径）",
 		Params: []Param{
 			{Name: "filter", Kind: KindString, Desc: "子串匹配服务名或显示名（大小写不敏感），空=全部"},
-			{Name: "state", Kind: KindString, Desc: "按状态精确过滤（running/stopped），空=全部"},
+			{Name: "state", Kind: KindString, Desc: "按状态精确过滤，词汇按平台：Windows=running/stopped，Linux=enabled/disabled（传错词汇得到诚实空集），空=全部"},
 			{Name: "limit", Kind: KindInt, Default: "200", Max: 500, Desc: "返回条数上限"},
 		},
 		Output:    "items[{name,display_name,state,start_mode,path_name,account}]/total/truncated",
