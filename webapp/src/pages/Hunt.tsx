@@ -24,12 +24,25 @@ const FIELD_LABEL: Record<string, string> = {
   signed: '签名', proc_user: '运行账号', hostname: '主机', rule_ids: '规则', status: '状态',
 };
 
+// Quick Starts（对标 SentinelOne Purple AI Quick Starts）：上半是查询
+// 语法示例，下半是值班场景模板——新手照着点也能覆盖真实 SOC 工作流。
 const EXAMPLES = [
   '最近 24 小时的严重告警',
   'powershell 相关的命令行',
   '未签名程序从临时目录执行',
   '得分 60 以上的可疑告警',
   'Administrator 账号运行的进程',
+];
+
+// 值班场景 Quick Starts：按 SOC 值班常见问题组织（暴破/持久化/勒索/
+// 横向移动/情报命中/复发性误报），每条都能被翻译成受控查询。
+const QUICK_STARTS = [
+  '暴破成功相关的告警',
+  '新安装服务或计划任务的告警',
+  '诱饵文件被篡改或删除的告警',
+  '端口扫描或横向扇出相关的网络告警',
+  'verdict 是 suspicious 且得分 70 以上的告警',
+  '涉及横向移动的告警',
 ];
 
 export function HuntPage() {
@@ -81,6 +94,14 @@ export function HuntPage() {
           {EXAMPLES.map((ex) => (
             <button key={ex} onClick={() => { setQ(ex); setTurns([]); run(ex, false); }}
               className="cursor-pointer rounded-full border border-border-soft bg-secondary px-2.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground">
+              {ex}
+            </button>
+          ))}
+          <div className="w-full" />
+          <span className="inline-flex items-center text-[10.5px] font-semibold uppercase tracking-wide text-faint">值班场景 ·</span>
+          {QUICK_STARTS.map((ex) => (
+            <button key={ex} onClick={() => { setQ(ex); setTurns([]); run(ex, false); }}
+              className="cursor-pointer rounded-full border border-primary/25 bg-brand-soft px-2.5 py-1 text-[11.5px] text-foreground transition-colors hover:border-primary/50">
               {ex}
             </button>
           ))}
