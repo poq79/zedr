@@ -40,6 +40,19 @@ function TimelineSvg({ points, width }: { points: HourPoint[]; width: number }) 
   const innerW = W - padL - 8, innerH = H - padB - padT;
   const max = Math.max(1, ...points.map((p) => p.total));
   const bw = innerW / points.length;
+  // 悬停读数：SOC 想知道"峰值到底是哪个小时"——跟随鼠标的小时级提示
+  const [hov, setHov] = useState<number | null>(null);
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (!rect.width) return;
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    const i = Math.floor((px - padL) / bw);
+    setHov(i >= 0 && i < points.length ? i : null);
+  };
+  const hp = hov !== null ? points[hov] : null;
+  const hhh = hp ? String(new Date(hp.bucket).getHours()).padStart(2, '0') : '';
+  // 提示框左右钳制在卡内（首尾桶的居中定位会出界）
+  const tipPct = hov === null ? 0 : Math.min(92, Math.max(8, ((padL + hov * bw + bw / 2) / W) * 100));
 
   const grid: React.ReactNode[] = [];
   for (let i = 0; i <= 3; i++) {
@@ -75,10 +88,19 @@ function TimelineSvg({ points, width }: { points: HourPoint[]; width: number }) 
   });
 
   return (
-    <div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-[150px] w-full">
+    <div className="relative">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-[150px] w-full cursor-crosshair" onMouseMove={onMove} onMouseLeave={() => setHov(null)}>
         {grid}{rects}{bars}
+        {hov !== null && <line x1={padL + hov * bw} y1={padT} x2={padL + hov * bw} y2={padT + innerH} stroke="var(--border-strong)" strokeWidth={1} />}
       </svg>
+      {hp && (
+        <div className="pointer-events-none absolute top-0 z-10 -translate-x-1/2 whitespace-nowrap rounded border border-border-strong bg-popover px-2 py-1 text-[10.5px] shadow-lg"
+          style={{ left: `${tipPct}%` }}>
+          <span className="font-mono">{hhh}:00</span>
+          <span className="ml-1.5 text-muted-foreground">{hp.total} 条</span>
+          {hp.critical > 0 && <span className="ml-1 font-medium" style={{ color: 'var(--crit)' }}>critical {hp.critical}</span>}
+        </div>
+      )}
       <div className="mt-2.5 flex flex-wrap gap-4 text-[11.5px] text-faint">
         <span className="inline-flex items-center gap-1.5"><i className="h-2 w-2 rounded-[2px]" style={{ background: 'var(--chart-bar)' }} />普通告警</span>
         <span className="inline-flex items-center gap-1.5"><i className="h-2 w-2 rounded-[2px]" style={{ background: 'var(--chart-crit)' }} />严重告警</span>
@@ -130,7 +152,7 @@ export function SeverityDonut({ dist, loading }: { dist?: Record<string, number>
       <svg viewBox="0 0 120 120" width={120} height={120} className="shrink-0">
         <circle cx={60} cy={60} r={R} fill="none" stroke="var(--border)" strokeWidth={14} />
         {arcs}
-        <text x={60} y={58} textAnchor="middle" fontSize={20} fontWeight={700} fill="var(--foreground)" style={{ fontFamily: 'var(--font-mono)' }}>{total}</text>
+        <text x={60} y={58} textAnchor="middle" fontSize={20} fontWeight={700} fill="var(--foreground)" className="anim-digit" style={{ fontFamily: 'var(--font-mono)' }}>{total}</text>
         <text x={60} y={74} textAnchor="middle" fontSize={9} fill="var(--faint)">总告警</text>
       </svg>
       <div className="flex-1">{rows}</div>
@@ -146,8 +168,8 @@ export function BarList({ items, emptyText = '暂无数据可供排行' }: {
   return (
     <div>
       {items.map((it) => (
-        <div key={it.name} className="mb-2 flex items-center gap-2.5 text-[12.5px]">
-          <span className="w-[150px] truncate text-muted-foreground" title={it.name}>{it.name}</span>
+        <div key={it.name} className="mb-2 flex items-center gap-2.5 text-[12.5px]" title={`${it.name}：${it.value} 条 · 占比 ${Math.round((it.value / max) * 100)}%`}>
+          <span className="w-[150px] truncate text-muted-foreground">{it.name}</span>
           {/* 实色条：蓝→粉渐变是 slop 清单典型项；仪器读数不需要装饰 */}
           <span className="h-1.5 flex-1 overflow-hidden rounded-[3px] bg-border-soft">
             <i className="block h-full rounded-[3px] transition-[width] duration-500" style={{ width: `${Math.max(2, (it.value / max) * 100)}%`, background: 'var(--chart-bar)' }} />
