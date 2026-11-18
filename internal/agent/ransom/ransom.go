@@ -176,10 +176,13 @@ type Defense struct {
 	usnCap    int
 	weightSum int // 窗口内权重和的增量维护：爆发期每秒数千次 Consume，
 	// 每次都 O(n) 扫窗口会烧掉探针的 CPU 预算
-	lastRate  time.Time // 速率检测器最近一次触发的时刻（canary 分级用）
-	dropped   atomic.Int64
-	rebuilt   atomic.Int64
-	usnCapped atomic.Int64 // 因 USN 封顶未进速率窗的事件数（可观测口径）
+	lastRate time.Time // 速率检测器最近一次触发的时刻（canary 分级用）
+	// rateEscalated：当前速率冷却窗口内已补发过升级告警（每窗口最多
+	// 一次，见 rateFinding 的升级分支重排注释）。
+	rateEscalated bool
+	dropped       atomic.Int64
+	rebuilt       atomic.Int64
+	usnCapped     atomic.Int64 // 因 USN 封顶未进速率窗的事件数（可观测口径）
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -785,16 +788,35 @@ func (d *Defense) weightedLocked() int {
 
 // rateFinding 产出速率 Finding（冷却内返回零值）。摘要带窗口计数与
 // 涉及目录 Top3（rdcw 有完整路径）或 leaf name 样例（usn）。
+//
+// 目录集中升级分支（2026-11-18 可达性重排）：原判定"Top1 占比 ≥0.6 且
+// 总量 ≥2×阈值"挂在首触发点——但 rateFinding 每事件评估，w 首越阈值时
+// ≤ 阈值+2（单事件最大权重 2），2×阈值经此路径永不可达，2026-11-07
+// 引入以来从未在生产触发过（潜伏缺陷，11-18 复盘实锤）。重排为两级：
+//   - 首触发（w ≥ 阈值）按普通观察级发射（同窗口若已满足升级条件，
+//     首发即 high——突发风暴在两个事件内跨过 2×阈值时仍直接升级）；
+//   - 冷却期内 w 继续翻倍（≥2×阈值）且单目录集中占比 ≥0.6 → 补发一条
+//     升级告警，同冷却窗口最多补发一次（escalated 置位）。语义保真：
+//     "逐文件处理同一目标目录"的加密器持续工作形态，观察级首发后
+//     爆发仍在继续就该升级，而不是等下一个冷却周期。
 func (d *Defense) rateFinding(when time.Time) Finding {
 	w := d.weightedLocked()
 	if w < d.threshold {
 		return Finding{}
 	}
+	// 冷却内复查升级：爆发仍在继续（翻倍）且形态集中 → 补发升级
 	if last, ok := d.lastHit[rateCooldownKey]; ok && when.Sub(last) < d.cooldown {
+		if !d.rateEscalated && w >= 2*d.threshold {
+			if f, ok := d.escalateRateFinding(when, w); ok {
+				d.rateEscalated = true
+				return f
+			}
+		}
 		return Finding{}
 	}
 	d.lastHit[rateCooldownKey] = when
 	d.lastRate = when
+	d.rateEscalated = false
 
 	dirCount := map[string]int{}
 	var usnSamples []string
@@ -811,11 +833,11 @@ func (d *Defense) rateFinding(when time.Time) Finding {
 
 	summary := fmt.Sprintf("60 秒窗口内加权删除/改名计数 %d（阈值 %d）", w, d.threshold)
 	// 目录集中度：单目录集中爆发（Top1 占比 ≥0.6 且总量 ≥2×阈值）是
-	// 加密器"逐文件处理同一目标目录"的形态，升级 high——分散目录多为
-	// 用户整理/备份类行为，维持观察级。这是诱饵关联之外的第二升级路径。
-	escalate := false
-	if len(top) > 0 && top[0].count*10 >= w*6 && w >= 2*d.threshold {
-		escalate = true
+	// 加密器"逐文件处理同一目标目录"的形态，首发即升级 high；分散目录
+	// 多为用户整理/备份类行为，维持观察级。持续爆发的冷却期复查升级
+	// 见函数头注释与 escalateRateFinding。
+	escalate := len(top) > 0 && top[0].count*10 >= w*6 && w >= 2*d.threshold
+	if escalate {
 		summary += fmt.Sprintf("；单目录集中占比 %.0f%%，符合同目录集中加密形态",
 			float64(top[0].count)/float64(w)*100)
 	}
@@ -872,6 +894,46 @@ func (d *Defense) rateFinding(when time.Time) Finding {
 type dirCount struct {
 	dir   string
 	count int
+}
+
+// escalateRateFinding 构造冷却期复查的升级告警（锁内调用）。判定口径与
+// 首触发点的 escalate 分支一致：Top1 占比 ≥0.6 且 w ≥2×阈值；占比
+// 不达则继续等下一个事件（不置 escalated，爆发更集中时仍可补发）。
+func (d *Defense) escalateRateFinding(when time.Time, w int) (Finding, bool) {
+	dirCount := map[string]int{}
+	for _, e := range d.window {
+		if e.source == "usn" {
+			continue
+		}
+		dirCount[filepath.Dir(e.path)]++
+	}
+	top := topDirs(dirCount, 3)
+	if len(top) == 0 || top[0].count*10 < w*6 {
+		return Finding{}, false
+	}
+	summary := fmt.Sprintf("60 秒窗口内加权删除/改名计数 %d（阈值 %d），仍在持续攀升；单目录集中占比 %.0f%%，符合同目录集中加密形态——这是对先前观察级告警的升级确认",
+		w, d.threshold, float64(top[0].count)/float64(w)*100)
+	parts := make([]string, len(top))
+	for i, td := range top {
+		parts[i] = fmt.Sprintf("%s(%d)", td.dir, td.count)
+	}
+	summary += "；涉及目录 Top：" + strings.Join(parts, " ")
+	notes := make([]string, 0, len(top))
+	for _, td := range top {
+		notes = append(notes, fmt.Sprintf("dir=%s removed_or_renamed=%d", td.dir, td.count))
+	}
+	return Finding{
+		RuleID:   RuleRansom,
+		Severity: model.SeverityHigh,
+		Score:    60,
+		Verdict:  model.VerdictSuspicious,
+		Title:    "批量删除/改名行为（同目录集中爆发，疑似勒索加密）",
+		Summary:  summary,
+		MITRE:    []string{"T1486"},
+		Notes:    notes,
+		// 升级级保持路径指纹（HourlyFP=false）：真实集中爆发值得按目标
+		// 目录独立成行，不与观察级共用小时桶
+	}, true
 }
 
 func topDirs(m map[string]int, n int) []dirCount {

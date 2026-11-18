@@ -532,27 +532,62 @@ func TestRateFindingHourlyFPScopes(t *testing.T) {
 	// Consume 逐事件路径到不了 2×阈值（潜伏缺陷，独立切片处理）。
 }
 
-// 升级分支的定级与指纹口径：w≥2×阈值且 Top1 目录占比≥0.6 → high +
-// 保持路径指纹。注意：该分支经 Consume 公开路径不可达（逐事件评估，
-// 每事件最大权重 2，首越值 ≤ 阈值+1 < 2×阈值——2026-11-07 引入的
-// "同目录集中度升级"实际从未在生产触发过，属潜伏缺陷，修复需重排
-// 触发时机，独立切片处理）。此处用包内 pushLocked 直填窗口锁定分支
-// 判定逻辑本身。
-func TestRateFindingEscalatedViaBulkWindow(t *testing.T) {
+// 升级分支（2026-11-18 可达性重排后的端到端口径）：持续单目录爆发
+// 经 Consume 公开路径分两级——首越阈值发观察级（medium/HourlyFP），
+// 同冷却窗内继续翻倍且集中占比 ≥0.6 补发升级告警（high/路径指纹），
+// 每冷却窗最多补发一次。
+func TestRateEscalatedViaConsume(t *testing.T) {
 	dir := t.TempDir()
-	d, _, ck := newDefense(t, []string{dir}, nil)
-	for i := 0; i < 50; i++ {
-		d.mu.Lock()
+	d, r, ck := newDefense(t, []string{dir}, nil)
+	consume := func(n int) {
+		for i := 0; i < n; i++ {
+			d.Consume(Event{Kind: "removed",
+				Path:   filepath.Join(dir, fmt.Sprintf("doc%d.docx", i)),
+				Source: "rdcw", When: ck.Now()})
+		}
+	}
+	// 20 分首越阈值 → 观察级首发
+	consume(20)
+	if len(r.fs) != 1 || r.fs[0].Severity != model.SeverityMedium {
+		t.Fatalf("首发应为观察级: %+v", r.fs)
+	}
+	if !r.fs[0].HourlyFP {
+		t.Fatalf("观察级应置 HourlyFP: %+v", r.fs[0])
+	}
+	// 同冷却窗内继续翻倍（20→40）且全部单目录 → 升级告警补发
+	consume(20)
+	if len(r.fs) != 2 || r.fs[1].Severity != model.SeverityHigh {
+		t.Fatalf("翻倍集中应补发升级: %+v", r.fs)
+	}
+	if r.fs[1].HourlyFP {
+		t.Fatalf("升级级应保持路径指纹: %+v", r.fs[1])
+	}
+	if !strings.Contains(r.fs[1].Summary, "升级确认") {
+		t.Fatalf("升级告警应说明是对先前的升级确认: %s", r.fs[1].Summary)
+	}
+	// 同窗口再翻倍（40→80）：每冷却窗最多补发一次
+	consume(40)
+	if len(r.fs) != 2 {
+		t.Fatalf("同冷却窗不应重复补发: %+v", r.fs)
+	}
+}
+
+// 首发即集中（两个事件内跨过 2×阈值）：首发直接升级，无需等冷却复查。
+func TestRateEscalatedAtFirstHit(t *testing.T) {
+	dir := t.TempDir()
+	d, r, ck := newDefense(t, []string{dir}, nil)
+	// renamed 跨扩展名权重 2，10 条 = 20 分即阈值；用 pushLocked 直填
+	// 单批 42 分（w ≥ 2×阈值且单目录占比 ≥0.6）模拟批处理工具瞬时爆发
+	d.mu.Lock()
+	for i := 0; i < 42; i++ {
 		d.pushLocked(ck.Now(), 1, Event{Kind: "removed",
 			Path: filepath.Join(dir, fmt.Sprintf("doc%d.docx", i)), Source: "rdcw"})
-		d.mu.Unlock()
 	}
-	f := d.rateFinding(ck.Now())
-	if f.RuleID != RuleRansom || f.Severity != model.SeverityHigh {
-		t.Fatalf("集中爆发应升级 high: %+v", f)
-	}
-	if f.HourlyFP {
-		t.Fatalf("升级级不应置 HourlyFP（保持路径指纹）: %+v", f)
+	d.mu.Unlock()
+	d.Consume(Event{Kind: "removed",
+		Path: filepath.Join(dir, "final.docx"), Source: "rdcw", When: ck.Now()})
+	if len(r.fs) != 1 || r.fs[0].Severity != model.SeverityHigh {
+		t.Fatalf("首发即满足升级条件应直接 high: %+v", r.fs)
 	}
 }
 
