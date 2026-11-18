@@ -8,7 +8,8 @@
 //
 // Windows 专属旗子（-collector 等）在本入口不存在；配置一律走 HG_*
 // 环境变量（与 Windows 服务化形态同一来源，见 agentapp.LoadConfig）。
-// 未在 Linux 实机验证；-install 的 systemd 语义见 RESEARCH-LINUX-AGENT §3。
+// 2026-11-14 已在 Kali 实机验收（RESEARCH-LINUX-AGENT §7/§8）；
+// -install 的 systemd 语义见同文档 §3。
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -92,19 +94,104 @@ func main() {
 }
 
 // runStatus 查询本地接口状态（127.0.0.1:8843，令牌在数据目录 local.token）。
-// Linux v1 的本地接口尚未接线（TODO(integration)），此时给出明确的
-// "探针未运行/本地接口不可用"提示而不是报错堆栈。
+// 本地 API 已在 lapp 组合根接线（本地面板/桌面端同源），与 Windows 版
+// printStatus 同口径：json=true 输出机器可读 JSON（脚本按 online 字段
+// 闭环判断），否则人话。实现复制而非共享：cmd/ 下 main 包相互独立，
+// Windows 侧 fetchLocalStatus 依赖 Windows 目录候选，复制最小实现是
+// 既定取舍（见 applyMemoryLimit 注释）。
 func runStatus(asJSON bool) {
 	cfg, _ := agentapp.LoadConfig(version)
-	out := map[string]any{
-		"platform": "linux",
-		"version":  version,
-		"data_dir": cfg.DataDir,
-		"online":   false,
-		"note":     "Linux v1 本地接口未接线；状态以服务端主机列表为准",
+
+	res := fetchLocalStatusLinux(cfg.DataDir)
+	if res == nil {
+		if asJSON {
+			b, _ := json.MarshalIndent(map[string]any{
+				"platform": "linux", "version": version,
+				"data_dir": cfg.DataDir, "online": false,
+				"note": "本地接口 127.0.0.1:8843 不可达（探针未运行？）",
+			}, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+		fmt.Println("本地接口 127.0.0.1:8843 不可达（探针未运行？）")
+		fmt.Printf("版本: zedr-agent %s (linux)\n数据目录: %s\n", version, cfg.DataDir)
+		return
 	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	fmt.Println(string(b))
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		fmt.Printf("本地接口返回 %d（令牌不匹配或探针异常）\n", res.StatusCode)
+		return
+	}
+
+	var wrap struct {
+		Data struct {
+			AgentVersion string  `json:"agent_version"`
+			ProcCount    int     `json:"proc_count"`
+			CPUPercent   float64 `json:"cpu_percent"`
+			MemMB        float64 `json:"mem_mb"`
+			RuleCount    int     `json:"rule_count"`
+			IOCCount     int     `json:"ioc_count"`
+			UptimeSec    int64   `json:"uptime_sec"`
+			Online       bool    `json:"online"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&wrap); err != nil {
+		fmt.Printf("本地接口响应解析失败: %v\n", err)
+		return
+	}
+	d := wrap.Data
+	if asJSON {
+		b, _ := json.MarshalIndent(map[string]any{
+			"platform":      "linux",
+			"online":        true,
+			"data_dir":      cfg.DataDir,
+			"agent_version": d.AgentVersion,
+			"proc_count":    d.ProcCount,
+			"cpu_percent":   d.CPUPercent,
+			"mem_mb":        d.MemMB,
+			"rule_count":    d.RuleCount,
+			"ioc_count":     d.IOCCount,
+			"uptime_sec":    d.UptimeSec,
+			"server_online": d.Online,
+		}, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("探针在线: zedr-agent %s (linux)\n", d.AgentVersion)
+	fmt.Printf("进程: %d  CPU: %.1f%%  内存: %.1fMB\n", d.ProcCount, d.CPUPercent, d.MemMB)
+	fmt.Printf("规则: %d 条  IOC: %d 条  运行时长: %ds\n", d.RuleCount, d.IOCCount, d.UptimeSec)
+	fmt.Printf("服务端连接: %v\n", d.Online)
+}
+
+// fetchLocalStatusLinux 依次尝试候选令牌读取本地状态；全部失败返回 nil。
+// Linux 数据目录候选与 Windows 的 localTokenCandidates 同构：
+// 显式 HG_AGENT_DATA_DIR 优先，其次默认 /var/lib/zedr（服务化 root）。
+func fetchLocalStatusLinux(dataDir string) *http.Response {
+	for _, dir := range []string{dataDir, "/var/lib/zedr"} {
+		if dir == "" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "local.token"))
+		if err != nil {
+			continue
+		}
+		req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:8843/api/local/status", nil)
+		req.Header.Set("X-ZEDR-Token", strings.TrimSpace(string(raw)))
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			// 接口不可达：换令牌也没用，直接结束（探针没在跑）。
+			return nil
+		}
+		if res.StatusCode == 200 {
+			return res
+		}
+		res.Body.Close()
+		if res.StatusCode != 401 {
+			return res
+		}
+		// 401：令牌不匹配，试下一个候选目录。
+	}
+	return nil
 }
 
 // applyMemoryLimit 软内存上限（与 Windows main.go 同逻辑；独立成函数是因为

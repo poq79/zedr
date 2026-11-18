@@ -9,7 +9,8 @@
 // 只重写"子系统装配"这一层；采集差异由 collect.Source 第三实现（procfs）
 // 吸收，检测逻辑零分叉。
 //
-// 与 Windows 版的能力对照（诚实边界，未在 Linux 实机验证）：
+// 与 Windows 版的能力对照（诚实边界；2026-11-14 已在 Kali 实机验收，
+// 见 RESEARCH-LINUX-AGENT §7/§8）：
 //   - 无 USN 补采（inotify 实时事件覆盖运行期；停机窗口事件 v1 不补）
 //   - 注册表守护的等价物：inotify 守护 cron/systemd/ld.so.preload 目录，
 //     变更触发持久化即时重扫（与 regwatch 同语义、同防抖参数）
@@ -17,8 +18,9 @@
 //   - 落地即执行的 MotW 关联恒 false（Linux 无 Zone.Identifier 等价物）
 //   - netwatch 的可信进程放大阈值 v1 不启用（无签名验证，False 会更敏感；
 //     误报治理现场用 HG_AGENT_NET_* 阈值覆盖兜底）
-//   - 本地面板/实时隧道/资产清单由集成阶段接线（fswatch/liveapi/localapi
-//     各自就绪后），见包内 TODO(integration) 接缝。
+//   - 处置类指令（terminate/quarantine/self_upgrade）v1 诚实不支持，
+//     见 handleCommands 边界注释
+//   - 本地面板/实时隧道/资产清单已接线（localapi/tunnel/inventory）
 package lapp
 
 import (
