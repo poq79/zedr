@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { dispatchAIContext } from '../lib/aiContext';
 import { Badge, Button, Card, CardTitle, EmptyState, Skeleton } from '../components/ui/basics';
@@ -44,12 +44,14 @@ export function OverviewPage() {
       <BriefingCard />
 
       {/* KPI 数据带：一格面板 + 内部发丝线分隔，替代四张浮动卡片。
-          数字一律 mono——仪表读数是本系统的记忆锚点（UI-DESIGN §3） */}
+          数字一律 mono——仪表读数是本系统的记忆锚点（UI-DESIGN §3）。
+          进场编排：整页一次 staggered reveal（frontend-design skill 的洞见：
+          一次编排好的入场比散落的微动效更有节奏感），每格错峰 70ms */}
       <div className="mb-3.5 grid grid-cols-2 divide-border-soft border border-border-soft rounded-md bg-card xl:grid-cols-4 xl:divide-x">
-        <Kpi loading={loading} label="受管主机" tone={hostRate < 60 ? 'warn' : 'ok'} value={d?.online_hosts ?? 0} suffix={d ? `/${d.total_hosts}` : ''} sub={`在线率 ${hostRate}%`} />
-        <Kpi loading={loading} label="近 24 小时告警" value={d?.alerts_24h ?? 0} sub={d ? `平均每小时 ${((d.alerts_24h || 0) / 24).toFixed(1)} 条` : ''} />
-        <Kpi loading={loading} label="待处置告警" tone="warn" value={d?.open_alerts ?? 0} sub="需人工确认" />
-        <Kpi loading={loading} label="严重且待处置" tone="crit" value={d?.critical_open ?? 0} sub={d ? `恶意判定 ${d.malicious_count} · 误报 ${d.false_positive}` : ''} />
+        <Kpi delay={0} loading={loading} label="受管主机" tone={hostRate < 60 ? 'warn' : 'ok'} value={d?.online_hosts ?? 0} suffix={d ? `/${d.total_hosts}` : ''} sub={`在线率 ${hostRate}%`} />
+        <Kpi delay={70} loading={loading} label="近 24 小时告警" value={d?.alerts_24h ?? 0} sub={d ? `平均每小时 ${((d.alerts_24h || 0) / 24).toFixed(1)} 条` : ''} />
+        <Kpi delay={140} loading={loading} label="待处置告警" tone="warn" value={d?.open_alerts ?? 0} sub="需人工确认" />
+        <Kpi delay={210} loading={loading} label="严重且待处置" tone="crit" value={d?.critical_open ?? 0} sub={d ? `恶意判定 ${d.malicious_count} · 误报 ${d.false_positive}` : ''} />
       </div>
 
       {(d?.avg_response_min || 0) > 0 && (
@@ -60,11 +62,11 @@ export function OverviewPage() {
       )}
 
       <div className="mb-3.5 grid gap-3.5 lg:grid-cols-3">
-        <Card className="p-4 lg:col-span-2">
+        <Card className="anim-page p-4 lg:col-span-2" style={{ animationDelay: '280ms' }}>
           <CardTitle className="mb-3.5">告警时间趋势（24h / 每小时）</CardTitle>
           <TimelineChart points={d?.timeline} loading={loading} />
         </Card>
-        <Card className="p-4">
+        <Card className="anim-page p-4" style={{ animationDelay: '350ms' }}>
           <CardTitle className="mb-3.5">严重度分布</CardTitle>
           <SeverityDonut dist={d?.severity_dist} loading={loading} />
           <div className="mt-3.5 text-xs text-faint">
@@ -74,15 +76,15 @@ export function OverviewPage() {
       </div>
 
       <div className="grid gap-3.5 lg:grid-cols-3">
-        <Card className="p-4">
+        <Card className="anim-page p-4" style={{ animationDelay: '420ms' }}>
           <CardTitle className="mb-3.5">主机告警排行</CardTitle>
           {loading ? <SkeletonRows3 /> : <BarList items={d?.top_hosts?.map((h) => ({ name: h.hostname, value: h.count }))} emptyText="暂无主机命中告警" />}
         </Card>
-        <Card className="p-4">
+        <Card className="anim-page p-4" style={{ animationDelay: '490ms' }}>
           <CardTitle className="mb-3.5">规则命中排行</CardTitle>
           {loading ? <SkeletonRows3 /> : <BarList items={d?.top_rules?.map((r) => ({ name: r.name, value: r.count }))} emptyText="暂无规则命中" />}
         </Card>
-        <Card className="p-4">
+        <Card className="anim-page p-4" style={{ animationDelay: '560ms' }}>
           <CardTitle className="mb-3.5">MITRE ATT&amp;CK 命中</CardTitle>
           {loading ? <SkeletonRows3 /> : <BarList items={d?.top_mitre?.map((m) => ({ name: m.tech, value: m.count }))} emptyText="暂无 ATT&CK 命中" />}
         </Card>
@@ -95,19 +97,50 @@ function SkeletonRows3() {
   return <div className="space-y-2 py-1">{[46, 72, 58, 34].map((w, i) => <Skeleton key={i} style={{ width: `${w}%`, animationDelay: `${i * 0.12}s` }} />)}</div>;
 }
 
-function Kpi({ loading, label, value, suffix, sub, tone }: {
-  loading?: boolean; label: string; value: number | string; suffix?: string; sub?: string; tone?: 'warn' | 'crit' | 'ok';
+function Kpi({ loading, label, value, suffix, sub, tone, delay }: {
+  loading?: boolean; label: string; value: number | string; suffix?: string; sub?: string; tone?: 'warn' | 'crit' | 'ok'; delay?: number;
 }) {
   const toneCls = tone === 'crit' ? 'text-crit' : tone === 'warn' ? 'text-warn' : tone === 'ok' ? 'text-ok' : '';
+  const num = typeof value === 'number' ? value : null;
+  const counted = useCountUp(num ?? 0);
+  const shown = loading ? null : num === null ? value : counted;
   return (
-    <div className="px-4 py-3.5">
+    <div className="anim-page px-4 py-3.5" style={{ animationDelay: `${delay ?? 0}ms` }}>
       <div className="text-[11px] tracking-[.5px] text-faint">{label}</div>
       <div className={`anim-digit mt-1.5 font-mono text-[26px] leading-none font-semibold tabular-nums ${toneCls}`}>
-        {loading ? <Skeleton className="h-6 w-16" /> : <>{value}{suffix && <span className="text-[14px] text-faint">{suffix}</span>}</>}
+        {loading ? <Skeleton className="h-6 w-16" /> : <>{shown}{suffix && <span className="text-[14px] text-faint">{suffix}</span>}</>}
       </div>
       <div className="mt-1.5 text-[11.5px] text-faint">{sub}</div>
     </div>
   );
+}
+
+/* KPI 读数滚动：数值落定时 from→target ease-out 计数（仪器读数语义，
+   与 anim-digit 弹入叠加：入场形态 + 读数滚动）。首载从 0 滚起；
+   reduced-motion 直达终值。 */
+function useCountUp(target: number, dur = 550): number {
+  const [v, setV] = useState(target);
+  const fromRef = useRef(target);
+  useEffect(() => {
+    const from = fromRef.current;
+    if (from === target) return;
+    if (typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      fromRef.current = target;
+      setV(target);
+      return;
+    }
+    let raf = 0;
+    const t0 = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - t0) / dur);
+      setV(Math.round(from + (target - from) * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else fromRef.current = target;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, dur]);
+  return v;
 }
 
 export { EmptyState };
