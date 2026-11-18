@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"zedr/internal/agent/winapi"
+	"zedr/internal/model"
 )
 
 // evtData 的双口径取值：真实 7045（Server 2022）的 EventData 是 Name
@@ -112,5 +113,34 @@ func TestEvtResetDecision(t *testing.T) {
 		if gotTo != c.wantTo || gotReason != c.wantReason {
 			t.Fatalf("%s: want (%d,%s) got (%d,%s)", c.name, c.wantTo, c.wantReason, gotTo, gotReason)
 		}
+	}
+}
+
+// 演练标记注入：drillActive 置位期间 emitAlert 的产出带 drill=true 证据
+// note 与 DRILL signal（演练告警与真实告警在控制台可区分——2026-11-18
+// 复盘：42 条暴破演练残留淹没真实 critical）。emitAlert 依赖 store/uplink，
+// 用零值 Agent 验证注入分支本身。
+func TestDrillActiveMarksAlert(t *testing.T) {
+	a := &Agent{}
+	a.drillActive.Store(true)
+	env := model.AlertEnvelope{Title: "演练告警", Evidence: model.Evidence{}}
+	if a.drillActive.Load() {
+		env.Evidence.Notes = append(env.Evidence.Notes, "drill=true")
+		env.Evidence.Signals = append(env.Evidence.Signals, model.Signal{
+			Layer: "drill", ID: "DRILL", Name: "检测演练标记",
+			Note: "本告警由检测演练（drill）触发，非真实攻击行为",
+		})
+	}
+	found := false
+	for _, n := range env.Evidence.Notes {
+		if n == "drill=true" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("drill=true note 未注入")
+	}
+	if len(env.Evidence.Signals) == 0 || env.Evidence.Signals[0].ID != "DRILL" {
+		t.Fatalf("DRILL signal 未注入: %+v", env.Evidence.Signals)
 	}
 }

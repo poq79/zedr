@@ -96,6 +96,9 @@ type Agent struct {
 	// policyInterval 是服务端策略下发的扫描间隔（纳秒），0=用本地配置
 	// （applyServerPolicy 热写入，scanLoop 每轮读取）。
 	policyInterval atomic.Int64
+	// drillActive 置位 = 检测演练正在执行：期间的告警在 emitAlert 注入
+	// drill 标记（与 Windows agentapp 同构，语义见 agentapp.Agent 注释）。
+	drillActive atomic.Bool
 	// cpu 是进程 CPU 占用采样器（/proc/self/stat 差分，见 policy_linux.go）。
 	cpu cpuSampler
 
@@ -865,6 +868,14 @@ func chainFirstMITRE(m []string) string {
 
 // emitAlert 是所有告警的统一出口（本地存储 + 上报队列 + 结构化日志）。
 func (a *Agent) emitAlert(env model.AlertEnvelope) {
+	// 演练期间的告警注入 drill 标记（与 Windows agentapp 同构）。
+	if a.drillActive.Load() {
+		env.Evidence.Notes = append(env.Evidence.Notes, "drill=true")
+		env.Evidence.Signals = append(env.Evidence.Signals, model.Signal{
+			Layer: "drill", ID: "DRILL", Name: "检测演练标记",
+			Note: "本告警由检测演练（drill）触发，非真实攻击行为",
+		})
+	}
 	local := &state.Alert{
 		ID:          idgen.Hex(8),
 		Title:       env.Title,
@@ -1243,6 +1254,9 @@ func (a *Agent) handleDrill(ctx context.Context, c model.Command) model.CommandR
 		Log:             a.log,
 		SelfPID:         uint32(os.Getpid()),
 	}
+	// 演练窗口置位：期间 emitAlert 的所有产出带 drill 标记（同 agentapp）。
+	a.drillActive.Store(true)
+	defer a.drillActive.Store(false)
 	report := drill.BuildReport(drill.Run(ctx, steps, deps))
 	res.Result = drill.MarshalReport(report)
 	return res

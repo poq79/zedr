@@ -72,6 +72,12 @@ type Agent struct {
 	// 行为检测健康度快照（scan 回调读，各写入方自管同步）
 	usnLagging  atomic.Bool
 	evtChannels atomic.Int64
+	// drillActive 置位 = 检测演练正在执行（handleDrill 串行同步模型，
+	// 演练期间产生的所有告警在 emitAlert 注入 drill=true 证据标记——
+	// 演练告警与真实告警在控制台必须可区分，否则每次演练都在污染
+	// critical 队列（2026-11-18 复盘：42 条暴破演练残留淹没真实告警）。
+	// atomic 而非互斥锁：发射路径读、演练路径写，单 bool 无复合状态。
+	drillActive atomic.Bool
 	// brute 是事件日志 4625 的滑动窗口聚合器（evtlogLoop 单 goroutine）
 	brute evtBruteAgg
 	// logonHours/logonSamples 是交互/RDP 登录的时段基线（内存态，
@@ -891,6 +897,16 @@ func (a *Agent) emit(pi collect.ProcessInfo, res *detect.Result) {
 // 之所以收敛成一个入口：告警来源已经不止"进程检测"（还有持久化变更），
 // 如果每个来源各自写一套入队逻辑，很容易漏掉去重、截断或日志字段。
 func (a *Agent) emitAlert(env model.AlertEnvelope) {
+	// 演练期间的告警注入 drill=true（见 Agent.drillActive 注释）。
+	// 追加在 Evidence.Notes 而非 Summary：Summary 服务端有长度截断，
+	// Notes 是稳定可检索的机器口径（服务端 Query 语义可按 note 检索）。
+	if a.drillActive.Load() {
+		env.Evidence.Notes = append(env.Evidence.Notes, "drill=true")
+		env.Evidence.Signals = append(env.Evidence.Signals, model.Signal{
+			Layer: "drill", ID: "DRILL", Name: "检测演练标记",
+			Note: "本告警由检测演练（drill）触发，非真实攻击行为",
+		})
+	}
 	local := &state.Alert{
 		ID:          idgen.Hex(8),
 		Title:       env.Title,
@@ -1246,6 +1262,10 @@ func (a *Agent) handleDrill(ctx context.Context, c model.Command) model.CommandR
 		Log:             a.log,
 		SelfPID:         uint32(os.Getpid()),
 	}
+	// 演练窗口置位：期间 emitAlert 的所有产出带 drill 标记（见
+	// Agent.drillActive 注释）。defer 复位兜底 Run 提前返回。
+	a.drillActive.Store(true)
+	defer a.drillActive.Store(false)
 	report := drill.BuildReport(drill.Run(ctx, steps, deps))
 	res.Result = drill.MarshalReport(report)
 	return res
