@@ -1,13 +1,13 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronRight, CircleAlert, RefreshCw, ScanSearch, Search, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArrowUpCircle, ChevronRight, CircleAlert, RefreshCw, ScanSearch, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { api, ApiError, live, liveErrorKind } from '../lib/api';
-import type { AgentCommand, Alert, Host, HostInventorySection, LiveHash, LiveNetConn, LivePeers, LiveProcRow, User } from '../lib/types';
+import type { AgentCommand, Alert, Host, HostInventorySection, LiveHash, LiveNetConn, LivePeers, LiveProcRow, UpgradeAvail, User } from '../lib/types';
 import { relTime, fmtTime, SEV_LABEL } from '../lib/format';
 import { Badge, Button, Card, CardTitle, Input, SkeletonRows, Tabs } from '../components/ui/basics';
 import { useToast, useConfirm } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
-import { cn } from '../lib/utils';
+import { cn, cmpVersion } from '../lib/utils';
 import { isLinuxHost } from '../lib/platform';
 import { LiveFilesTab } from './HostLiveFiles';
 import { LiveProcsTab, LiveProbeInfo } from './HostLiveProcs';
@@ -25,6 +25,7 @@ type Row = Record<string, unknown>;
 const CMD_LABEL: Record<string, string> = {
   rescan: '重新扫描', sync_rules: '同步规则', collect: '采集清单',
   terminate: '终止进程', quarantine_file: '隔离文件', quarantine_restore: '恢复隔离',
+  self_upgrade: '自升级',
 };
 const CMD_STATUS_TONE: Record<string, string> = {
   pending: 'medium', delivered: 'info', done: 'resolved', failed: 'critical',
@@ -326,6 +327,8 @@ export function HostDetailPage({ user }: { user: User }) {
   const [qPid, setQPid] = useState('');
   const [changes, setChanges] = useState<Alert[] | null>(null);
   const [changeSection, setChangeSection] = useState('');
+  /* 服务端升级物料元信息（enabled=false 或拉取失败时升级入口整体隐藏） */
+  const [avail, setAvail] = useState<UpgradeAvail | null>(null);
   /* 实时进程→实时文件 跨 Tab 联动：待打开的文件绝对路径（消费后置空） */
   const [liveFileTarget, setLiveFileTarget] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -348,6 +351,8 @@ export function HostDetailPage({ user }: { user: User }) {
       const all = (await api.get<{ items: AgentCommand[] }>('/api/v1/commands')).items || [];
       setCmds(all.filter((c) => c.agent_id === id));
       setChanges((await api.get<{ items: Alert[] }>(`/api/v1/hosts/${encodeURIComponent(id)}/changes?limit=100`)).items || []);
+      // 升级物料元信息拉取失败只降级（隐藏升级入口），不拖垮整页加载
+      api.get<UpgradeAvail>('/api/v1/upgrade/available').then(setAvail).catch(() => setAvail(null));
     } catch (e) { err.capture(e); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -406,6 +411,26 @@ export function HostDetailPage({ user }: { user: User }) {
         </Button>
         <Button size="sm" onClick={() => send('sync_rules')} disabled={!!cmdBusy}>同步规则</Button>
         <Button size="sm" onClick={() => send('collect')} disabled={!!cmdBusy}>采集清单</Button>
+        {/* 升级入口三重前置：admin + 服务端启用 + 目标版本确实更新。
+            离线/Linux 主机灰置——探针侧对这两类情况会以回执诚实说明，
+            但按钮可点反而误导操作者。 */}
+        {user.role === 'admin' && host && avail?.enabled && cmpVersion(host.version, avail.version) < 0 && (
+          <Button size="sm"
+            disabled={!!cmdBusy || host.status !== 'online' || isLinux}
+            title={host.status !== 'online' ? '离线主机不能升级'
+              : isLinux ? 'Linux 探针暂不支持自升级' : undefined}
+            onClick={async () => {
+              const ok = await confirm({
+                title: `升级探针到 v${avail.version}？`,
+                message: `当前 v${host.version} → v${avail.version}（${(avail.size / 1048576).toFixed(1)} MB）。\n\n探针将下载并校验升级包后退出重启：服务模式由 SCM 数秒内拉起新版本，期间短暂离线；前台模式需手动重启探针。版本只升不降，失败以指令回执说明。`,
+                okText: '升级',
+              });
+              if (!ok) return;
+              await send('self_upgrade');
+            }}>
+            <ArrowUpCircle size={13} /> 升级探针
+          </Button>
+        )}
         {user.role === 'admin' && host && (
           <Button size="sm" variant="ghost" title="删除这台主机的注册记录（历史告警保留）"
             onClick={async () => {

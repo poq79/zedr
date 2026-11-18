@@ -662,3 +662,31 @@ export interface LivePeers {
   by_process?: PeerByProcess[];
   truncated?: boolean;
 }
+
+/* ================= 探针自升级（单机指令 + 批量编排，2026-11-19） ================= */
+
+/** GET /api/v1/upgrade/available —— 服务端升级物料元信息；enabled=false 时前端静默隐藏升级入口 */
+export interface UpgradeAvail { enabled: boolean; version: string; size: number }
+
+/** 批量批次里的单主机结局：pending=在途（含排队），其余为终态 */
+export interface FleetEntry {
+  agent_id: string;
+  status: 'pending' | 'success' | 'already_latest' | 'failed' | 'timed_out'
+    | 'skipped_offline' | 'skipped_linux' | 'skipped_newer' | string;
+  command_id?: string;
+  detail?: string;
+}
+
+/** GET /api/v1/upgrade/fleet —— 批次快照；无批次时响应体为 null */
+export interface FleetStatus {
+  id: string;
+  target_version: string;
+  state: 'running' | 'paused' | 'done' | 'aborted' | string;
+  created_by: string;
+  created_at: string;
+  total: number;
+  queue_remain: number;
+  waves: { index: number; hosts: FleetEntry[] }[];
+  summary: Record<string, number>;
+  hosts: Record<string, FleetEntry>;
+}

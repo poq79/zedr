@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Copy, Download, Eye, EyeOff, KeyRound, Monitor, Plus, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowUpCircle, Copy, Download, Eye, EyeOff, KeyRound, Monitor, Plus, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import { api } from '../lib/api';
-import type { Host, AllowEntry, AuditRow, User as UserRow, Role, IntegrityReport, Incident, Burst } from '../lib/types';
+import type { Host, AllowEntry, AuditRow, User as UserRow, Role, IntegrityReport, Incident, Burst, UpgradeAvail, FleetStatus, FleetEntry } from '../lib/types';
 import { SEV_LABEL, relTime, fmtTime } from '../lib/format';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useToast, useConfirm } from '../components/ui/overlays';
 import { useError } from '../lib/hooks';
-import { cn } from '../lib/utils';
+import { cn, cmpVersion } from '../lib/utils';
 
 /* ================= 主机终端 ================= */
 /* 主机详情已升级为整页 /hosts/:id（见 HostDetail.tsx） */
@@ -179,11 +179,166 @@ function DeployDrawer({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-export function HostsPage() {
+/* ================= 探针批量升级（2026-11-19） =================
+   服务端波次编排（语义与判定口径在 service/upgrade.go：版本翻转=成功，
+   波内失败率过半自动暂停）；本抽屉只做发起确认、进度投影与 abort/resume
+   两个动作，不复制任何判定逻辑。 */
+
+const FLEET_ENTRY_LABEL: Record<string, string> = {
+  pending: '在途', success: '成功', already_latest: '已是最新', failed: '失败',
+  timed_out: '超时', skipped_offline: '离线跳过', skipped_linux: 'Linux 跳过',
+  skipped_newer: '版本更新',
+};
+const FLEET_ENTRY_TONE: Record<string, string> = {
+  pending: 'medium', success: 'resolved', already_latest: 'info', failed: 'critical',
+  timed_out: 'high', skipped_offline: 'neutral', skipped_linux: 'neutral', skipped_newer: 'neutral',
+};
+/** 发起时就已分流、不占波次的三类主机（报告里单独列出） */
+const PRE_START_STATUSES = ['already_latest', 'skipped_linux', 'skipped_newer'];
+
+function UpgradeDrawer({ open, onClose, hosts, avail }: {
+  open: boolean; onClose: () => void; hosts: Host[]; avail: UpgradeAvail | null;
+}) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [status, setStatus] = useState<FleetStatus | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  /* 打开即拉当前批次：进行中/暂停的批次直接进进度视图——服务重启丢进度的
+     诚实边界在这里体现为"批次没了、发起视图重新可用" */
+  useEffect(() => {
+    if (!open) return;
+    setLoaded(false);
+    api.get<FleetStatus | null>('/api/v1/upgrade/fleet')
+      .then(setStatus)
+      .catch(() => setStatus(null))
+      .finally(() => setLoaded(true));
+  }, [open]);
+
+  const active = !!status && (status.state === 'running' || status.state === 'paused');
+  /* 活跃批次 5s 轮询；终态停止 */
+  useEffect(() => {
+    if (!open || !active) return;
+    const t = setInterval(() => {
+      api.get<FleetStatus | null>('/api/v1/upgrade/fleet').then((s) => { if (s) setStatus(s); }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, [open, active]);
+
+  const start = async () => {
+    if (!avail) return;
+    const ok = await confirm({
+      title: `批量升级全部终端到 v${avail.version}？`,
+      message: `共 ${hosts.length} 台终端参与。服务端按波次分批推进（默认每波 10 台在线主机），任一波失败率过半会自动暂停等人工放行。升级会让探针退出重启（服务模式数秒拉起新版本）；已是目标版本 / Linux / 离线终端自动跳过并在报告注明。`,
+      okText: '发起升级',
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      setStatus(await api.post<FleetStatus>('/api/v1/upgrade/fleet', {}));
+      toast('批量升级已发起，按波次推进');
+    } catch (e) { toast((e as Error).message, 'err'); }
+    finally { setBusy(false); }
+  };
+
+  const act = async (path: 'abort' | 'resume') => {
+    const isAbort = path === 'abort';
+    const ok = await confirm({
+      title: isAbort ? '中止升级批次？' : '恢复升级批次？',
+      danger: isAbort,
+      okText: isAbort ? '中止' : '恢复',
+      message: isAbort
+        ? '已下发未执行的指令不会召回（探针拿到会照常执行），批次进度冻结在这里。'
+        : '从冻结处继续推进后续波次。',
+    });
+    if (!ok) return;
+    setBusy(true);
+    try { setStatus(await api.post<FleetStatus>(`/api/v1/upgrade/fleet/${path}`, {})); }
+    catch (e) { toast((e as Error).message, 'err'); }
+    finally { setBusy(false); }
+  };
+
+  const entryRow = (e: FleetEntry) => (
+    <div key={e.agent_id} className="flex items-center gap-2 py-1 text-[12.5px]">
+      <Badge tone={FLEET_ENTRY_TONE[e.status] || 'neutral'}>{FLEET_ENTRY_LABEL[e.status] || e.status}</Badge>
+      <span className="font-mono text-xs text-muted-foreground">{e.agent_id}</span>
+      {e.detail && <span className="min-w-0 flex-1 truncate text-[11.5px] text-faint" title={e.detail}>{e.detail}</span>}
+    </div>
+  );
+
+  return (
+    <Drawer open={open} onClose={onClose} title="批量升级探针"
+      sub={`目标版本 v${avail?.version || '?'} · 波次推进，失败率过半自动暂停`} width={720}>
+      {!loaded ? (
+        <SkeletonRows rows={4} />
+      ) : active && status ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={status.state === 'paused' ? 'medium' : 'info'}>
+              {status.state === 'paused' ? '已暂停（等待人工放行）' : '推进中'}
+            </Badge>
+            <span className="text-xs text-faint">目标 v{status.target_version} · {status.created_by} 发起于 {fmtTime(status.created_at)}</span>
+            <div className="flex-1" />
+            {status.state === 'paused' && (
+              <Button size="sm" onClick={() => act('resume')} disabled={busy}>恢复推进</Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => act('abort')} disabled={busy}>中止批次</Button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(status.summary).filter(([, n]) => n > 0).map(([k, n]) => (
+              <Badge key={k} tone={FLEET_ENTRY_TONE[k] || 'neutral'}>
+                {FLEET_ENTRY_LABEL[k] || k} {n}
+              </Badge>
+            ))}
+            {status.queue_remain > 0 && <Badge tone="neutral">排队中 {status.queue_remain}</Badge>}
+          </div>
+          {status.waves.length === 0 ? (
+            <p className="m-0 text-xs text-faint">尚未开波：等待终端上线，或收尾判定中。</p>
+          ) : status.waves.map((w) => (
+            <Card key={w.index} className="px-3.5 py-3">
+              <CardTitle className="mb-1.5 text-[13px]">第 {w.index} 波 · {w.hosts.length} 台</CardTitle>
+              {w.hosts.map(entryRow)}
+            </Card>
+          ))}
+          {Object.values(status.hosts).some((e) => PRE_START_STATUSES.includes(e.status)) && (
+            <Card className="px-3.5 py-3">
+              <CardTitle className="mb-1.5 text-[13px]">发起时已分流（不占波次）</CardTitle>
+              {Object.values(status.hosts).filter((e) => PRE_START_STATUSES.includes(e.status)).map(entryRow)}
+            </Card>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="m-0 text-[13px] leading-relaxed text-muted-foreground">
+            把全部终端升级到服务端配置的版本 <b className="text-foreground">v{avail?.version || '-'}</b>
+            （{(Number(avail?.size || 0) / 1048576).toFixed(1)} MB）。
+            服务端按<b className="text-foreground">波次</b>分批推进：每波只向在线主机下发升级指令，这一波全部落定（版本翻转或回执）才开下一波；任一波失败率过半自动暂停，冻结现场等人工放行——把"可能出问题"的爆炸半径限制在一小批终端里。
+          </p>
+          <ul className="m-0 list-none space-y-1.5 p-0 text-[12.5px] text-faint">
+            <li>· 已是目标版本 / 版本更新 / Linux 探针 / 离线终端自动跳过并在报告注明；</li>
+            <li>· 升级让探针进程退出重启：服务模式由 SCM 数秒拉起新版本，前台模式需手动重启；</li>
+            <li>· 批次进度在服务端内存：服务重启丢进度（已下发指令照常执行），指令历史可查。</li>
+          </ul>
+          <div>
+            <Button variant="primary" onClick={start} disabled={busy || hosts.length === 0}>
+              <ArrowUpCircle size={14} /> 对 {hosts.length} 台终端发起升级
+            </Button>
+          </div>
+        </div>
+      )}
+    </Drawer>
+  );
+}
+
+export function HostsPage({ user }: { user: UserRow }) {
   const err = useError();
   const navigate = useNavigate();
   const [hosts, setHosts] = useState<Host[] | null>(null);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  /* 服务端升级物料元信息：enabled=false 时升级入口（按钮/徽章）整体隐藏 */
+  const [avail, setAvail] = useState<UpgradeAvail | null>(null);
 
   const load = useCallback(async () => {
     try { setHosts((await api.get<{ items: Host[] }>('/api/v1/hosts')).items || []); }
@@ -192,11 +347,18 @@ export function HostsPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    api.get<UpgradeAvail>('/api/v1/upgrade/available').then(setAvail).catch(() => setAvail(null));
+  }, []);
   if (err.rendered) return err.rendered;
+
+  const canUpgrade = !!avail?.enabled && (hosts || []).some(
+    (h) => !!h.version && cmpVersion(h.version, avail.version) < 0);
 
   return (
     <div>
       <DeployDrawer open={deployOpen} onClose={() => setDeployOpen(false)} />
+      <UpgradeDrawer open={upgradeOpen} onClose={() => setUpgradeOpen(false)} hosts={hosts || []} avail={avail} />
       {!hosts ? <Card className="px-2 pb-2"><SkeletonRows rows={5} /></Card> : !hosts.length ? (
         <Card><EmptyState tone="info" icon={<Monitor size={20} />} title="还没有终端注册"
           action={<Button size="sm" variant="primary" onClick={() => setDeployOpen(true)}><Plus size={13} /> 接入新主机</Button>}
@@ -206,6 +368,11 @@ export function HostsPage() {
           <div className="mb-3 flex items-center gap-2.5">
             <span className="text-xs text-faint">共 {hosts.length} 台终端 · 默认每 30 秒心跳一次</span>
             <div className="flex-1" />
+            {user.role === 'admin' && canUpgrade && (
+              <Button size="sm" onClick={() => setUpgradeOpen(true)}>
+                <ArrowUpCircle size={13} /> 批量升级
+              </Button>
+            )}
             <Button size="sm" variant="primary" onClick={() => setDeployOpen(true)}><Plus size={13} /> 接入新主机</Button>
           </div>
           <Card className="overflow-x-auto px-2 py-3.5">
@@ -224,7 +391,12 @@ export function HostsPage() {
                     )}
                   </td>
                   <td className="px-3.5 py-2.5"><b>{h.hostname}</b><div className="font-mono text-xs text-faint">{h.id}</div></td>
-                  <td className="px-3.5 py-2.5 text-xs text-faint">{h.os_version || '-'}<br />{h.arch || ''} · v{h.version || '-'}</td>
+                  <td className="px-3.5 py-2.5 text-xs text-faint">
+                    {h.os_version || '-'}<br />{h.arch || ''} · v{h.version || '-'}
+                    {avail?.enabled && h.version && cmpVersion(h.version, avail.version) < 0 && (
+                      <div className="mt-1"><Badge tone="info" title={`服务端有 v${avail.version} 可升级`}>可升级</Badge></div>
+                    )}
+                  </td>
                   <td className="px-3.5 py-2.5 font-mono text-xs">{h.username || '-'}</td>
                   <td className="px-3.5 py-2.5 tabular-nums">{h.proc_count || 0}</td>
                   <td className="px-3.5 py-2.5 tabular-nums">{(h.cpu_percent || 0).toFixed(1)}%</td>
