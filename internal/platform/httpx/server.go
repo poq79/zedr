@@ -2,7 +2,9 @@ package httpx
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,14 +17,22 @@ type ServerConfig struct {
 	Handler         http.Handler
 	Logger          *slog.Logger
 	ShutdownTimeout time.Duration
+	// TLSCertFile/TLSKeyFile 非空时以 HTTPS 监听（PEM 证书对）。
+	// 留空 = 明文 HTTP；由反向代理终结 TLS 的部署在配置层用
+	// HG_SERVER_TLS_TERMINATED 声明（只参与配置校验，不影响监听）。
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // Server 封装带超时防护与优雅停机的 http.Server。
 type Server struct {
-	srv    *http.Server
-	log    *slog.Logger
-	ln     net.Listener
-	shutTO time.Duration
+	srv      *http.Server
+	log      *slog.Logger
+	ln       net.Listener
+	shutTO   time.Duration
+	certFl   string
+	keyFl    string
+	listened bool
 }
 
 // NewServer 构造服务；ReadHeaderTimeout 等超时用于抵御慢速攻击。
@@ -43,6 +53,8 @@ func NewServer(c ServerConfig) *Server {
 		},
 		log:    c.Logger,
 		shutTO: c.ShutdownTimeout,
+		certFl: c.TLSCertFile,
+		keyFl:  c.TLSKeyFile,
 	}
 }
 
@@ -52,9 +64,26 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return err
 	}
+	// 证书在这里而非构造期装配：Listen 的错误会被上层当作"启动失败"
+	// 直接退出进程，证书路径写错属于启动期就该暴露的问题。
+	// MinVersion 钉在 1.2：1.0/1.1 已废弃，不需要兼容面。
+	if s.certFl != "" {
+		cert, cerr := tls.LoadX509KeyPair(s.certFl, s.keyFl)
+		if cerr != nil {
+			return fmt.Errorf("加载 TLS 证书: %w", cerr)
+		}
+		ln = tls.NewListener(ln, &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		})
+		s.listened = true
+	}
 	s.ln = ln
 	return nil
 }
+
+// IsTLS 报告当前实例是否以 HTTPS 监听（启动日志用）。
+func (s *Server) IsTLS() bool { return s.listened }
 
 // Addr 返回实际监听地址。
 func (s *Server) Addr() string {
