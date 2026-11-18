@@ -553,3 +553,72 @@ func TestRateFindingEscalatedViaBulkWindow(t *testing.T) {
 		t.Fatalf("升级级不应置 HourlyFP（保持路径指纹）: %+v", f)
 	}
 }
+
+// AV/更新器自维护目录必须整段剔除出速率窗口（2026-11-18 实测：火绒
+// Sysdiag 单轮 59-61 删除直接灌满窗口并联动把诱饵告警升级成假 critical）。
+func TestChurnMarkersExcludeAVSelfMaintainDirs(t *testing.T) {
+	avDirs := []string{
+		`C:\ProgramData\Huorong\Sysdiag\engines\1.0.0.1\wsctrl.dat`,
+		`C:\ProgramData\360zip\components\update\tmp0001.part`,
+		`C:\ProgramData\Microsoft\Windows Defender\Definition Updates\{GUID}\mpengine.dll`,
+		`C:\Windows\SoftwareDistribution\Download\xyz\windows10-kb.msu`,
+		`C:\ProgramData\Mozilla-1de4eec8-1241-4177-a864-e594e8d1fb38\updates\308046B0\patch.exe`,
+	}
+	for _, p := range avDirs {
+		if w := rateWeight(Event{Kind: "removed", Path: p, Source: "rdcw"}); w != 0 {
+			t.Fatalf("AV 自维护路径 %s 权重 = %d, want 0", p, w)
+		}
+	}
+	// 用户目录不受影响：Document 删除仍计数
+	if w := rateWeight(Event{Kind: "removed", Path: `C:\Users\bob\Documents\a.docx`, Source: "rdcw"}); w != 1 {
+		t.Fatalf("用户目录删除权重 = %d, want 1", w)
+	}
+	// 端到端：AV 目录删 60 个文件不触发速率告警
+	dir := t.TempDir()
+	d, r, _ := newDefense(t, []string{dir}, nil)
+	for i := 0; i < 60; i++ {
+		d.Consume(Event{Kind: "removed",
+			Path:   fmt.Sprintf(`C:\ProgramData\Huorong\Sysdiag\tmp\file%d.dat`, i),
+			Source: "rdcw"})
+	}
+	for _, f := range r.fs {
+		if f.RuleID == RuleRansom {
+			t.Fatalf("AV 自维护 60 删除不应触发 FILE-RANSOM: %+v", f)
+		}
+	}
+}
+
+// 递进冷却：同一诱饵 24h 内第 3 次告警起带"杀软隔离循环"提示，且该键
+// 冷却升到 2h——15min 后的第 4 次触碰被吞，2h 后恢复。
+func TestCanaryRepeatEscalatesCooldown(t *testing.T) {
+	dir := t.TempDir()
+	d, r, ck := newDefense(t, []string{dir}, nil)
+	canary := filepath.Join(dir, canaryNames[0])
+	touch := func() { d.Consume(Event{Kind: "removed", Path: canary, Source: "rdcw", When: ck.Now()}) }
+
+	for i := 0; i < 3; i++ {
+		touch()
+		if len(r.fs) != i+1 {
+			t.Fatalf("第 %d 次触碰应发射（15min 冷却间隔）", i+1)
+		}
+		ck.advance(16 * time.Minute) // 越过普通冷却
+	}
+	third := r.fs[2]
+	if !strings.Contains(third.Summary, "安全软件") || !strings.Contains(third.Summary, "24 小时内已第 3 次") {
+		t.Fatalf("第 3 次告警应带杀软隔离提示: %s", third.Summary)
+	}
+	// 16min < 2h：第 4 次被递进冷却吞掉
+	touch()
+	if len(r.fs) != 3 {
+		t.Fatalf("递进冷却失效（第 4 次不应发射）: %+v", r.fs)
+	}
+	// 2h 后恢复发射，且计数说明第 4 次
+	ck.advance(2*time.Hour + time.Minute)
+	touch()
+	if len(r.fs) != 4 {
+		t.Fatalf("2h 递进冷却过期后应恢复: %+v", r.fs)
+	}
+	if !strings.Contains(r.fs[3].Summary, "第 4 次") {
+		t.Fatalf("第 4 次告警应带累计计数: %s", r.fs[3].Summary)
+	}
+}

@@ -161,7 +161,11 @@ type Defense struct {
 
 	mu        sync.Mutex
 	lastHit   map[string]time.Time // 冷却键 -> 上次产出 Finding 的时刻
-	window    []windowEvent
+	// canaryRecent 记录每个诱饵 24h 内已发射 Finding 的时刻，驱动
+	// "杀软隔离循环"的递进冷却（canaryFinding；速率键 rateCooldownKey
+	// 不进这个表——速率告警有自己的小时分桶指纹）。
+	canaryRecent map[string][]time.Time
+	window       []windowEvent
 	weightSum int // 窗口内权重和的增量维护：爆发期每秒数千次 Consume，
 	// 每次都 O(n) 扫窗口会烧掉探针的 CPU 预算
 	lastRate time.Time // 速率检测器最近一次触发的时刻（canary 分级用）
@@ -185,10 +189,11 @@ func New(opt Options) *Defense {
 		now:       opt.Now,
 		cooldown:  opt.Cooldown,
 		threshold: opt.RateThreshold,
-		canaries:  make(map[string]canarySpec, len(opt.CanaryDirs)*len(canaryNames)),
-		names:     make(map[string][]string, len(canaryNames)),
-		lastHit:   make(map[string]time.Time),
-		stop:      make(chan struct{}),
+		canaries:     make(map[string]canarySpec, len(opt.CanaryDirs)*len(canaryNames)),
+		names:        make(map[string][]string, len(canaryNames)),
+		lastHit:      make(map[string]time.Time),
+		canaryRecent: make(map[string][]time.Time, len(canaryNames)),
+		stop:         make(chan struct{}),
 	}
 	if d.now == nil {
 		d.now = time.Now
@@ -472,15 +477,52 @@ func (d *Defense) matchCanary(ev Event) *tamperHit {
 	return nil
 }
 
+// canaryRepeatFloor/canaryRepeatCooldown 是"杀软隔离循环"的递进节流参数：
+// 同一诱饵 24h 内已发射 ≥canaryRepeatFloor 次告警后，该键冷却升到
+// canaryRepeatCooldown。动机（2026-11-18 实测）：本地杀软把透明诱饵当
+// 可疑样本反复隔离，探针 30s 自检重建 → 再隔离 → 再告警，单键每 15min
+// 一条、四个诱饵一天 25 条——每条都是"真的有人删了绊线"，但值班看到
+// 第三条起就只剩噪声价值。递进到 2h 后保留告警能力（真攻击者反复
+// 触碰仍可见）同时把稳态噪声压掉一个量级。
+const (
+	canaryRepeatFloor    = 3
+	canaryRepeatCooldown = 2 * time.Hour
+	canaryRecentWindow   = 24 * time.Hour
+)
+
 // canaryFinding 产出诱饵命中 Finding，冷却内返回零值（RuleID 为空）。
 // Consume 在持锁状态下调用；New 的启动自检在单线程无锁状态下调用——
 // 两条路径没有并发交叠（Start 之前自检已完成），共用同一把锁的调用方
 // 无需重入。分级：速率 ≥ 阈值一半或速率检测器刚触发过 → critical；否则 medium。
 func (d *Defense) canaryFinding(hit tamperHit) Finding {
-	if last, ok := d.lastHit[hit.key]; ok && hit.when.Sub(last) < d.cooldown {
+	// 24h 滚动窗口：只统计已发射的告警（被冷却吞掉的尝试不计——
+	// 否则杀软 30s 一次的隔离循环会瞬间把冷却推到 2h，第一条告警
+	// 之后的信号全灭）。
+	recent := d.canaryRecent[hit.key]
+	cut := hit.when.Add(-canaryRecentWindow)
+	kept := recent[:0]
+	for _, t := range recent {
+		if t.After(cut) {
+			kept = append(kept, t)
+		}
+	}
+	d.canaryRecent[hit.key] = kept
+	prior := len(kept)
+	// 门控与提示分两档：本次发射若是第 3 条（prior=2），它本身仍按普通
+	// 冷却门控放行并携带"杀软隔离循环"提示——提示必须挂在还能被看见的
+	// 那条上；从第 4 次尝试起（prior>=3）门控升到 2h。
+	escalated := prior >= canaryRepeatFloor
+	cooldown := d.cooldown
+	if escalated {
+		cooldown = canaryRepeatCooldown
+	}
+
+	if last, ok := d.lastHit[hit.key]; ok && hit.when.Sub(last) < cooldown {
 		return Finding{}
 	}
 	d.lastHit[hit.key] = hit.when
+	d.canaryRecent[hit.key] = append(d.canaryRecent[hit.key], hit.when)
+	repeated := prior+1 >= canaryRepeatFloor
 
 	sev, score := model.SeverityMedium, 45
 	title := "诱饵文件被篡改"
@@ -496,6 +538,13 @@ func (d *Defense) canaryFinding(hit tamperHit) Finding {
 			d.weightedLocked(), d.threshold)
 	} else {
 		summary += "；可能是人工删除，请人工确认"
+	}
+	// 递进冷却的诚实提示：同键高频复发大概率是杀软隔离循环而不是
+	// 攻击者（攻击者删一次就够了，反复删的唯一常见解释是"探针重建、
+	// 杀软再隔离"的拉锯）。提示操作员给出路，而不是让他反复处理同一告警。
+	if repeated {
+		summary += fmt.Sprintf("；该诱饵 24 小时内已第 %d 次被触碰（本键告警冷却已延长到 %s）——大概率是本地安全软件把诱饵当可疑样本反复隔离，请在杀软隔离区核实，确认后将诱饵目录加入杀软排除项；若并非杀软所为，请按针对性破坏处置",
+			len(d.canaryRecent[hit.key]), canaryRepeatCooldown)
 	}
 
 	notes := []string{
@@ -543,11 +592,25 @@ func (d *Defense) rateActive(when time.Time) bool {
 // 回收站同理——文件改名进 $Recycle.Bin 再批量删除），剔除后速率窗口
 // 才保得住信噪比。USN 事件只有 leaf name 无法判目录——这类事件保留
 // 计数，由"独立速率只做观察级"的定级策略兜底（见 rateFinding）。
+//
+// 安全软件/系统更新器自维护目录同属此类（2026-11-18 实测：火绒在
+// C:\ProgramData\Huorong\Sysdiag 的引擎/特征库轮换单轮删除 59~61 个
+// 文件，直接灌满速率窗口）。它们还带来第二重伤害：窗口被 AV 自清理
+// 灌满后，用户手工删一个诱饵就会被"速率活跃"联动升级成 critical——
+// 剔除后速率窗口才反映真实用户目录的删除形态。诱饵关联路径不受影响
+// （诱饵在 Documents 等用户目录，真勒索仍会同时命中诱饵+速率）。
 var churnMarkers = []string{
 	`\appdata\local\temp\`, `\appdata\local\temp-`, `\windows\temp\`,
 	`\cache\`, `\cache_data`, `\code cache`, `\gpucache`, `\inetcache\`,
 	`\crashpad\`, `\go-build\`, `\npm-\`, `\pip-\`, `\.tmp`,
 	`$recycle.bin`, `\recycle`,
+	// 安全软件自维护：火绒（Sysdiag 引擎轮换）、360 系、Defender
+	// （Definition Updates/Clean Store 的旧特征库清理）
+	`\programdata\huorong\`, `\programdata\360`,
+	`\programdata\microsoft\windows defender\`,
+	// 系统更新器：Windows Update 下载缓存清理、浏览器自更新暂存
+	// （ProgramData\Mozilla-<hash>\updates，实测单轮 20+ 删除）
+	`\windows\softwaredistribution\download`, `\programdata\mozilla-`,
 }
 
 // churnPath 判断路径是否落在高频增删目录（rdcw 来源有完整路径才判得了）。
