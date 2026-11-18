@@ -63,6 +63,12 @@ func (s *StatsService) Metrics(ctx context.Context, startedAt time.Time, wh Sent
 	return m
 }
 
+// DBMetrics 数据库健康度（/metrics 的 zedr_db_* 指标源）。薄透传——
+// 保持控制器不碰 SQL 的分层约束。
+func (s *StatsService) DBMetrics(ctx context.Context) (*domain.DBStats, error) {
+	return s.repos.Stats.DBStats(ctx)
+}
+
 // Versions 查询终端版本分布。
 func (s *StatsService) Versions(ctx context.Context) (map[string]int, error) {
 	return s.repos.Stats.VersionDist(ctx)

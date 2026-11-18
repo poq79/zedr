@@ -20,6 +20,9 @@ import (
 type Store struct {
 	db *sql.DB
 
+	// path 是打开时的库文件路径：DBStats 需要 stat 主库/WAL 尺寸。
+	path string
+
 	users     userRepo
 	tokens    tokenRepo
 	agents    agentRepo
@@ -73,7 +76,7 @@ func Open(ctx context.Context, path string) (*Store, repository.Repos, error) {
 		return nil, repository.Repos{}, fmt.Errorf("数据库连接失败: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, path: path}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, repository.Repos{}, err

@@ -512,6 +512,19 @@ type AIPromptVersion struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// DBStats 是数据库健康度快照（/metrics 的 zedr_db_* 指标源）。
+// 存这些不是为了炫技：SQLite→PostgreSQL 的迁移触发条件（SCALE.md §7.6、
+// TRADEOFFS §3.4）需要"行数/尺寸/最老未处置年龄"的仪表盘口径，
+// 而不是感觉。FreeBytes 是空闲页（已删行留下的可复用空间）——
+// 文件尺寸不缩不代表浪费，SQLite 会优先复用这些页。
+type DBStats struct {
+	FileBytes            int64            `json:"file_bytes"`
+	WALBytes             int64            `json:"wal_bytes"`
+	FreeBytes            int64            `json:"free_bytes"`
+	AlertsByStatus       map[string]int64 `json:"alerts_by_status"`
+	OldestOpenAgeSeconds int64            `json:"oldest_open_age_seconds"` // -1 = 当前无 open 告警
+}
+
 // AIPrompt 是某任务域的提示词模板（当前生效版本 + 历史版本）。
 type AIPrompt struct {
 	Task      string            `json:"task"`

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"zedr/internal/server/domain"
@@ -301,4 +302,63 @@ func (r *statsRepo) VersionDist(ctx context.Context) (map[string]int, error) {
 		out[v] = n
 	}
 	return out, rows.Err()
+}
+
+// DBStats 数据库健康度快照（/metrics 的 zedr_db_* 指标源）。
+// 全部是 O(1)/覆盖索引口径的只读查询：PRAGMA page_count/freelist_count
+// 是头信息读取；按状态计数与 MIN(created_at) WHERE status='open' 走
+// idx_alerts_status_created，不用全表扫。
+func (r *statsRepo) DBStats(ctx context.Context) (*domain.DBStats, error) {
+	out := &domain.DBStats{AlertsByStatus: map[string]int64{}}
+
+	if fi, err := os.Stat(r.s.path); err == nil {
+		out.FileBytes = fi.Size()
+	}
+	// WAL 文件可能不存在（刚 checkpoint 或库空闲后 SQLite 自删），缺省即 0
+	if fi, err := os.Stat(r.s.path + "-wal"); err == nil {
+		out.WALBytes = fi.Size()
+	}
+
+	var pageSize, pageCount, freePages int64
+	for _, p := range []struct {
+		name string
+		dst  *int64
+	}{{"page_size", &pageSize}, {"page_count", &pageCount}, {"freelist_count", &freePages}} {
+		if err := r.s.db.QueryRowContext(ctx, "PRAGMA "+p.name).Scan(p.dst); err != nil {
+			return nil, fmt.Errorf("PRAGMA %s: %w", p.name, err)
+		}
+	}
+	out.FreeBytes = freePages * pageSize
+
+	rows, err := r.s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM alerts GROUP BY status`)
+	if err != nil {
+		return nil, fmt.Errorf("统计告警行数: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var st string
+		var n int64
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, err
+		}
+		if st == "" {
+			st = "unknown"
+		}
+		out.AlertsByStatus[st] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var oldest int64
+	if err := r.s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MIN(created_at), 0) FROM alerts WHERE status = 'open'`).Scan(&oldest); err != nil {
+		return nil, fmt.Errorf("查询最老 open 告警: %w", err)
+	}
+	if oldest > 0 {
+		out.OldestOpenAgeSeconds = int64(time.Since(time.UnixMilli(oldest)).Seconds())
+	} else {
+		out.OldestOpenAgeSeconds = -1
+	}
+	return out, nil
 }

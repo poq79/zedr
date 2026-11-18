@@ -265,4 +265,7 @@ type StatsRepo interface {
 	// 第二个返回值是窗口内"带 MITRE 编号的告警条数"（一条告警可命中
 	// 多个技术，按技术求和会重复计数，告警数必须单独统计）。
 	MitreAgg(ctx context.Context, since time.Time) (agg map[string]domain.MitreAgg, alertTotal int, err error)
+	// DBStats 数据库健康度快照（尺寸/空闲页/告警行数/最老 open 年龄）。
+	// 全部是 O(1) 或覆盖索引口径的只读查询，/metrics 直接透出。
+	DBStats(ctx context.Context) (*domain.DBStats, error)
 }

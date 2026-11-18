@@ -51,6 +51,18 @@ func (h *adminHandler) metrics(w http.ResponseWriter, r *http.Request) {
 	gauge("zedr_webhook_failed_total", "webhook 通知失败数", failed)
 	gauge("zedr_webhook_dropped_total", "webhook 队列满丢弃数", dropped)
 
+	// 数据库健康度（SCALE.md §7.6：迁移/清理的触发条件要走仪表盘，
+	// 不能靠感觉）。取数失败只跳过 db 段，不拖垮整个 /metrics。
+	if dbStats, err := h.deps.Services.Stats.DBMetrics(r.Context()); err == nil {
+		gauge("zedr_db_file_bytes", "SQLite 主库文件字节数", dbStats.FileBytes)
+		gauge("zedr_db_wal_bytes", "SQLite WAL 文件字节数（0=刚检查点或库空闲）", dbStats.WALBytes)
+		gauge("zedr_db_free_bytes", "SQLite 空闲页字节数（已删行留下的可复用空间）", dbStats.FreeBytes)
+		for st, n := range dbStats.AlertsByStatus {
+			fmt.Fprintf(&b, "zedr_db_alerts_rows{status=%q} %d\n", st, n)
+		}
+		gauge("zedr_db_oldest_open_age_seconds", "最老 open 告警年龄（秒；-1=当前无 open 告警）", dbStats.OldestOpenAgeSeconds)
+	}
+
 	// 通知看门狗：渠道级累计计数 + 整体状态。degraded 意味着"告警在发
 	// 但没人收到"，监控侧应把 state=1 当作需要立即处理的事项。
 	if h.deps.NotifyReport != nil {
