@@ -62,6 +62,17 @@ func Verify(code, secret string, at time.Time) bool {
 	return false
 }
 
+// Code 计算指定时刻的 6 位验证码。导出原因：E2E 验证与运维拨测脚本
+// 需要"从密钥重算验证码"的能力（认证器不在服务器上），实现就是 Verify
+// 的正向路径，放同一个包避免两份截断逻辑漂移。
+func Code(secret string, at time.Time) (string, error) {
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.TrimSpace(secret))
+	if err != nil || len(key) == 0 {
+		return "", fmt.Errorf("无效的 base32 密钥")
+	}
+	return generate(key, at.Unix()/30), nil
+}
+
 // generate 按 RFC 4226 §5.3 动态截断生成 6 位码。
 func generate(key []byte, step int64) string {
 	var buf [8]byte
