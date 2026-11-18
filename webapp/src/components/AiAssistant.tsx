@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Eraser, Plus, Send, Square, X } from 'lucide-react';
 import { api, authHeaders } from '../lib/api';
 import { stripDSML } from '../lib/aiContext';
@@ -51,33 +51,97 @@ const STARTERS = [
 // 刻意不做宏替换——选中后整句填充，发送前仍可编辑（发送前可见）。
 const SLASH_CMDS = STARTERS;
 
-/* ---- 助手标识「哨兵脉冲」（2026-11-14，用户裁决空态要有标志性动效）----
-   四点星核=助手本体（几何 SVG 重绘，替代 FAB 时代的字符 ✦——顺手修复
-   UI-DESIGN §5 禁字符图标）；外扩方环=检测信号外扩（EDR 语境，Carbon 几何
-   语言不用圆环堆叠）；边界框+方位刻度=主机取景框。动效语义：环外扩节奏
-   即助手状态——在场（慢）与工作中（快），非装饰动效。色彩全走
-   currentColor/主色变量（零新色相，双主题自适应），reduced-motion 由
-   index.css 全局块降级为静态标。 */
+/* ---- 助手标识 v2「液态核」（2026-11-19，用户裁决 v1 环脉冲过于生硬）----
+   联网调研结论（AGENTS §5.5 口径，2026-11-19 查证）：
+   · Microsoft Design〈More than a mark〉(2026-10-05)：Copilot 标识的智能感
+     来自"参与对话"——简单形态间做相对运动表达思考/规划/取证手势；
+   · IconStash〈SVG vs Lottie vs Rive Benchmark 2026〉(2026-08-19)：单图标级
+     动效纯 SVG 最优（0KB 运行时；Lottie ~60KB gz / Rive ~140KB WASM 只为
+     一个图标是反模式）；
+   · 落地：不引运行时库——rAF 逐帧重生成星核路径（双频正弦 + 逐角相位差
+     → 永不重复的有机形变），柔光 aura + 轨道卫星点（检测扫掠语义保留）。
+   v1 生硬根因 = 只有 scale/opacity 脉冲（机械感来源）；v2 的"活"感来自
+   形状本身在动。状态语义：idle 慢速漂移 / busy 加速且形变加深，速度因子
+   连续过渡不跳变；reduced-motion → 静态帧；document.hidden → 暂停帧循环。 */
+const MARK_REDUCED = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function liquidStar(t: number, amp: number): string {
+  const cx = 24, cy = 24;
+  const R = 10.2 + amp * (0.85 * Math.sin(t * 1.05) + 0.4 * Math.sin(t * 2.31 + 1.7));
+  const r = 2.7 + amp * 0.75 * Math.sin(t * 1.38 + 2.1);
+  const rot = 0.15 * Math.sin(t * 0.62) + 0.06 * Math.sin(t * 1.71 + 0.5);
+  const P = (a: number, rr: number): [number, number] => [cx + rr * Math.cos(a), cy + rr * Math.sin(a)];
+  const F = (p: [number, number]) => `${p[0].toFixed(2)} ${p[1].toFixed(2)}`;
+  let d = '';
+  for (let k = 0; k < 4; k++) {
+    const tipA = rot + (k * Math.PI) / 2;
+    const tipR = R * (1 + 0.10 * Math.sin(t * 1.93 + k * 1.9));
+    const midA = tipA + Math.PI / 4;
+    const midR = r * (1 + 0.16 * Math.sin(t * 1.52 + k * 2.63));
+    const nextR = R * (1 + 0.10 * Math.sin(t * 1.93 + ((k + 1) % 4) * 1.9));
+    d += (k === 0 ? `M ${F(P(tipA, tipR))}` : '') + ` Q ${F(P(midA, midR))} ${F(P(tipA + Math.PI / 2, nextR))}`;
+  }
+  return d + ' Z';
+}
+
 function AssistantMark({ size = 44, busy = false, still = false }: { size?: number; busy?: boolean; still?: boolean }) {
-  const detail = size >= 32;
+  const uid = useId().replace(/:/g, '');
+  const coreRef = useRef<SVGPathElement>(null);
+  const auraRef = useRef<SVGGElement>(null);
+  const dotRef = useRef<SVGCircleElement>(null);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const animate = !still && !MARK_REDUCED;
+
+  useEffect(() => {
+    if (!animate) return;
+    let raf = 0;
+    let last = performance.now();
+    let t = Math.random() * 90;
+    let speed = 1;
+    const tick = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      speed += ((busyRef.current ? 3.4 : 1) - speed) * Math.min(1, dt * 2.5);
+      t += dt * speed;
+      coreRef.current?.setAttribute('d', liquidStar(t, busyRef.current ? 0.95 : 0.55));
+      const oa = t * 1.45 + 0.8;
+      dotRef.current?.setAttribute('cx', (24 + 19.6 * Math.cos(oa)).toFixed(2));
+      dotRef.current?.setAttribute('cy', (24 + 19.6 * Math.sin(oa)).toFixed(2));
+      auraRef.current?.setAttribute('transform', `rotate(${((t * 9) % 360).toFixed(1)} 24 24)`);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    const onVis = () => {
+      cancelAnimationFrame(raf);
+      last = performance.now();
+      if (!document.hidden) raf = requestAnimationFrame(tick);
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); };
+  }, [animate]);
+
+  const stillDot = 5.44; // 静态帧的轨道相位（animate 实例首帧即被覆盖）
   return (
-    <svg className="asst-mark" data-busy={busy || undefined} width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
+    <svg className="asst-mark" width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <defs>
+        <radialGradient id={`${uid}g`} cx="0.38" cy="0.32" r="0.95">
+          <stop offset="0" style={{ stopColor: 'var(--primary)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--primary)', stopOpacity: 0.58 }} />
+        </radialGradient>
+        <filter id={`${uid}b`} x="-55%" y="-55%" width="210%" height="210%">
+          <feGaussianBlur stdDeviation="3.4" />
+        </filter>
+      </defs>
       {!still && (
-        <>
-          <rect className="am-ping" x="9" y="9" width="30" height="30" rx="8" style={{ stroke: 'var(--primary)' }} strokeWidth="1" />
-          <rect className="am-ping am-ping2" x="9" y="9" width="30" height="30" rx="8" style={{ stroke: 'var(--primary)' }} strokeWidth="1" />
-        </>
-      )}
-      <rect x="7.5" y="7.5" width="33" height="33" rx="7" style={{ stroke: 'var(--border-strong)' }} strokeWidth="1.25" />
-      {detail && (
-        <g style={{ stroke: 'var(--faint)' }} strokeWidth="1.25">
-          <line x1="24" y1="4.5" x2="24" y2="9.5" /><line x1="24" y1="38.5" x2="24" y2="43.5" />
-          <line x1="4.5" y1="24" x2="9.5" y2="24" /><line x1="38.5" y1="24" x2="43.5" y2="24" />
+        <g ref={auraRef} filter={`url(#${uid}b)`}>
+          <path d="M24 9.5C30 8.8 36.4 13.2 38.2 19.4C40 25.6 36.6 32.8 30.6 36.2C24.6 39.6 16.4 38 12 32.8C7.6 27.6 8.2 19.8 12.6 14.8C15.6 11.4 19.8 10 24 9.5Z"
+            style={{ fill: 'var(--primary)' }} opacity={0.13} />
         </g>
       )}
-      <path className="am-core"
-        d="M24 13.5C25.2 20.3 27.7 22.8 34.5 24C27.7 25.2 25.2 27.7 24 34.5C22.8 27.7 20.3 25.2 13.5 24C20.3 22.8 22.8 20.3 24 13.5Z"
-        style={{ fill: 'currentColor' }} />
+      <circle cx="24" cy="24" r="20.2" style={{ stroke: 'var(--border-strong)' }} strokeWidth="1" opacity="0.85" />
+      <path ref={animate ? coreRef : undefined} d={liquidStar(3.2, 0.55)} fill={`url(#${uid}g)`} />
+      <circle ref={animate ? dotRef : undefined} cx={24 + 19.6 * Math.cos(stillDot)} cy={24 + 19.6 * Math.sin(stillDot)} r="1.8" style={{ fill: 'var(--primary)' }} />
     </svg>
   );
 }
