@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"zedr/internal/platform/apperr"
 	"zedr/internal/platform/idgen"
+	"zedr/internal/platform/totp"
 	"zedr/internal/server/auth"
 	"zedr/internal/server/domain"
 	"zedr/internal/server/repository"
@@ -20,6 +22,9 @@ type AuthService struct {
 	tokens *auth.Manager
 	log    *slog.Logger
 	guard  loginGuard
+
+	mfaMu sync.Mutex
+	mfa   map[string]mfaTicket
 }
 
 // audit 写审计（登录失败/锁定等安全事件）。尽力而为：审计写失败
@@ -128,12 +133,180 @@ func ValidatePasswordStrength(pw string) error {
 }
 
 // LoginResult 是登录成功后的凭证集合。
+//
+// MfaRequired=true 表示密码已验但该账号启用了 TOTP：此时令牌字段全空，
+// 携带 MfaTicket，凭码调 VerifyMFA 换取真正的令牌对。
 type LoginResult struct {
 	AccessToken  string
 	ExpiresAt    time.Time
 	RefreshToken string
 	RefreshExp   time.Time
 	User         *domain.User
+	MfaRequired  bool
+	MfaTicket    string
+}
+
+// ---------------------------------------------------------------- MFA（TOTP 双因素）
+//
+// 双因素 = 密码（所知）+ TOTP（所持）。密码通过且账号已启用 MFA 时不发
+// 令牌，发 3 分钟一次性 mfa 票据；verify 凭票据+验证码换令牌对。
+// 票据等价于"密码已验"，所以：短时效 + 单次使用 + verify 失败并入
+// 登录失败锁定（同 loginGuard，防止对 verify 端点单独暴破验证码）。
+
+const mfaTicketTTL = 3 * time.Minute
+
+type mfaTicket struct {
+	userID    string
+	username  string
+	expiresAt time.Time
+}
+
+// issueMFATicket 登录密码通过后签发待验证票据。
+func (s *AuthService) issueMFATicket(u *domain.User) string {
+	id := idgen.URLSafe(32)
+	s.mfaMu.Lock()
+	if s.mfa == nil {
+		s.mfa = make(map[string]mfaTicket, 8)
+	}
+	// 顺手懒清理过期票据（登录频率低，不值得单独起清理协程）
+	now := time.Now()
+	for k, t := range s.mfa {
+		if now.After(t.expiresAt) {
+			delete(s.mfa, k)
+		}
+	}
+	s.mfa[id] = mfaTicket{userID: u.ID, username: u.Username, expiresAt: now.Add(mfaTicketTTL)}
+	s.mfaMu.Unlock()
+	return id
+}
+
+// consumeMFATicket 取走票据（单次使用：取走即删，防重放）。
+func (s *AuthService) consumeMFATicket(id string) (*mfaTicket, bool) {
+	s.mfaMu.Lock()
+	defer s.mfaMu.Unlock()
+	t, ok := s.mfa[id]
+	if !ok {
+		return nil, false
+	}
+	delete(s.mfa, id)
+	if time.Now().After(t.expiresAt) {
+		return nil, false
+	}
+	return &t, true
+}
+
+// EnrollMFA 生成本账号的 TOTP 绑定：密钥落库但 enabled=false，确认后才
+// 翻转——半途而废的绑定不会拦住下次登录。重复 enroll 覆盖旧密钥。
+func (s *AuthService) EnrollMFA(ctx context.Context, userID string) (secret, otpauthURL string, err error) {
+	u, err := s.repos.Users.ByID(ctx, userID)
+	if err != nil {
+		return "", "", err
+	}
+	if u == nil {
+		return "", "", apperr.NotFound("用户")
+	}
+	if u.TotpEnabled {
+		return "", "", apperr.Conflict("已启用双因素验证，如需更换请先解绑")
+	}
+	secret, err = totp.Secret()
+	if err != nil {
+		return "", "", apperr.Internal(err)
+	}
+	if err := s.repos.Users.SetTotp(ctx, userID, secret, false); err != nil {
+		return "", "", err
+	}
+	s.audit(ctx, u.ID, u.Username, "auth.mfa_enroll", u.Username, "", "")
+	return secret, totp.URL(secret, u.Username, "Z-EDR"), nil
+}
+
+// ConfirmMFA 确认绑定：验证码通过才把 enroll 落库的密钥翻转为启用。
+func (s *AuthService) ConfirmMFA(ctx context.Context, userID, code string) error {
+	u, err := s.repos.Users.ByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return apperr.NotFound("用户")
+	}
+	if u.TotpEnabled {
+		return apperr.Conflict("已启用双因素验证")
+	}
+	if u.TotpSecret == "" {
+		return apperr.Invalid("请先发起双因素绑定")
+	}
+	if !totp.Verify(code, u.TotpSecret, time.Now()) {
+		return apperr.Invalid("验证码不正确（请确认认证器时间同步）")
+	}
+	if err := s.repos.Users.SetTotp(ctx, userID, u.TotpSecret, true); err != nil {
+		return err
+	}
+	s.audit(ctx, u.ID, u.Username, "auth.mfa_enabled", u.Username, "", "")
+	s.log.InfoContext(ctx, "mfa_enabled", "user_id", u.ID, "username", u.Username)
+	return nil
+}
+
+// DisableMFA 解绑：要求密码 + 当前验证码双确认——解绑等于把双因素
+// 账号降回单因素，必须是"本人 + 持有设备"双重在场才允许。
+func (s *AuthService) DisableMFA(ctx context.Context, userID, password, code string) error {
+	u, err := s.repos.Users.ByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return apperr.NotFound("用户")
+	}
+	if !u.TotpEnabled {
+		return apperr.Conflict("未启用双因素验证")
+	}
+	if !auth.ComparePassword(u.PasswordHash, password) {
+		return apperr.Invalid("密码不正确")
+	}
+	if !totp.Verify(code, u.TotpSecret, time.Now()) {
+		return apperr.Invalid("验证码不正确")
+	}
+	if err := s.repos.Users.SetTotp(ctx, userID, "", false); err != nil {
+		return err
+	}
+	s.audit(ctx, u.ID, u.Username, "auth.mfa_disabled", u.Username, "", "")
+	s.log.InfoContext(ctx, "mfa_disabled", "user_id", u.ID, "username", u.Username)
+	return nil
+}
+
+// VerifyMFA 用登录票据 + TOTP 验证码换取令牌对。票据单次使用；
+// 验证失败并入登录锁定（recordFail），防止绕过 /login 限流单独暴破码。
+func (s *AuthService) VerifyMFA(ctx context.Context, ticketID, code, ip, ua string) (*LoginResult, error) {
+	ticket, ok := s.consumeMFATicket(strings.TrimSpace(ticketID))
+	if !ok {
+		return nil, apperr.Unauthenticated("登录票据无效或已过期，请重新登录")
+	}
+	u, err := s.repos.Users.ByID(ctx, ticket.userID)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil || u.Disabled {
+		return nil, apperr.Unauthenticated("账号不可用")
+	}
+	if !u.TotpEnabled || !totp.Verify(code, u.TotpSecret, time.Now()) {
+		// 票据已消费：失败后必须重新走完整登录（密码→票据→verify），
+		// 攻击者拿不到可重试的"密码已验"状态
+		if locked, remain := s.guard.recordFail(ticket.username); locked {
+			s.audit(ctx, "", ticket.username, "auth.login_locked", ticket.username,
+				fmt.Sprintf("MFA 连续失败触发锁定（剩余 %d 秒）", int(remain.Seconds())), ip)
+			return nil, apperr.Invalid("该账号已临时锁定，请 %d 分钟后重试", int(remain.Minutes())+1)
+		}
+		s.audit(ctx, u.ID, ticket.username, "auth.mfa_failed", ticket.username, "", ip)
+		s.log.WarnContext(ctx, "mfa_verify_failed", "username", ticket.username, "ip", ip)
+		return nil, apperr.Unauthenticated("验证码不正确")
+	}
+	s.guard.reset(ticket.username)
+
+	res, err := s.newSession(ctx, u, ip, ua, true)
+	if err != nil {
+		return nil, err
+	}
+	s.log.InfoContext(ctx, "login_success", "user_id", u.ID, "username", u.Username,
+		"role", u.Role, "ip", ip, "mfa", true)
+	return res, nil
 }
 
 // Login 校验账号密码并签发令牌对。
@@ -172,8 +345,29 @@ func (s *AuthService) Login(ctx context.Context, username, password, ip, ua stri
 		s.log.WarnContext(ctx, "login_failed", "username", username, "ip", ip)
 		return nil, apperr.Unauthenticated("用户名或密码错误")
 	}
+	// TOTP 双因素：密码已验但第二因子未验——不发令牌，发待验证票据。
+	// 票据 3 分钟/单次使用，verify 失败并入登录锁定（见 VerifyMFA）。
+	// 注意 reset 必须放在 MFA 分支之后：双因素账号在第二因子通过前
+	// 不清失败计数，否则"密码正确+暴破验证码"每轮都被 reset，永远
+	// 累积不到锁定阈值（测试 TestMFALockoutOnVerifyBrute 钉死此语义）。
+	if u.TotpEnabled {
+		s.audit(ctx, u.ID, u.Username, "auth.mfa_required", u.Username, "", ip)
+		return &LoginResult{MfaRequired: true, MfaTicket: s.issueMFATicket(u)}, nil
+	}
 	s.guard.reset(username)
 
+	res, err := s.newSession(ctx, u, ip, ua, true)
+	if err != nil {
+		return nil, err
+	}
+	s.log.InfoContext(ctx, "login_success", "user_id", u.ID, "username", u.Username, "role", u.Role, "ip", ip)
+	return res, nil
+}
+
+// newSession 签发访问令牌并落刷新令牌行（Login/VerifyMFA/Refresh 共用）。
+// touchLogin=false 用于 Refresh：刷新轮换是凭证续期不是新的登录事实，
+// last_login_at 应保留为最近一次真实登录时间。
+func (s *AuthService) newSession(ctx context.Context, u *domain.User, ip, ua string, touchLogin bool) (*LoginResult, error) {
 	access, exp, err := s.tokens.IssueAccess(u, time.Now())
 	if err != nil {
 		return nil, apperr.Internal(err)
@@ -193,9 +387,9 @@ func (s *AuthService) Login(ctx context.Context, username, password, ip, ua stri
 		return nil, err
 	}
 
-	_ = s.repos.Users.TouchLogin(ctx, u.ID, time.Now())
-	s.log.InfoContext(ctx, "login_success", "user_id", u.ID, "username", u.Username, "role", u.Role, "ip", ip)
-
+	if touchLogin {
+		_ = s.repos.Users.TouchLogin(ctx, u.ID, time.Now())
+	}
 	return &LoginResult{
 		AccessToken:  access,
 		ExpiresAt:    exp,
@@ -232,31 +426,8 @@ func (s *AuthService) Refresh(ctx context.Context, rawRefresh, ip, ua string) (*
 		return nil, err
 	}
 
-	access, exp, err := s.tokens.IssueAccess(u, time.Now())
-	if err != nil {
-		return nil, apperr.Internal(err)
-	}
-	newRaw := idgen.URLSafe(32)
-	newExp := time.Now().Add(s.tokens.RefreshTTL())
-	if err := s.repos.Tokens.Create(ctx, &domain.RefreshToken{
-		ID:        idgen.Hex(12),
-		UserID:    u.ID,
-		TokenHash: auth.HashRefreshToken(newRaw),
-		ExpiresAt: newExp,
-		CreatedAt: time.Now(),
-		UserAgent: truncate(ua, 200),
-		IP:        ip,
-	}); err != nil {
-		return nil, err
-	}
-
-	return &LoginResult{
-		AccessToken:  access,
-		ExpiresAt:    exp,
-		RefreshToken: newRaw,
-		RefreshExp:   newExp,
-		User:         u,
-	}, nil
+	// 刷新令牌轮换不带 touchLogin：续期不是新的登录事实
+	return s.newSession(ctx, u, ip, ua, false)
 }
 
 // Logout 吊销指定刷新令牌。

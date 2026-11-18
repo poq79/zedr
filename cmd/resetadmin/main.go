@@ -76,6 +76,14 @@ func main() {
 	if _, err := tx.Exec(`UPDATE users SET password_hash=? WHERE id=?`, string(hash), admin.id); err != nil {
 		fatal("更新密码失败: %v", err)
 	}
+	// TOTP 一并解除（迁移 012）：忘记密码的典型场景往往是设备也丢了
+	//（换机/重装/认证器迁移失败），此时只改密码不清 TOTP，管理员依旧
+	// 进不了控制台——恢复工具必须打通整条登录链。
+	// 列可能不存在（老库未跑迁移 012）：用 UPDATE 宽松容错，失败仅提示。
+	mfaCleared := true
+	if _, err := tx.Exec(`UPDATE users SET totp_secret='', totp_enabled=0 WHERE id=?`, admin.id); err != nil {
+		mfaCleared = false
+	}
 	// 与 ChangePassword 相同的轮换语义：改密即吊销全部刷新令牌。
 	res, err := tx.Exec(`DELETE FROM refresh_tokens WHERE user_id=?`, admin.id)
 	revoked := int64(-1)
@@ -89,6 +97,9 @@ func main() {
 	}
 
 	fmt.Printf("OK: 已重置管理员 %s 的密码，并吊销 %d 个刷新令牌。\n", admin.username, revoked)
+	if mfaCleared {
+		fmt.Println("已同时解除该账号的双因素验证绑定（TOTP）。")
+	}
 	fmt.Printf("新密码: %s\n", pw)
 	fmt.Println("请立即登录管理台并在「修改密码」中更换为自己的密码。")
 }

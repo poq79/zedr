@@ -144,6 +144,11 @@ func Router(d Deps) http.Handler {
 	loginKey := func(r *http.Request) string { return httpx.ClientIP(r) }
 	mux.Handle("POST /api/v1/auth/login",
 		httpx.RateLimitMiddleware(loginLimiter, loginKey)(http.HandlerFunc(authH.login)))
+	// MFA verify：预认证端点（凭 login 票据换令牌），与 login 同一独立
+	// 限流桶——防"绕过 login 限流单独暴破验证码"。（enroll/confirm/disable
+	// 需要 viewer 闭包，定义在下方鉴权中间件之后挂载。）
+	mux.Handle("POST /api/v1/auth/mfa/verify",
+		httpx.RateLimitMiddleware(loginLimiter, loginKey)(http.HandlerFunc(authH.mfaVerify)))
 	mux.HandleFunc("POST /api/v1/auth/refresh", authH.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", authH.logout)
 
@@ -183,6 +188,11 @@ func Router(d Deps) http.Handler {
 	}
 
 	mux.Handle("POST /api/v1/auth/change-password", viewer(authH.changePassword))
+	// MFA 绑定/解绑：登录态即可（每个用户管自己的第二因子，不做 adminOnly
+	// ——管理员代管他人 TOTP 属于新增产品语义，需要时另议）
+	mux.Handle("POST /api/v1/auth/mfa/enroll", viewer(authH.mfaEnroll))
+	mux.Handle("POST /api/v1/auth/mfa/enroll/confirm", viewer(authH.mfaConfirm))
+	mux.Handle("POST /api/v1/auth/mfa/disable", viewer(authH.mfaDisable))
 	mux.Handle("GET /api/v1/me", viewer(adminH.me))
 	mux.Handle("GET /api/v1/dashboard", viewer(adminH.dashboard))
 
