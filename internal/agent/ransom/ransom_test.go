@@ -622,3 +622,53 @@ func TestCanaryRepeatEscalatesCooldown(t *testing.T) {
 		t.Fatalf("第 4 次告警应带累计计数: %s", r.fs[3].Summary)
 	}
 }
+
+// USN 封顶（2026-11-18 误报治理收尾）：目录盲源单靠自身永远够不到
+// 触发线（20）也够不到 canary 升级线（10）——火绒引擎风暴（实测单分钟
+// 3000+ 删除经 USN）灌不进窗口；RDCW（目录可知）不受限，USN 只作
+// 封顶内助推。
+func TestUSNRateCapBlocksDirBlindStorm(t *testing.T) {
+	dir := t.TempDir()
+	d, r, ck := newDefense(t, []string{dir}, nil)
+
+	// 风暴：300 条 USN 删除（leaf 名，无目录）
+	for i := 0; i < 300; i++ {
+		d.Consume(Event{Kind: "removed", Path: fmt.Sprintf("eng%03d.dat", i), Source: "usn", When: ck.Now()})
+	}
+	for _, f := range r.fs {
+		if f.RuleID == RuleRansom {
+			t.Fatalf("USN 单源风暴不应触发 FILE-RANSOM: %+v", f)
+		}
+	}
+	if got := d.USNCapped(); got != int64(300-d.usnCap) {
+		t.Fatalf("USNCapped = %d, want %d（只有封顶额度内的进了窗）", got, 300-d.usnCap)
+	}
+	// 风暴期间触碰诱饵：不应被升级成 critical（半阈值分支被封顶挡住）
+	canary := filepath.Join(dir, canaryNames[0])
+	d.Consume(Event{Kind: "removed", Path: canary, Source: "rdcw", When: ck.Now()})
+	for _, f := range r.fs {
+		if f.RuleID == RuleCanary && f.Severity == model.SeverityCritical {
+			t.Fatalf("USN 风暴不应把诱饵触碰升级成 critical: %+v", f)
+		}
+	}
+}
+
+// 封顶不误伤真实爆发：RDCW（用户目录）不受限，USN 在封顶内助推——
+// rdcw 12 + usn 9 = 21 ≥ 20 触发，证明封顶挡的是"单源"而不是信号本身。
+func TestUSNCappedContributionStillHelpsRealBurst(t *testing.T) {
+	dir := t.TempDir()
+	d, r, ck := newDefense(t, []string{dir}, nil)
+
+	for i := 0; i < 12; i++ {
+		d.Consume(Event{Kind: "removed", Path: filepath.Join(dir, fmt.Sprintf("f%d.docx", i)), Source: "rdcw", When: ck.Now()})
+	}
+	for i := 0; i < 30; i++ {
+		d.Consume(Event{Kind: "removed", Path: fmt.Sprintf("leaf%d.dat", i), Source: "usn", When: ck.Now()})
+	}
+	if len(r.fs) == 0 {
+		t.Fatalf("rdcw 12 + usn 封顶 9 = 21 应触发 FILE-RANSOM")
+	}
+	if r.fs[0].RuleID != RuleRansom {
+		t.Fatalf("首条 finding 应是 FILE-RANSOM: %+v", r.fs[0])
+	}
+}

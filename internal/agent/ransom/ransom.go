@@ -166,11 +166,20 @@ type Defense struct {
 	// 不进这个表——速率告警有自己的小时分桶指纹）。
 	canaryRecent map[string][]time.Time
 	window       []windowEvent
+	// usnWeight 是窗口内 USN 来源事件的权重和（与 weightSum 同步维护）。
+	// USN 事件只有 leaf 文件名，churn 目录过滤对它天然失效——安全软件
+	// 引擎更新风暴（实测火绒单分钟 3000+ 删除）经 USN 灌进窗口，既能
+	// 触发 FILE-RANSOM 又能把 rateActive 推过半阈值把诱饵告警升级成假
+	// critical。封顶后：USN 单源永远够不到任何一条门控线，真实爆发由
+	// RDCW（目录可知、可过滤、不受限）驱动，USN 只作小幅助推。
+	usnWeight int
+	usnCap    int
 	weightSum int // 窗口内权重和的增量维护：爆发期每秒数千次 Consume，
 	// 每次都 O(n) 扫窗口会烧掉探针的 CPU 预算
-	lastRate time.Time // 速率检测器最近一次触发的时刻（canary 分级用）
-	dropped  atomic.Int64
-	rebuilt  atomic.Int64
+	lastRate  time.Time // 速率检测器最近一次触发的时刻（canary 分级用）
+	dropped   atomic.Int64
+	rebuilt   atomic.Int64
+	usnCapped atomic.Int64 // 因 USN 封顶未进速率窗的事件数（可观测口径）
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -203,6 +212,13 @@ func New(opt Options) *Defense {
 	}
 	if d.threshold <= 0 {
 		d.threshold = 20
+	}
+	// USN 贡献封顶 = 阈值/2 - 1：低于 rateActive 的半阈值线（canary
+	// 升级门控）也低于触发阈值本身——目录盲源在这两条线上都没有
+	// 单独表决权。threshold ≤ 3 时封顶取 0（USN 完全不进速率窗）。
+	d.usnCap = d.threshold/2 - 1
+	if d.usnCap < 0 {
+		d.usnCap = 0
 	}
 	if d.log == nil {
 		d.log = slog.Default()
@@ -335,6 +351,15 @@ func (d *Defense) Rebuilt() int64 {
 	return d.rebuilt.Load()
 }
 
+// USNCapped 返回因 USN 封顶未进速率窗的事件数（运维观察用：AV 更新
+// 风暴期该值会显著增长，是"误报被挡在门外"的直接证据）。
+func (d *Defense) USNCapped() int64 {
+	if d == nil {
+		return 0
+	}
+	return d.usnCapped.Load()
+}
+
 // Consume 接收一条文件事件，线程安全。canary 命中与速率触发可能在同一次
 // 调用里各产出一条 Finding（规则不同，都该报）。
 func (d *Defense) Consume(ev Event) {
@@ -357,10 +382,18 @@ func (d *Defense) Consume(ev Event) {
 	}
 	// 速率窗口只收新鲜事件：补采来的陈旧删除对"此刻正在爆发"没有意义，
 	// 但对 canary 命中仍然有效（上面已处理），两个用途分开看。
+	// USN 来源在此封顶（usnCap 的依据见 Defense.usnWeight 注释）：超出
+	// 封顶的 USN 事件直接不进窗——省掉窗口 churn，也不挤占 RDCW 证据
+	// 的窗口容量（windowCap 触顶会按 FIFO 淘汰，风暴期 USN 会把真正
+	// 带目录信息的 rdcw 事件顶出去）。
 	if w := rateWeight(ev); w > 0 && !when.Before(d.now().Add(-windowDur)) {
-		d.pushLocked(when, w, ev)
-		if f := d.rateFinding(when); f.RuleID != "" {
-			findings = append(findings, f)
+		if ev.Source == "usn" && d.usnWeight+w > d.usnCap {
+			d.usnCapped.Add(1)
+		} else {
+			d.pushLocked(when, w, ev)
+			if f := d.rateFinding(when); f.RuleID != "" {
+				findings = append(findings, f)
+			}
 		}
 	}
 	d.mu.Unlock()
@@ -599,6 +632,8 @@ func (d *Defense) rateActive(when time.Time) bool {
 // 灌满后，用户手工删一个诱饵就会被"速率活跃"联动升级成 critical——
 // 剔除后速率窗口才反映真实用户目录的删除形态。诱饵关联路径不受影响
 // （诱饵在 Documents 等用户目录，真勒索仍会同时命中诱饵+速率）。
+// USN 事件只有 leaf name，本表对它天然失效——USN 贡献由 usnCap
+// 封顶兜底（见 Defense.usnWeight 注释），不再"保留计数"。
 var churnMarkers = []string{
 	`\appdata\local\temp\`, `\appdata\local\temp-`, `\windows\temp\`,
 	`\cache\`, `\cache_data`, `\code cache`, `\gpucache`, `\inetcache\`,
@@ -649,10 +684,16 @@ func (d *Defense) pushLocked(at time.Time, weight int, ev Event) {
 		at: at, weight: weight, kind: ev.Kind, path: ev.Path, source: ev.Source,
 	})
 	d.weightSum += weight
+	if ev.Source == "usn" {
+		d.usnWeight += weight
+	}
 	if len(d.window) > windowCap {
 		drop := len(d.window) - windowCap
 		for _, e := range d.window[:drop] {
 			d.weightSum -= e.weight
+			if e.source == "usn" {
+				d.usnWeight -= e.weight
+			}
 		}
 		d.dropped.Add(int64(drop))
 		d.window = append(d.window[:0], d.window[drop:]...)
@@ -664,6 +705,9 @@ func (d *Defense) pruneLocked(now time.Time) {
 	i := 0
 	for i < len(d.window) && d.window[i].at.Before(cut) {
 		d.weightSum -= d.window[i].weight
+		if d.window[i].source == "usn" {
+			d.usnWeight -= d.window[i].weight
+		}
 		i++
 	}
 	if i > 0 {
@@ -728,6 +772,9 @@ func (d *Defense) rateFinding(when time.Time) Finding {
 	}
 	if d.dropped.Load() > 0 {
 		notes = append(notes, fmt.Sprintf("窗口触顶丢弃事件=%d（速率超出检测容量，计数如实）", d.dropped.Load()))
+	}
+	if n := d.usnCapped.Load(); n > 0 {
+		notes = append(notes, fmt.Sprintf("USN 封顶未计入=%d（leaf 无目录信息，单源贡献封顶防 AV 风暴灌窗）", n))
 	}
 
 	// 独立速率只做观察级（medium）：真实误报实测（2026-11-03 上线首日）
