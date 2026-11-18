@@ -469,6 +469,35 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 				a.Log.Info("alerts_purged", "count", n)
 			}
 
+			// 水位降级（2026-11-18 保留策略裁决的一部分）：库体积超
+			// HG_SERVER_RETENTION_MAX_MB 时，已处置告警的保留窗按半衰
+			// 逐档收缩（180→90→45→...→7 天下限），防止磁盘异常场景下
+			// 无限增长。只动已处置数据（Purge 本就只清 resolved/false_positive），
+			// open 告警始终不受水位影响；水位回落即自动恢复原保留窗。
+			// 判定走 data 目录 db 文件尺寸（WAL 检查点后近似真实占用），
+			// 每分钟一次的 stat 成本可忽略。
+			if maxMB := a.Cfg.RetentionMaxMB; maxMB > 0 {
+				if sz, err := os.Stat(a.Cfg.DBPath); err == nil {
+					if sz.Size() > int64(maxMB)<<20 {
+						// 半衰收缩：从配置保留窗逐次减半到 7 天下限
+						shrunk := retention / 2
+						if shrunk < 7*24*time.Hour {
+							shrunk = 7 * 24 * time.Hour
+						}
+						if shrunk < retention {
+							if n, err := a.services.Alert.Purge(ctx, time.Now().Add(-shrunk)); err != nil {
+								a.Log.Warn("alert_purge_watermark_failed", "err", err)
+							} else if n > 0 {
+								a.Log.Warn("alerts_purged_watermark",
+									"count", n, "db_mb", sz.Size()>>20, "max_mb", maxMB,
+									"shrunk_retention", shrunk.String(),
+									"hint", "库体积超水位，已处置告警保留窗收缩；open 告警不受影响")
+							}
+						}
+					}
+				}
+			}
+
 			// 通知看门狗观测：每窗推进一次连续失败判定，翻转即打日志。
 			// degraded 用 Error 级——"告警在发但没人收到"比看起来更危险；
 			// 恢复用 Info。状态本身走 /notify/health 与 /metrics 持续可见。

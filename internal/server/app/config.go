@@ -130,10 +130,13 @@ type Config struct {
 	SensorOfflineAlerts   bool
 	SensorOfflineSeverity string
 	RetentionDays         int
-	DupWindow             time.Duration // 同指纹告警聚合窗口
-	HeartbeatSec          int
-	ScanSec               int
-	ShutdownTimeout       time.Duration
+	// RetentionMaxMB 是库体积水位（0=不启用）：超水位时已处置告警的
+	// 保留窗半衰收缩（见 app.go janitor 循环），防磁盘异常场景无限增长。
+	RetentionMaxMB  int
+	DupWindow       time.Duration // 同指纹告警聚合窗口
+	HeartbeatSec    int
+	ScanSec         int
+	ShutdownTimeout time.Duration
 }
 
 // LoadConfig 读取并集中校验配置；任何非法项都会让进程启动即失败。
@@ -226,7 +229,12 @@ func LoadConfig() (*Config, error) {
 	c.DrillEnabled = l.Bool("HG_SERVER_DRILL_ENABLED", false)
 	c.SensorOfflineAlerts = l.Bool("HG_SERVER_SENSOR_OFFLINE_ALERTS", true)
 	c.SensorOfflineSeverity = l.Env("HG_SERVER_SENSOR_OFFLINE_SEVERITY", "medium")
-	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 30)
+	// 默认 180 天（2026-11-18 用户裁决：网安法 6 个月口径，SCALE.md 的
+	// "30 天 vs 6 个月"矛盾就此收口）。只清已处置（resolved/false_positive），
+	// open 不受保留窗约束——未处置的证据先于人手到达的清理周期
+	//（水位降级见 app.go 清理循环）。
+	c.RetentionDays = l.Int("HG_SERVER_RETENTION_DAYS", 180)
+	c.RetentionMaxMB = l.Int("HG_SERVER_RETENTION_MAX_MB", 4096)
 	c.DupWindow = l.Duration("HG_SERVER_DUP_WINDOW", 5*time.Minute) // 同指纹告警聚合窗口
 	c.HeartbeatSec = l.Int("HG_SERVER_HEARTBEAT_SEC", 30)
 	c.ScanSec = l.Int("HG_SERVER_SCAN_SEC", 2)
