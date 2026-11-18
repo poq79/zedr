@@ -159,8 +159,8 @@ type Defense struct {
 
 	contentHash [sha256.Size]byte
 
-	mu        sync.Mutex
-	lastHit   map[string]time.Time // 冷却键 -> 上次产出 Finding 的时刻
+	mu      sync.Mutex
+	lastHit map[string]time.Time // 冷却键 -> 上次产出 Finding 的时刻
 	// canaryRecent 记录每个诱饵 24h 内已发射 Finding 的时刻，驱动
 	// "杀软隔离循环"的递进冷却（canaryFinding；速率键 rateCooldownKey
 	// 不进这个表——速率告警有自己的小时分桶指纹）。
@@ -193,11 +193,11 @@ type Defense struct {
 //     （此时窗口为空、速率未触发，按分级规则只能是 medium）。
 func New(opt Options) *Defense {
 	d := &Defense{
-		log:       opt.Log,
-		onFinding: opt.OnFinding,
-		now:       opt.Now,
-		cooldown:  opt.Cooldown,
-		threshold: opt.RateThreshold,
+		log:          opt.Log,
+		onFinding:    opt.OnFinding,
+		now:          opt.Now,
+		cooldown:     opt.Cooldown,
+		threshold:    opt.RateThreshold,
 		canaries:     make(map[string]canarySpec, len(opt.CanaryDirs)*len(canaryNames)),
 		names:        make(map[string][]string, len(canaryNames)),
 		lastHit:      make(map[string]time.Time),
@@ -471,6 +471,14 @@ type tamperHit struct {
 // 文件太多，按名匹配会把别处同名文档的删除算到诱饵头上；usn 来源只有
 // leaf name，只能按名匹配（新旧名都试：诱饵被改成 a.encrypted 时新名已
 // 不是诱饵名，只有旧名能对上），摘要里如实标注路径未知。
+//
+// USN 同名碰撞验真（2026-11-18 实测事故）：go test 的勒索夹具在 t.TempDir
+// 建删 backup_report.docx，真探针全盘 USN 只认 leaf 名 → 误判真诱饵被篡改
+// 且测试 churn 灌进速率窗 → critical（真诱饵 mtime 完好）。验真口径：
+// 删除/篡改是事实行为，真被事件碰过的候选此刻必然"缺失，或 mtime 晚于
+// 事件时刻被重写"；仍完好（mtime 早于事件）的候选与本事件无关，吸收为
+// 碰撞。诚实边界：攻击者删完诱饵立刻回填同内容文件可绕过验真，但那需要
+// 先读到透明诱饵的内容，成本远高于换一个目标。
 func (d *Defense) matchCanary(ev Event) *tamperHit {
 	switch ev.Kind {
 	case "removed", "modified", "renamed", "renamed_old":
@@ -488,11 +496,35 @@ func (d *Defense) matchCanary(ev Event) *tamperHit {
 		if !ok {
 			return nil
 		}
-		// 不知道改的是哪一个同名诱饵：全部列为候选，冷却键用 leaf
+		// 验真：剔除与事件时刻不符的完好候选（锁内 os.Stat 只发生
+		// 在 leaf 命中这条罕见路径上，≤诱饵目录数，µs 级）。
+		real := make([]string, 0, len(cands))
+		for _, k := range cands {
+			if d.usnHitReal(k, ev.When) {
+				real = append(real, k)
+			}
+		}
+		if len(real) == 0 {
+			if d.log != nil {
+				d.log.Info("canary_usn_collision_absorbed",
+					"leaf", leaf, "candidates", len(cands))
+			}
+			return nil
+		}
+		if len(real) == 1 {
+			// 验真后唯一候选：归属明确，冷却键/摘要回归诱饵本体
+			if spec, ok := d.canaries[real[0]]; ok {
+				hit.key = spec.key
+				hit.display = spec.display
+				hit.note = "USN 记录仅文件名，验真后唯一候选即本诱饵"
+				return hit
+			}
+		}
+		// 多个候选仍相符：无法进一步归属，冷却键用 leaf
 		hit.key = "usn:" + leaf
-		hit.display = strings.Join(cands, ", ")
-		hit.cands = cands
-		hit.note = "路径未知（USN 记录仅文件名）"
+		hit.display = strings.Join(d.specDisplays(real), ", ")
+		hit.cands = real
+		hit.note = "路径未知（USN 记录仅文件名），验真后多个候选仍相符"
 		return hit
 	}
 	if spec, ok := d.canaries[normPath(ev.Path)]; ok {
@@ -508,6 +540,38 @@ func (d *Defense) matchCanary(ev Event) *tamperHit {
 		return hit
 	}
 	return nil
+}
+
+// usnHitReal 验证候选诱饵是否真被本事件碰过（锁内调用，见 matchCanary
+// 头注释的验真口径）。removed/renamed 离开后文件必然不存在；modified/
+// renamed_old 原地改写则 mtime ≥ 事件时刻。-2s 容差吸收 USN 记录时刻与
+// NTFS mtime 的同源时钟差。stat 失败（缺失=与删除相符；权限等其他
+// 错误=无法证伪）一律按相符处理——验真只吸收"完好且早于事件"这一种
+// 可证伪形态，宁可多报不可漏报。
+func (d *Defense) usnHitReal(key string, when time.Time) bool {
+	spec, ok := d.canaries[key]
+	if !ok {
+		return false
+	}
+	st, err := os.Stat(spec.display)
+	if err != nil {
+		return true
+	}
+	if when.IsZero() {
+		return true
+	}
+	return !st.ModTime().Before(when.Add(-2 * time.Second))
+}
+
+// specDisplays 把 spec key 列表转成摘要路径列表。
+func (d *Defense) specDisplays(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if spec, ok := d.canaries[k]; ok {
+			out = append(out, spec.display)
+		}
+	}
+	return out
 }
 
 // canaryRepeatFloor/canaryRepeatCooldown 是"杀软隔离循环"的递进节流参数：

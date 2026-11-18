@@ -169,8 +169,10 @@ func TestUSNLeafHit(t *testing.T) {
 	if len(r.fs) != 1 {
 		t.Fatalf("findings = %+v, want 1", r.fs)
 	}
+	// 验真语义（2026-11-18）：诱饵 mtime（真实 now）晚于 fake 事件时刻
+	// （2026-11-03）→ "删除后被重写"形态，单候选归属本体路径
 	f := r.fs[0]
-	if !strings.Contains(f.Summary, "路径未知（USN 记录仅文件名）") {
+	if !strings.Contains(f.Summary, "验真后唯一候选即本诱饵") {
 		t.Fatalf("summary = %s", f.Summary)
 	}
 	if f.Notes[0] != "source=usn kind=removed" {
@@ -200,7 +202,7 @@ func TestUSNRenamedHitByOldLeaf(t *testing.T) {
 	if len(r.fs) != 1 {
 		t.Fatalf("findings = %+v, want 1", r.fs)
 	}
-	if !strings.Contains(r.fs[0].Summary, "路径未知（USN 记录仅文件名）") {
+	if !strings.Contains(r.fs[0].Summary, "验真后唯一候选即本诱饵") {
 		t.Fatalf("summary = %s", r.fs[0].Summary)
 	}
 	// 新旧名都与诱饵无关 → 不命中
@@ -670,5 +672,46 @@ func TestUSNCappedContributionStillHelpsRealBurst(t *testing.T) {
 	}
 	if r.fs[0].RuleID != RuleRansom {
 		t.Fatalf("首条 finding 应是 FILE-RANSOM: %+v", r.fs[0])
+	}
+}
+
+// USN 同名碰撞验真（2026-11-18 实测事故回归）：go test 勒索夹具在别处
+// 建删同名文件，真探针 USN 只认 leaf 名。完好诱饵（mtime 早于事件时刻）
+// 与该事件无关 → 吸收不告警；真被删/改的诱饵（缺失或 mtime ≥ 事件）→
+// 照常告警。攻击面：先删后回填同内容可绕过（见 matchCanary 头注释）。
+func TestUSNLeafCollisionAbsorbed(t *testing.T) {
+	dir := t.TempDir()
+	d, r, _ := newDefense(t, []string{dir}, nil)
+
+	// 场景一：同名文件在别处被删，真诱饵完好（mtime 在事件前）→ 吸收。
+	// 验真比较的是事件时刻与真实 mtime，事件 When 必须用真实时间
+	// （fake clock 在 2026-11-03，比任何真实 mtime 都早，测不出碰撞）。
+	canaryPath := filepath.Join(dir, canaryNames[2])
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(canaryPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+	d.Consume(Event{Kind: "removed", Path: canaryNames[2], Source: "usn", When: time.Now()})
+	if len(r.fs) != 0 {
+		t.Fatalf("完好诱饵的同名碰撞应吸收: %+v", r.fs)
+	}
+
+	// 场景二：真诱饵被删（文件不存在）→ 照常告警
+	if err := os.Remove(canaryPath); err != nil {
+		t.Fatal(err)
+	}
+	d.Consume(Event{Kind: "removed", Path: canaryNames[2], Source: "usn", When: time.Now()})
+	if len(r.fs) != 1 {
+		t.Fatalf("真删除必须告警: %+v", r.fs)
+	}
+	if !strings.Contains(r.fs[0].Summary, canaryPath) {
+		t.Fatalf("唯一候选应归属诱饵本体路径: %s", r.fs[0].Summary)
+	}
+
+	// 场景三：停机补采形态——USN 事件早于诱饵重种时刻（mtime 晚于事件）
+	// → "删除后被重写"，验真判真、照常告警（杀软隔离循环归递进冷却治理）
+	d.Consume(Event{Kind: "removed", Path: canaryNames[3], Source: "usn", When: time.Now().Add(-10 * time.Minute)})
+	if len(r.fs) != 2 {
+		t.Fatalf("mtime 晚于事件的原地改写必须告警: %+v", r.fs)
 	}
 }
