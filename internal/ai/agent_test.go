@@ -283,17 +283,25 @@ func TestAgentChatWithoutModel(t *testing.T) {
 	}
 }
 
-// TestSanitizeDSML 锁死 DeepSeek v4.1 流式 DSML 泄漏的清理行为
-// （实测 2026-11-09：方舟流式 content 混出工具标记，标准 tool_calls 同时正常）。
+// TestSanitizeDSML 锁死真实泄漏样本的清理行为。
+// 2026-11-09 样本：ASCII 管道块；2026-11-19 样本：全角管道 ｜（U+FF5C）
+// 混排——单一块正则被非规整边界漏掉后才改行集合算法，两组都要过。
 func TestSanitizeDSML(t *testing.T) {
+	asciiBlock := "<|DSML|invoke name=\"query_alerts\"><|DSML|parameter name=\"limit\">20<|/|DSML|>"
+	fullWidth := "我先核实平台当前数据，再给出优先级判断。<｜｜DSML｜｜ calls>\n" +
+		"<｜｜DSML｜｜ invoke name=\"get_alert\">\n" +
+		"<｜｜DSML｜｜ parameter name=\"id\" string=\"true\">c5336e503233d56bae97eab4<｜｜DSML｜｜ parameter>\n" +
+		"<｜｜DSML｜｜ invoke name=\"query_alerts\">\n" +
+		"<｜｜DSML｜｜ parameter name=\"limit\" string=\"false\">15<｜｜DSML｜｜ parameter>\n" +
+		"优先级：1. 隔离主机。"
 	cases := []struct{ name, in, want string }{
-		{"纯 DSML 块", `<|DSML|invoke name="query_alerts"><|DSML|parameter name="limit">20<|/|DSML|>`, ""},
-		{"正文夹 DSML", "当前有 3 条 critical 告警。\n<|DSML|invoke name=\"get_alert\">x<|/|DSML|>\n最严重的是暴破成功。", "当前有 3 条 critical 告警。\n最严重的是暴破成功。"},
+		{"ASCII 纯块", asciiBlock, ""},
+		{"全角管道混排（真实样本）", fullWidth, "我先核实平台当前数据，再给出优先级判断。\n优先级：1. 隔离主机。"},
 		{"正常正文不动", "结论：建议人工复核告警 ffd563d0。", "结论：建议人工复核告警 ffd563d0。"},
 	}
 	for _, c := range cases {
 		if got := sanitizeDSML(c.in); got != c.want {
-			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
 		}
 	}
 }

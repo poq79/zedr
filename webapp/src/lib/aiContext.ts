@@ -6,14 +6,27 @@ export function dispatchAIContext(text: string, open = true) {
   window.dispatchEvent(new CustomEvent('zedr:ai-context', { detail: { text, open } }));
 }
 
-// stripDSML 剥离 DeepSeek v4.1 流式输出混入的工具调用标记块
-// （2026-11-09 实测：answer 已在服务端净化，thinking/历史会话残留
-// 由渲染层兜底清洗——思考链本质是推理过程，不该让用户看到标记）。
+/* stripDSML 剥离泄漏进正文 content 的工具调用标记文本。
+   形态实测（2026-11-19，方舟 deepseek-v4.1）：管道字符混用 ASCII | 与
+   全角 ｜（同一回答内先后出现），任何单一"块正则"都会被非规整边界漏掉
+   ——与服务端 sanitizeDSML（internal/ai/agent.go）同一行集合算法：
+   收集含 DSML 的行、保留首行标记前正文前缀与末行之后的内容、中间行吸收。
+   渲染层兜底清洗历史会话残留 + 流式期间的临时脏段。 */
 export function stripDSML(s: string): string {
   if (!s.includes('DSML')) return s;
-  return s
-    .replace(/^[ \t]*<\|DSML\|.*?\|>[ \t]*\\n?/gm, '')
-    .replace(/<\|DSML\|.*?\|>/gs, '')
-    .replace(/<\|\/?\s*\|?DSML\|?>/g, '')
-    .trim();
+  const lines = s.split('\n');
+  let first = -1;
+  let last = -1;
+  lines.forEach((ln, i) => {
+    if (ln.includes('DSML')) {
+      if (first < 0) first = i;
+      last = i;
+    }
+  });
+  if (first < 0) return s;
+  const head = lines[first].split('<')[0];
+  const out = lines.slice(0, first);
+  if (head.trim() !== '') out.push(head);
+  if (last + 1 < lines.length) out.push(...lines.slice(last + 1));
+  return out.join('\n').trim();
 }

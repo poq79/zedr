@@ -681,16 +681,18 @@ func (o *OpenAICompatible) AgentChat(ctx context.Context, msgs []AgentMessage, t
 		d.Function.Parameters = t.Parameters
 		tdefs = append(tdefs, d)
 	}
+	// 与流式版同因：收尾轮物理移除 tools 定义防 DSML 泄漏（见
+	// AgentChatStream 内注释，2026-11-19 实测）
 	body := map[string]any{
 		"model":       o.model,
 		"messages":    wire,
-		"tools":       tdefs,
 		"temperature": o.temperature,
 		"max_tokens":  o.maxTokens,
 	}
 	if forceText {
 		body["tool_choice"] = "none"
 	} else {
+		body["tools"] = tdefs
 		body["tool_choice"] = "auto"
 	}
 	raw, err := json.Marshal(body)
@@ -998,8 +1000,11 @@ func (o *OpenAICompatible) AgentChatStream(ctx context.Context, msgs []AgentMess
 		d.Function.Parameters = t.Parameters
 		tdefs = append(tdefs, d)
 	}
+	// 收尾轮（forceText）物理移除 tools 定义：deepseek 对
+	// tool_choice:"none" + 定义在场仍会继续输出 DSML 调用文本
+	// （实测 2026-11-19）——无定义才真正无泄漏。
 	body := map[string]any{
-		"model": o.model, "messages": wire, "tools": tdefs,
+		"model": o.model, "messages": wire,
 		"temperature": o.temperature, "max_tokens": o.maxTokens,
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
@@ -1007,6 +1012,7 @@ func (o *OpenAICompatible) AgentChatStream(ctx context.Context, msgs []AgentMess
 	if forceText {
 		body["tool_choice"] = "none"
 	} else {
+		body["tools"] = tdefs
 		body["tool_choice"] = "auto"
 	}
 	raw, err := json.Marshal(body)

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { BrainCircuit, ShieldBan } from 'lucide-react';
 import { api } from '../lib/api';
-import { dispatchAIContext } from '../lib/aiContext';
+import { dispatchAIContext, stripDSML } from '../lib/aiContext';
 import type { Alert, Investigation } from '../lib/types';
 import { SEV_LABEL, VERDICT_LABEL, LAYER_LABEL, fmtTime } from '../lib/format';
 import { Badge, Button, Card, EmptyState, Skeleton, Tabs } from '../components/ui/basics';
@@ -571,12 +571,12 @@ function AgentPanel({ alertId }: { alertId: string }) {
             <div className="rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[11.5px] text-warn">{rep.degraded_reason}</div>
           )}
 
-          {rep.summary && <div className="text-[12.5px] leading-[1.8]">{rep.summary}</div>}
+          {rep.summary && <div className="text-[12.5px] leading-[1.8]">{stripDSML(rep.summary)}</div>}
 
           <div className="mb-1.5 text-xs text-faint">调查发现（括号内为引用）</div>
           {rep.findings.map((f, i) => (
             <div key={i} className="mb-1.5 flex items-start justify-between gap-2.5 rounded-lg border border-border-soft bg-secondary/60 px-3 py-2 text-[12.5px]">
-              <span className="min-w-0 flex-1">{f.text}</span>
+              <span className="min-w-0 flex-1">{stripDSML(f.text)}</span>
               <span className="shrink-0 font-mono text-[11px]">
                 {f.citations?.length
                   ? f.citations.map((c) => <span key={c} className="mr-1 rounded border border-primary/30 bg-brand-soft px-1 py-px text-primary">{c}</span>)

@@ -162,9 +162,11 @@ function linkAlertIds(text: string): (string | { id: string })[] {
 }
 
 function AnswerText({ text }: { text: string }) {
+  // 渲染层兜底清洗：流式期间的 DSML 泄漏段在 done 净化前不该被看到
+  // （stripDSML 与服务端同一行集合算法，见 lib/aiContext.ts）
   return (
     <>
-      {linkAlertIds(text).map((p, i) =>
+      {linkAlertIds(stripDSML(text)).map((p, i) =>
         typeof p === 'string' ? <span key={i}>{p}</span> : (
           <a key={i} href={`#/alerts?open=${p.id}`} target="_blank" rel="noreferrer"
             className="mx-0.5 inline-flex items-center rounded border border-border-soft bg-secondary px-1 py-px font-mono text-[10px] text-primary hover:underline"

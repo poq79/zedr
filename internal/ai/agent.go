@@ -16,7 +16,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -343,7 +342,7 @@ func (e *Engine) runToolLoop(ctx context.Context, sys, user string, history []Ag
 			out.final = reply.Content
 			return out
 		}
-		msgs = append(msgs, AgentMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls})
+		msgs = append(msgs, AgentMessage{Role: "assistant", Content: sanitizeDSML(reply.Content), ToolCalls: reply.ToolCalls})
 		for _, tc := range reply.ToolCalls {
 			out.toolCalls++
 			rec := AgentStep{Step: step, Tool: tc.Name, Args: truncate(tc.Arguments, agentToolArgsCap)}
@@ -437,6 +436,7 @@ func chatSystemPrompt() string {
 		"3. 回答中的每个事实尽量引用真实依据（告警 ID、哈希前缀、IOC 条目）；无依据时明说。",
 		"4. 只做建议，不能执行处置；涉及终止/隔离等动作时说明需人工确认。",
 		"5. 回答用简洁中文，先给结论再给依据；不要输出与问题无关的客套。",
+		"6. 调用工具必须走工具调用机制：绝对不要在回复正文里书写任何调用语法、特殊标记或伪标记文本（用户会原样看到）。",
 	}, "\n")
 }
 
@@ -568,12 +568,16 @@ func (e *Engine) AgentChatStream(ctx context.Context, question string, history [
 	}
 
 	answer := ""
+	// allBuf 累积全部轮次的正文增量：最终轮偶发只有思考无正文时，
+	// 用全轮净化文本兜底——宁可给可用过程内容，不留空报告
+	var allBuf strings.Builder
 	maxSteps, maxCalls, toolTimeout := e.agentBudget()
 	for step := 1; step <= maxSteps; step++ {
 		forceText := step == maxSteps || rep.ToolCalls >= maxCalls
 		sink := &ChatStreamSink{
 			OnDelta: func(text string) {
 				answer += text
+				allBuf.WriteString(text)
 				emit(ChatStreamEvent{Type: "delta", Text: text})
 			},
 			OnThinking: func(text string) {
@@ -597,12 +601,22 @@ func (e *Engine) AgentChatStream(ctx context.Context, question string, history [
 			return fatal("模型调用失败：" + err.Error())
 		}
 		e.AddTokens(reply.TotalTokens)
+		// DSML 恢复优先于丢弃：模型偶发把工具调用意图以标记文本写进
+		// content（tool_calls 通道可能同时有/没有）——能解析就恢复成
+		// 结构化调用继续执行（对标 vLLM deepseek_v41 parser），解析不了
+		// 的残损块由收尾 sanitizeDSML redact
+		if len(reply.ToolCalls) == 0 {
+			if calls := parseDSMLCalls(reply.Content); len(calls) > 0 {
+				reply.ToolCalls = calls
+				reply.Content = sanitizeDSML(reply.Content)
+			}
+		}
 		if len(reply.ToolCalls) == 0 || forceText {
 			rep.Model = ob.Name()
 			rep.StepsLimitReached = forceText && len(reply.ToolCalls) > 0
 			break
 		}
-		msgs = append(msgs, AgentMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls})
+		msgs = append(msgs, AgentMessage{Role: "assistant", Content: sanitizeDSML(reply.Content), ToolCalls: reply.ToolCalls})
 		for _, tc := range reply.ToolCalls {
 			rep.ToolCalls++
 			emit(ChatStreamEvent{Type: "tool_start", Step: step, Tool: tc.Name, Args: truncate(tc.Arguments, agentToolArgsCap)})
@@ -627,10 +641,13 @@ func (e *Engine) AgentChatStream(ctx context.Context, question string, history [
 		answer = "" // 轮次以工具调用收尾时的碎片正文不进最终答案，重置等下一轮
 	}
 
-	if strings.TrimSpace(answer) == "" {
-		rep.Answer = ""
+	if strings.TrimSpace(sanitizeDSML(answer)) == "" {
+		// 全部轮次都被 DSML 泄漏吸收（含收尾轮——物理移除工具定义后
+		// 模型仍从上下文模仿继续输出标记文本，实测 2026-11-19）：这是
+		// 模型侧能力退化而非协议问题，诚实降级并给可执行的下一步，
+		// 绝不把空报告或标记文本给用户
 		rep.Degraded = true
-		rep.DegradedReason = "模型未给出回答"
+		rep.DegradedReason = fmt.Sprintf("模型在 %d 次工具调用后未产出结论正文（工具调用输出异常，多为模型侧退化）——建议重新提问，或在 AI 平台为「调查」槽位更换模型", rep.ToolCalls)
 		rep.LatencyMs = time.Since(start).Milliseconds()
 		emit(ChatStreamEvent{Type: "done", Report: rep})
 		return rep
@@ -642,27 +659,54 @@ func (e *Engine) AgentChatStream(ctx context.Context, question string, history [
 	return rep
 }
 
-// dsmlBlockRe / dsmlFragRe 清理 DeepSeek v4.1 流式下泄漏进正文 content
-// 的工具调用标记（实测 2026-11-09，方舟 deepseek-v4.1：流式轮次的
-// content 里会混出 <|DSML|invoke ...|> 块，标准 delta.tool_calls 同时
-// 正常到达——正文里的 DSML 是重复泄漏，不该给用户看）。块匹配失败时
-// 用碎片正则兜底，两者都不影响不含 DSML 的正常正文。
-var (
-	// dsmlLineRe 整行块（含行尾换行）一起删——流式泄漏的 DSML 通常占整行，
-	// 只剔块会留空行
-	dsmlLineRe = regexp.MustCompile(`(?m)^[ \t]*<\|DSML\|.*?\|>[ \t]*\n?`)
-	// dsmlBlockRe 行内块兜底
-	dsmlBlockRe = regexp.MustCompile(`<\|DSML\|.*?\|>`)
-	// dsmlFragRe 块匹配失败时的孤立标记残片
-	dsmlFragRe = regexp.MustCompile(`<\|/?\s*\|?DSML\|?>`)
-)
-
+// DSML 泄漏的形态实测（2026-11-19，方舟 deepseek-v4.1）：工具调用意图
+// 以标记文本写在 content 通道，且管道字符混用 ASCII | 与全角 ｜（同一
+// 回答内两种先后出现）——任何单一"块正则"都会被非规整边界漏掉（11-09
+// 版因此失效）。改为按行集合清除 + 首行截断：
+//  1. 收集所有含 DSML 的行；
+//  2. 首个 DSML 行保留"开标记之前的正文前缀"，末行之后的内容保留；
+//  3. 中间行全部吸收（实测泄漏是连续块，参数值行可能不含 DSML 字样）。
+//
+// 宁可少留不放脏：块中间夹带的正文丢失可由追问找回，而把 DSML 标记
+// 渲染给用户是确定性的事故。
 func sanitizeDSML(s string) string {
 	if !strings.Contains(s, "DSML") {
 		return s
 	}
-	s = dsmlLineRe.ReplaceAllString(s, "")
-	s = dsmlBlockRe.ReplaceAllString(s, "")
-	s = dsmlFragRe.ReplaceAllString(s, "")
-	return strings.TrimSpace(s)
+	lines := strings.Split(s, "\n")
+	first, last := -1, -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "DSML") {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	if first < 0 {
+		return s
+	}
+	// 首行截断：开标记之前的正文前缀保留
+	// dsmlFeature 匹配泄漏标记的任意特征（ASCII/全角管道混排）——
+	// first..last 之间的行只有不含任何特征的才保留：参数值行通常与
+	// 标记同行会丢，但纯值行残留比丢正文可接受
+	feature := func(ln string) bool {
+		return strings.Contains(ln, "DSML") || strings.Contains(ln, "<｜") ||
+			strings.Contains(ln, "｜｜") || strings.Contains(ln, "<|") ||
+			strings.Contains(ln, "|>")
+	}
+	var out []string
+	out = append(out, lines[:first]...)
+	if pfx := strings.SplitN(lines[first], "<", 2)[0]; strings.TrimSpace(pfx) != "" {
+		out = append(out, pfx)
+	}
+	for i := first + 1; i <= last; i++ {
+		if !feature(lines[i]) {
+			out = append(out, lines[i])
+		}
+	}
+	if last+1 < len(lines) {
+		out = append(out, lines[last+1:]...)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
