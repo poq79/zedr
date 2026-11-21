@@ -1,4 +1,4 @@
-//go:build !etw
+//go:build windows && !etw
 
 package main
 

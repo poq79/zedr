@@ -4,6 +4,11 @@
 # evtlog）占检测面大头，只在 Linux 上跑测试等于放行了半座仓库。
 # 注意：部分 winapi 测试在非管理员环境可能受限——首跑失败属"发现 CI
 # 环境差异"而非代码问题，按实际输出收窄范围，不要静默 skip。
+#
+# 首跑实测（2026-11-21，run 44890432738）：web 绿；linux 死在 vet——
+# cmd/diag 是 windows-only 包，linux ./... 必须能 vet 过（stub_other.go
+# 占位）；windows 死在 test——runner 的 Defender 实时防护拦截测试二进制
+# （EICAR/攻击链夹具与杀软天然互斥，v0.9.12 本机同款），禁实时防护后重跑。
 name: ci
 
 on:
@@ -22,6 +27,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.3'
+      # 检测面测试夹具（EICAR/攻击链样本结构）会被 Defender 实时防护
+      # 当作真实威胁拦截（Access is denied），runner 用完即销毁，
+      # 禁用实时防护是安全产品 CI 的惯例做法，不影响 runner 隔离性。
+      - name: disable Defender realtime protection
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
       - name: go vet
         run: go vet ./...
       - name: go test
