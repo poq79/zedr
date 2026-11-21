@@ -67,3 +67,41 @@ jobs:
           cache-dependency-path: webapp/package-lock.json
       - run: npm ci
       - run: npm run build
+      # 构建产物上传为 artifact：开发机 node 环境不稳定（跨天回收）时，
+      # bundle 从 CI 拉回入库（go:embed 消费路径），见 overview.md。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webapp-static
+          path: internal/server/web/static/
+          retention-days: 14
+
+  # Release 构建附件（推广备忘录待办）：推 tag 触发，四件套 zip 挂到
+  # GitHub Release。构建口径与 scripts/build.sh 一致：禁 -s -w 剥符号
+  # （§5.1：剥离符号会被判为加壳样本），版本注入三 main（-X main.version）。
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+      - name: build all four (windows + linux)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for target in "windows amd64 .exe" "linux amd64 .linux"; do
+            set -- $target
+            GOOS=$1 GOARCH=$2 go build -ldflags "-X main.version=$VERSION" -o "zedr-server$3" ./cmd/server
+            GOOS=$1 GOARCH=$2 go build -ldflags "-X main.version=$VERSION" -o "zedr-agent$3" ./cmd/agent
+            GOOS=$1 GOARCH=$2 go build -ldflags "-X main.version=$VERSION" -o "zedr-ui$3" ./cmd/desktop
+            GOOS=$1 GOARCH=$2 go build -ldflags "-X main.version=$VERSION" -o "zedr-diag$3" ./cmd/diag
+            zip -j "zedr-deploy-$1.zip" "zedr-server$3" "zedr-agent$3" "zedr-ui$3" "zedr-diag$3"
+          done
+          ls -la *.zip
+      - name: upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zedr-deploy-*.zip
+          generate_release_notes: true
