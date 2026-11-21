@@ -745,7 +745,9 @@ func (d *Defense) churnPath(p string) bool {
 // 不同=2（批量改后缀是加密器强特征）、相同或旧名未知=1；其余不计。
 // 高频增删目录（缓存/临时目录）恒为 0。
 func (d *Defense) rateWeight(ev Event) int {
-	if ev.Path != "" && strings.ContainsRune(ev.Path, '\\') && d.churnPath(ev.Path) {
+	// 路径分隔符两种都要认：unix 路径只有 /，首版只查 \ 导致 linux 上
+	// churn 过滤整体短路（GitHub Actions linux job 首跑实测抓出）
+	if ev.Path != "" && (strings.ContainsRune(ev.Path, '\\') || strings.ContainsRune(ev.Path, '/')) && d.churnPath(ev.Path) {
 		return 0
 	}
 	switch ev.Kind {
