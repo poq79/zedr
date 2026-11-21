@@ -1,6 +1,7 @@
 package drill
 
 import (
+	"runtime"
 	"context"
 	"encoding/json"
 	"io"
@@ -127,16 +128,22 @@ func TestStepGatesProduceSkippedWithoutSpawning(t *testing.T) {
 		deps Deps
 		step string
 		want string // Note 应包含的片段
+		// winOnly：Windows 才断言 Note 片段（E1 等平台专属信号源在
+		// Linux 上以平台理由跳过，Note 不同——GitHub Actions 首跑实测）。
+		winOnly bool
 	}{
-		{"proc 无快照", Deps{}, StepProcChain, "ProcSnapshot"},
-		{"portscan 关网检", Deps{NetWatchEnabled: false}, StepPortScan, "NETWATCH"},
-		{"portscan 无告警源", Deps{NetWatchEnabled: true}, StepPortScan, "AlertsSince"},
-		{"svcevt 关 E1", Deps{EvtLogEnabled: false}, StepServiceEvt, "EVTLOG"},
-		{"canary 未接线", Deps{}, StepCanaryTouch, "CanaryFile"},
-		{"canary 无诱饵", Deps{CanaryFile: func() string { return "" }, AlertsSince: func(time.Time) []AlertView { return nil }}, StepCanaryTouch, "诱饵"},
-		{"reg 无告警源", Deps{}, StepRegRun, "AlertsSince"},
+		{"proc 无快照", Deps{}, StepProcChain, "ProcSnapshot", false},
+		{"portscan 关网检", Deps{NetWatchEnabled: false}, StepPortScan, "NETWATCH", false},
+		{"portscan 无告警源", Deps{NetWatchEnabled: true}, StepPortScan, "AlertsSince", false},
+		{"svcevt 关 E1", Deps{EvtLogEnabled: false}, StepServiceEvt, "EVTLOG", true},
+		{"canary 未接线", Deps{}, StepCanaryTouch, "CanaryFile", false},
+		{"canary 无诱饵", Deps{CanaryFile: func() string { return "" }, AlertsSince: func(time.Time) []AlertView { return nil }}, StepCanaryTouch, "诱饵", false},
+		{"reg 无告警源", Deps{}, StepRegRun, "AlertsSince", false},
 	}
 	for _, c := range cases {
+		if c.winOnly && runtime.GOOS != "windows" {
+			continue
+		}
 		c.deps.Log = testLogger(t)
 		res := runStep(context.Background(), c.step, c.deps)
 		if res.skipped != true || res.Hit || !strings.Contains(res.Note, c.want) {

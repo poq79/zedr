@@ -714,6 +714,10 @@ func (d *Defense) rateActive(when time.Time) bool {
 // 封顶兜底（见 Defense.usnWeight 注释），不再"保留计数"。
 var churnMarkers = []string{
 	`\appdata\local\temp\`, `\appdata\local\temp-`, `\windows\temp\`,
+	// unix 风格（churnPath 会把 / 归一成 \，所以 `\tmp\` 同时覆盖
+	// Linux 的 /tmp 与 Windows 的任意 \tmp\ 目录）——GitHub Actions
+	// linux job 的 t.TempDir()=/tmp/... 首跑实测漏网
+	`\tmp\`, `\var\tmp\`,
 	`\cache\`, `\cache_data`, `\code cache`, `\gpucache`, `\inetcache\`,
 	`\crashpad\`, `\go-build\`, `\npm-\`, `\pip-\`, `\.tmp`,
 	`$recycle.bin`, `\recycle`,

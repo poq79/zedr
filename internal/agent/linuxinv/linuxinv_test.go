@@ -8,6 +8,7 @@ package linuxinv
 // 手写，实机校准项见各文件头注。
 
 import (
+	"runtime"
 	"log/slog"
 	"strings"
 	"testing"
@@ -199,9 +200,18 @@ func TestRegisterAllSmoke(t *testing.T) {
 	if !strings.Contains(byName["startup"], "/etc/cron.d/x") {
 		t.Errorf("startup 注入 payload 异常: %s", byName["startup"])
 	}
-	// Windows 上的降级行为锚定：packages 诚实标注 unknown（不冒充 0 包）
-	if byName["packages"] == "" || !strings.Contains(byName["packages"], `"manager":"unknown"`) {
-		t.Errorf("packages 节在无包管理器环境应返回 unknown 口径: %v", byName["packages"])
+	// 降级行为锚定：Windows 上 packages 诚实标注 unknown（不冒充 0 包）；
+	// 真 Linux（GitHub Actions 首跑实测）有 dpkg → manager 是真实枚举值，
+	// 断言"有 manager 字段且非空"即可。
+	if byName["packages"] == "" {
+		t.Fatal("packages 节应产出")
+	}
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(byName["packages"], `"manager":"unknown"`) {
+			t.Errorf("packages 节在无包管理器环境应返回 unknown 口径: %v", byName["packages"])
+		}
+	} else if !strings.Contains(byName["packages"], `"manager":"`) {
+		t.Errorf("packages 节应带 manager 字段: %v", byName["packages"])
 	}
 }
 

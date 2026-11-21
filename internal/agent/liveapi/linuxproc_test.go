@@ -5,6 +5,7 @@
 package liveapi
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -151,15 +152,23 @@ func TestParseOSReleasePretty(t *testing.T) {
 
 func TestProcStarttimeUnixAnchoring(t *testing.T) {
 	// 锚定逻辑不读文件的部分：ticks=0（boot 期进程）→ 恰为 boot 时刻。
-	// 文件读取部分（/proc）在 Windows 上不存在，procStarttimeUnix 返回 0
-	// ——这也是 IO 壳在非 Linux 平台"天然不执行"的佐证。
-	if ts := procStarttimeUnix(1, time.Now()); ts != 0 {
+	// 文件读取部分（/proc）平台自适应：Windows 上不存在 → 返回 0（诚实
+	// 未知，IO 壳"天然不执行"的佐证）；真 Linux 上（GitHub Actions 首跑
+	// 实测 ubuntu runner 有 /proc）→ 应返回真实的 boot 偏移时间戳。
+	ts := procStarttimeUnix(1, time.Now())
+	if runtime.GOOS == "linux" {
+		if ts <= 0 {
+			t.Errorf("Linux 上 /proc 存在，PID 1 应能取到正时间戳: %d", ts)
+		}
+	} else if ts != 0 {
 		t.Errorf("Windows 上 /proc 不存在，应返回 0（诚实未知）: %d", ts)
 	}
-	if procIsRootEuid(1) {
-		t.Errorf("Windows 上 /proc 不存在，root 判定应 false")
-	}
-	if owners := procInodeOwners(map[uint64]struct{}{1: {}}); len(owners) != 0 {
-		t.Errorf("Windows 上 /proc 不存在，归属表应为空")
+	if runtime.GOOS != "linux" {
+		if procIsRootEuid(1) {
+			t.Errorf("Windows 上 /proc 不存在，root 判定应 false")
+		}
+		if owners := procInodeOwners(map[uint64]struct{}{1: {}}); len(owners) != 0 {
+			t.Errorf("Windows 上 /proc 不存在，归属表应为空")
+		}
 	}
 }
