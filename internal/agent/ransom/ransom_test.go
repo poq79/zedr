@@ -434,7 +434,7 @@ func TestNilDefenseSafe(t *testing.T) {
 // 这类目录的批量增删是正常软件行为，必须在权重层剔除而不是靠定级兜底。
 func TestChurnDirsExcludedFromRate(t *testing.T) {
 	dir := t.TempDir()
-	d, r, ck := newDefense(t, []string{dir}, withBuiltinChurn)
+	d, r, ck := newDefense(t, []string{dir}, func(o *Options) { o.ChurnMarkers = []string{`\cache\`} })
 	cache := filepath.Join(dir, "Cache", "Cache_Data")
 	for i := 0; i < 30; i++ {
 		d.Consume(Event{Kind: "removed",

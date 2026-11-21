@@ -83,7 +83,11 @@ func TestWebhookDeliversSignedPayload(t *testing.T) {
 func TestWebhookBackpressureDoesNotBlock(t *testing.T) {
 	// 端点故意挂起不响应：队列会被填满并开始丢弃
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {}
+		// 模拟永不响应的慢服务器：等 client 断开（request context 取消）
+		// 再退出。不能用 select{}——handler goroutine 永不返回会让
+		// srv.Close() 的 WaitGroup 永久挂死（GitHub Actions linux job
+		// 实测 10min 超时整包失败；本机因 worker 时序侥幸不触发）。
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 
