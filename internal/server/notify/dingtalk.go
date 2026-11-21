@@ -113,7 +113,7 @@ func buildDingTalkCard(a domain.Alert, consoleURL string) map[string]any {
 	if consoleURL != "" {
 		ac["btnOrientation"] = "0"
 		ac["btns"] = []any{
-			map[string]any{"title": "前往处理", "actionURL": consoleURL},
+			map[string]any{"title": "查看并处置", "actionURL": consoleURL + "/#/alerts?open=" + a.ID},
 		}
 	}
 	return map[string]any{"msgtype": "actionCard", "actionCard": ac}

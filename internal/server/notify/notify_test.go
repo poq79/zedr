@@ -171,8 +171,11 @@ func TestFeishuDeliversInteractiveCard(t *testing.T) {
 			btnURL = jstr(t, m, "actions", 0, "url")
 		}
 	}
-	if btnURL != console {
-		t.Fatalf("前往处理按钮 URL = %q，期望 %q", btnURL, console)
+	// 2026-11-21 深链契约：按钮直达告警详情抽屉（#/alerts?open=<id>），
+	// 打开即见证据链与确认处置——不再落管理台根让分析员自己找
+	wantBtn := console + "/#/alerts?open=a-9"
+	if btnURL != wantBtn {
+		t.Fatalf("前往处理按钮 URL = %q，期望 %q", btnURL, wantBtn)
 	}
 }
 
@@ -275,8 +278,8 @@ func TestDingTalkSignAndActionCard(t *testing.T) {
 		if strings.Contains(text, "hunter2") {
 			t.Fatal("口令明文出现在钉钉卡片中——脱敏失效")
 		}
-		if jstr(t, ac, "btns", 0, "actionURL") != console {
-			t.Fatalf("按钮 actionURL = %v，期望 %s", ac["btns"], console)
+		if jstr(t, ac, "btns", 0, "actionURL") != console+"/#/alerts?open=a-9" {
+			t.Fatalf("按钮 actionURL = %v，期望 %s/#/alerts?open=a-9", ac["btns"], console)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("未收到钉钉请求")
@@ -337,8 +340,8 @@ func TestSlackDeliversAttachment(t *testing.T) {
 	if title := att["title"].(string); !strings.Contains(title, "[Z-EDR][CRITICAL]") {
 		t.Fatalf("标题契约不符: %q", title)
 	}
-	if att["title_link"] != console {
-		t.Fatalf("title_link = %v，期望 %s", att["title_link"], console)
+	if att["title_link"] != console+"/#/alerts?open=a-9" {
+		t.Fatalf("title_link = %v，期望 %s/#/alerts?open=a-9", att["title_link"], console)
 	}
 	text := att["text"].(string)
 	if strings.Contains(text, "hunter2") {

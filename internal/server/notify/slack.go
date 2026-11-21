@@ -66,7 +66,7 @@ func buildSlackPayload(a domain.Alert, consoleURL string) map[string]any {
 		"ts":     a.CreatedAt.Unix(),
 	}
 	if consoleURL != "" {
-		att["title_link"] = consoleURL
+		att["title_link"] = consoleURL + "/#/alerts?open=" + a.ID
 	}
 	return map[string]any{"attachments": []any{att}}
 }

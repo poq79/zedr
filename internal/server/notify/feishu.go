@@ -429,14 +429,16 @@ func buildFeishuCard(a domain.Alert, consoleURL string) map[string]any {
 	// "前往处理"链接：URL 只来自运营配置（HG_SERVER_CONSOLE_URL），不硬编码。
 	// 未配置时不伪造地址——落"告警 ID"占位，运维凭 ID 在管理台告警页检索。
 	if consoleURL != "" {
+		// 深链直达告警详情抽屉（HashRouter）：打开即见完整证据链与
+		// 确认处置按钮——闭环从"去管理台找"变成"点开就处理"
 		elements = append(elements, map[string]any{
 			"tag": "action",
 			"actions": []any{
 				map[string]any{
 					"tag":  "button",
-					"text": map[string]any{"tag": "plain_text", "content": "前往处理"},
+					"text": map[string]any{"tag": "plain_text", "content": "查看并处置"},
 					"type": "primary",
-					"url":  consoleURL,
+					"url":  consoleURL + "/#/alerts?open=" + a.ID,
 				},
 			},
 		})
