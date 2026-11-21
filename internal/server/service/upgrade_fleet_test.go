@@ -40,7 +40,7 @@ func newFleetHarness(t *testing.T, waveSize int, timeout time.Duration) (*fleetH
 	return &fleetHarness{
 		svc: svc,
 		ups: func(_ context.Context, id, version string) error {
-			return repos.Agents.UpdateHeartbeat(ctx, id, time.Now(), 10, 1.0, 2.0, 0, "10.0.0.1", version)
+			return repos.Agents.UpdateHeartbeat(ctx, id, time.Now(), 10, 1.0, 2.0, 0, "10.0.0.1", version, false)
 		},
 		fail: func(_ context.Context, cmdID, detail string) error {
 			return repos.Commands.Complete(ctx, cmdID, "failed", detail, time.Now())

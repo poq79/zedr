@@ -509,6 +509,15 @@ ALTER TABLE users ADD COLUMN totp_secret  TEXT    NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		name: "013_host_isolation",
+		sql: `
+-- 主机网络隔离（R+3）：隔离状态落库（探针心跳为事实源，指令回执
+-- 可能丢）。server 重启后状态仍在——"这台机器正在被隔离"必须跨
+-- 管理台重启可见，否则值班换班没人知道网络为什么断了。
+ALTER TABLE agents ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -28,6 +28,10 @@ type Config struct {
 	// 方向不可逆。与 drill 同纪律：服务端总开关 + 终端侧 HG_AGENT_UPGRADE_ENABLED
 	// 第二道闸，单侧误开不会真的换装。物料（升级包路径/版本）另行配置。
 	UpgradeEnabled bool
+	// IsolationEnabled 是主机网络隔离指令（isolate_host/release_host）的
+	// 服务端闸门（R+3）：隔离切断终端业务网络，默认关 + 终端侧第二道闸；
+	// adminOnly 发起、全程审计、不做自动隔离（产品宪法）。
+	IsolationEnabled bool
 	// UpgradeWaveSize/WaveTimeout 是批量升级编排的波次参数（0=服务内默认
 	// 10 台 / 10min）：波次越小爆炸半径越小，但批次拖得越长——按舰队规模
 	// 与维护窗口权衡。

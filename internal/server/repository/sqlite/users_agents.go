@@ -181,7 +181,8 @@ func (r *tokenRepo) DeleteExpired(ctx context.Context, before time.Time) (int64,
 type agentRepo struct{ s *Store }
 
 const agentCols = `id, hostname, os_version, arch, username, ip, tags, version, machine_id,
-	secret_hash, status, enrolled_at, last_seen_at, proc_count, cpu_percent, mem_mb, rule_version`
+	secret_hash, status, enrolled_at, last_seen_at, proc_count, cpu_percent, mem_mb, rule_version,
+	isolated`
 
 func scanAgent(sc interface{ Scan(...any) error }) (*domain.Agent, error) {
 	var (
@@ -190,10 +191,11 @@ func scanAgent(sc interface{ Scan(...any) error }) (*domain.Agent, error) {
 		status   string
 		enrolled int64
 		lastSeen int64
+		isolated int
 	)
 	err := sc.Scan(&a.ID, &a.Hostname, &a.OSVersion, &a.Arch, &a.Username, &a.IP, &tags, &a.Version,
 		&a.MachineID, &a.SecretHash, &status, &enrolled, &lastSeen,
-		&a.ProcCount, &a.CPUPercent, &a.MemMB, &a.RuleVersion)
+		&a.ProcCount, &a.CPUPercent, &a.MemMB, &a.RuleVersion, &isolated)
 	if err != nil {
 		return nil, err
 	}
@@ -201,12 +203,13 @@ func scanAgent(sc interface{ Scan(...any) error }) (*domain.Agent, error) {
 	a.Status = domain.AgentStatus(status)
 	a.EnrolledAt = fromMillis(enrolled)
 	a.LastSeenAt = fromMillis(lastSeen)
+	a.Isolated = isolated != 0
 	return &a, nil
 }
 
 func (r *agentRepo) Upsert(ctx context.Context, a *domain.Agent) error {
 	_, err := r.s.db.ExecContext(ctx,
-		`INSERT INTO agents(`+agentCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO agents(`+agentCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   hostname=excluded.hostname, os_version=excluded.os_version, arch=excluded.arch,
 		   username=excluded.username, ip=excluded.ip, tags=excluded.tags, version=excluded.version,
@@ -214,7 +217,7 @@ func (r *agentRepo) Upsert(ctx context.Context, a *domain.Agent) error {
 		   last_seen_at=excluded.last_seen_at`,
 		a.ID, a.Hostname, a.OSVersion, a.Arch, a.Username, a.IP, joinCSV(a.Tags), a.Version,
 		a.MachineID, a.SecretHash, string(a.Status), millis(a.EnrolledAt), millis(a.LastSeenAt),
-		a.ProcCount, a.CPUPercent, a.MemMB, a.RuleVersion)
+		a.ProcCount, a.CPUPercent, a.MemMB, a.RuleVersion, a.Isolated)
 	if err != nil {
 		return fmt.Errorf("保存终端失败: %w", err)
 	}
@@ -266,14 +269,15 @@ func (r *agentRepo) List(ctx context.Context) ([]domain.Agent, error) {
 	return out, rows.Err()
 }
 
-func (r *agentRepo) UpdateHeartbeat(ctx context.Context, id string, at time.Time, procCount int, cpu, mem float64, ruleVersion int, ip, version string) error {
+func (r *agentRepo) UpdateHeartbeat(ctx context.Context, id string, at time.Time, procCount int, cpu, mem float64, ruleVersion int, ip, version string, isolated bool) error {
 	_, err := r.s.db.ExecContext(ctx,
 		`UPDATE agents SET last_seen_at = ?, status = 'online', proc_count = ?, cpu_percent = ?,
 		 mem_mb = ?, rule_version = CASE WHEN ? > 0 THEN ? ELSE rule_version END,
 		 ip = CASE WHEN ? <> '' THEN ? ELSE ip END,
-		 version = CASE WHEN ? <> '' THEN ? ELSE version END
+		 version = CASE WHEN ? <> '' THEN ? ELSE version END,
+		 isolated = ?
 		 WHERE id = ?`,
-		millis(at), procCount, cpu, mem, ruleVersion, ruleVersion, ip, ip, version, version, id)
+		millis(at), procCount, cpu, mem, ruleVersion, ruleVersion, ip, ip, version, version, isolated, id)
 	if err != nil {
 		return fmt.Errorf("更新心跳失败: %w", err)
 	}

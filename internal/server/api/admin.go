@@ -293,6 +293,12 @@ func (h *adminHandler) sendCommand(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, apperr.Forbidden("探针自升级仅管理员可发起"))
 		return
 	}
+	// 主机网络隔离切断整台终端的业务网络，是响应动作里业务影响最大的
+	// 一类——与自升级同级收口到 admin（R+3）。审计行已带操作者。
+	if req.Type == "isolate_host" && p.Role != domain.RoleAdmin {
+		httpx.WriteError(w, r, apperr.Forbidden("主机网络隔离仅管理员可发起"))
+		return
+	}
 	id := r.PathValue("id")
 	c, err := h.deps.Services.Agent.EnqueueCommand(r.Context(), id, req.Type, req.Payload, p.Username)
 	if err != nil {

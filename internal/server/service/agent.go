@@ -198,7 +198,7 @@ func (s *AgentService) Heartbeat(ctx context.Context, agentID string, req model.
 		}
 	}
 	if err := s.repos.Agents.UpdateHeartbeat(ctx, agentID, now,
-		req.ProcCount, req.CPUPercent, req.MemMB, req.RuleVersion, ip, req.Version); err != nil {
+		req.ProcCount, req.CPUPercent, req.MemMB, req.RuleVersion, ip, req.Version, req.Isolated); err != nil {
 		return nil, err
 	}
 	if wasOffline && s.sensor != nil {
@@ -318,6 +318,15 @@ func (s *AgentService) EnqueueCommand(ctx context.Context, agentID, typ, payload
 		// 时探针侧拉清单会 503，回执 failed，不会换出坏状态。
 		if !s.cfg.UpgradeEnabled {
 			return nil, apperr.Forbidden("服务端未启用探针自升级（HG_SERVER_UPGRADE_ENABLED）")
+		}
+	case "isolate_host", "release_host":
+		// 主机网络隔离（R+3）：切断终端业务网络是响应动作里业务影响
+		// 最大的一类。release 也过同一闸——解除是放行性操作，但闸门
+		// 语义必须成对（服务端关闸 = 这个方向整体禁用，避免"只许关
+		// 不许开"的半开状态让运维困惑；终端侧 release 不设闸，两侧
+		// 语义不同是刻意的：终端侧重在"永远有解救路径"）。
+		if !s.cfg.IsolationEnabled {
+			return nil, apperr.Forbidden("服务端未启用主机网络隔离（HG_SERVER_ISOLATION_ENABLED）")
 		}
 	case "rescan", "sync_rules", "collect":
 		// 只读类动作始终允许

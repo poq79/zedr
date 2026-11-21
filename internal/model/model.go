@@ -242,6 +242,10 @@ type HeartbeatRequest struct {
 	// AllowHits 是白名单条目命中计数快照，key="type:value"（与规则包
 	// AllowDTO 同构）。整包替换 allow_observations。
 	AllowHits map[string]int64 `json:"allow_hits,omitempty"`
+	// Isolated 是主机网络隔离状态（R+3，探针侧事实源）：true=防火墙
+	// 隔离规则在位。以心跳为准——指令回执可能丢，状态语义必须单调
+	// 可靠。老探针不发此字段（零值 false），服务端不会误判。
+	Isolated bool `json:"isolated,omitempty"`
 }
 
 // DetectorStats 是本地检测器计数，便于观察去噪效果。

@@ -96,7 +96,7 @@ type AgentRepo interface {
 	ByID(ctx context.Context, id string) (*domain.Agent, error)
 	ByMachineID(ctx context.Context, machineID string) (*domain.Agent, error)
 	List(ctx context.Context) ([]domain.Agent, error)
-	UpdateHeartbeat(ctx context.Context, id string, at time.Time, procCount int, cpu, mem float64, ruleVersion int, ip, version string) error
+	UpdateHeartbeat(ctx context.Context, id string, at time.Time, procCount int, cpu, mem float64, ruleVersion int, ip, version string, isolated bool) error
 	MarkOfflineBefore(ctx context.Context, threshold time.Time) (int64, error)
 	// StaleOnline 列出仍标记 online 但 last_seen 已越过阈值的终端——
 	// MarkOffline 先取转变清单再翻转：失联告警需要"逐台转变"事实，

@@ -143,6 +143,12 @@ type Config struct {
 	KillEnabled       bool
 	QuarantineEnabled bool
 	DrillEnabled      bool // 检测演练指令总开关（HG_SERVER_DRILL_ENABLED，默认关）
+	// IsolationEnabled 是主机网络隔离指令（isolate_host/release_host）
+	// 的服务端总闸（R+3）：隔离会切断终端业务网络，方向高危且影响
+	// 业务连续性，与 kill/quarantine 同纪律默认关 + 终端侧
+	// HG_AGENT_ISOLATION_ENABLED 第二道闸；仅 admin 可发起并全程审计。
+	// 不做自动隔离（产品宪法：响应动作不得自动处置）。
+	IsolationEnabled bool
 	// 传感器失联告警（SEN-OFFLINE）：默认开——这是"探针挂了没人知道"的
 	// 闭环，属运营级信号不属处置类，无需双层开关；严重度默认 medium
 	// （通知门槛默认 high，即默认只留档不外推，调 high 才推手机/SIEM）。
@@ -263,6 +269,9 @@ func LoadConfig() (*Config, error) {
 	// 检测演练默认关：会让探针在目标机器跑受控自测，只在交付验收/
 	// 升级回归场景显式打开（终端侧 HG_AGENT_DRILL_ENABLED 是第二道闸）
 	c.DrillEnabled = l.Bool("HG_SERVER_DRILL_ENABLED", false)
+	// 主机网络隔离默认关：切断终端业务网络是响应动作里业务影响最大的
+	// 一类（kill 只影响单进程，隔离影响整台机器的对外通信）
+	c.IsolationEnabled = l.Bool("HG_SERVER_ISOLATION_ENABLED", false)
 	c.SensorOfflineAlerts = l.Bool("HG_SERVER_SENSOR_OFFLINE_ALERTS", true)
 	c.SensorOfflineSeverity = l.Env("HG_SERVER_SENSOR_OFFLINE_SEVERITY", "medium")
 	// 简报推送默认关（用户口径：小批量/本机测试零繁琐，主动推送类一律显式打开）

@@ -111,6 +111,10 @@ type Agent struct {
 	// >0 说明该终端存在"告警黑洞"，需要在容量或网络上排查。
 	QueueDropped int64 `json:"queue_dropped,omitempty"`
 	RuleVersion int         `json:"rule_version"`
+	// Isolated 是主机网络隔离状态（R+3）：探针心跳为事实源。true 时
+	// 主机面板显示隔离徽章——离线且隔离的终端是最高危组合（对手可能
+	// 杀了探针让隔离无人解除）。
+	Isolated    bool        `json:"isolated"`
 	OpenAlerts  int         `json:"open_alerts"`
 }
 
