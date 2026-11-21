@@ -9,22 +9,34 @@ export interface User { id: number; username: string; role: Role }
 
 export interface Alert {
   id: string; /* 服务端生成的十六进制 ID（不是数字） */
+  agent_id?: string;
   hostname: string;
+  fingerprint?: string;
   pid: number;
+  ppid?: number;
   process_name: string;
   image_path?: string;
   cmdline?: string;
+  proc_user?: string;
+  signer?: string;
+  signed?: boolean;
   title: string;
   severity: Severity;
   status: AlertStatus;
   score: number;
   verdict?: Verdict;
   rule_ids?: string[];
+  mitre?: string[];
   duplicate?: number;
   created_at: string;
+  occurred_at?: string;
   hash_sha256?: string;
   summary?: string;
   evidence?: Evidence;
+  handled_by?: string;
+  handled_at?: string | null;
+  note?: string;
+  host_count?: number;
 }
 
 export interface Evidence {
@@ -43,6 +55,9 @@ export interface Host {
   open_alerts?: number; last_seen_at: string; clock_skew_ms?: number;
   /** 主机网络隔离状态（R+3，探针心跳为事实源） */
   isolated?: boolean;
+  /* 以下为契约对拍补齐（2026-11-21，服务端 domain.Agent 实际下发面） */
+  ip?: string; tags?: string[]; machine_id?: string;
+  enrolled_at?: string; rule_version?: number; queue_dropped?: number;
 }
 
 export interface AllowEntry { id: number; type: string; value: string; note?: string; created_at?: string; created_by?: string; hits?: number }
