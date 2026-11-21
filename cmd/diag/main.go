@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"zedr/internal/agent/isolate"
 	"zedr/internal/agent/winapi"
 )
 
@@ -50,7 +51,22 @@ func main() {
 	chainTest := flag.Bool("chaintest", false, "攻击链关联自测：把自身复制到 %TEMP%\\hg-chaintest-* 后从该目录"+
 		"重新执行（子进程=落地未签名程序 → -netburst 外联，构成 CHAIN-DROP-EXEC-C2 的两阶段样本），"+
 		"父进程等待子进程退出后清理；全程零外部下载、零真实恶意内容")
+	unisolate := flag.Bool("unisolate", false, "本地解救：删除 Z-EDR 主机网络隔离的全部防火墙规则。"+
+		"管理台不可达时的应急通道（隔离轮 R+3），对齐 MDE 强制释放的 kill-switch 语义；"+
+		"这是唯一一个立即执行并退出的模式")
 	flag.Parse()
+
+	// -unisolate 是应急工具：立即执行立即退出，不做其余自检（被隔离的
+	// 机器上跑全量自检只会浪费时间——网络都被断了）。
+	if *unisolate {
+		n, err := isolate.NewPlatformFW().DeleteByPrefix(isolate.RulePrefix)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "!! 删除隔离规则失败（需要管理员权限）: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("已删除 Z-EDR 隔离规则 %d 条，网络已恢复。建议在管理台同步确认该主机隔离状态已清除。\n", n)
+		return
+	}
 
 	fmt.Println("=== Z-EDR 采集层自检 ===")
 	fmt.Printf("OS      : %s\n", winapi.OSVersion())
