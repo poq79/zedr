@@ -627,7 +627,11 @@ func (a *App) backupDB(ctx context.Context) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	dst := filepath.Join(dir, fmt.Sprintf("zedr-server-%s.db", time.Now().Format("20060102-1504")))
+	// 时间戳精确到秒且先清理同名残留：VACUUM INTO 要求目标不存在，
+	// 同一分钟内两次备份（重启循环/手动触发）会用同名文件撞 400 错
+	stamp := time.Now().Format("20060102-150405")
+	dst := filepath.Join(dir, fmt.Sprintf("zedr-server-%s.db", stamp))
+	_ = os.Remove(dst)
 	if _, err := a.store.DB().ExecContext(ctx, `VACUUM INTO ?`, dst); err != nil {
 		return "", fmt.Errorf("VACUUM INTO 失败: %w", err)
 	}
