@@ -387,6 +387,9 @@ export function HostsPage({ user }: { user: UserRow }) {
                   className="cursor-pointer border-b border-border-soft transition-colors last:border-b-0 hover:bg-secondary">
                   <td className="px-3.5 py-2.5">
                     <Badge tone={h.status}>{h.status === 'online' ? '在线' : '离线'}</Badge>
+                    {h.isolated && (
+                      <div className="mt-1"><Badge tone="critical" title="主机网络隔离生效中：业务网络已被切断，仅保留管理通道">已隔离</Badge></div>
+                    )}
                     {(h.clock_skew_ms || 0) > 10000 && (
                       <div className="mt-1"><Badge tone="medium" title="终端与服务端时钟偏移超过 10 秒">时钟偏移 {Math.round(h.clock_skew_ms! / 1000)}s</Badge></div>
                     )}

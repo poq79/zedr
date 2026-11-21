@@ -41,6 +41,8 @@ export interface Host {
   username?: string; status: 'online' | 'offline';
   proc_count?: number; cpu_percent?: number; mem_mb?: number;
   open_alerts?: number; last_seen_at: string; clock_skew_ms?: number;
+  /** 主机网络隔离状态（R+3，探针心跳为事实源） */
+  isolated?: boolean;
 }
 
 export interface AllowEntry { id: number; type: string; value: string; note?: string; created_at?: string; created_by?: string; hits?: number }

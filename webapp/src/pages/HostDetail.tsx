@@ -26,6 +26,7 @@ const CMD_LABEL: Record<string, string> = {
   rescan: '重新扫描', sync_rules: '同步规则', collect: '采集清单',
   terminate: '终止进程', quarantine_file: '隔离文件', quarantine_restore: '恢复隔离',
   self_upgrade: '自升级', drill: '检测演练',
+  isolate_host: '网络隔离', release_host: '解除隔离',
 };
 const CMD_STATUS_TONE: Record<string, string> = {
   pending: 'medium', delivered: 'info', done: 'resolved', failed: 'critical',
@@ -402,6 +403,7 @@ export function HostDetailPage({ user }: { user: User }) {
           <div className="flex items-center gap-2.5">
             <h1 className="m-0 text-[18px] font-semibold tracking-tight">{host?.hostname ?? '…'}</h1>
             {host && <Badge tone={host.status}>{host.status === 'online' ? '在线' : '离线'}</Badge>}
+            {host?.isolated && <Badge tone="critical" title="网络隔离生效中：业务网络已切断，仅保留管理通道">已隔离</Badge>}
             {(host?.clock_skew_ms || 0) > 10000 && <Badge tone="medium" title="终端与服务端时钟偏移超过 10 秒">时钟偏移 {Math.round(host!.clock_skew_ms! / 1000)}s</Badge>}
           </div>
           <div className="mt-0.5 font-mono text-[11.5px] text-faint">{id}{host ? ` · ${host.os_version} · ${host.arch} · 探针 v${host.version}` : ''}</div>
@@ -644,6 +646,26 @@ export function HostDetailPage({ user }: { user: User }) {
                         message: `将向终端下发进程终止指令（PID ${qPid.trim()}）。\n请确认 PID 属于恶意进程——误杀系统进程可能导致蓝屏或服务中断。`,
                       })}>终止进程</Button>
                     <span className="text-[11px] text-ghost">处置类指令需服务端与终端双侧开关开启；下发前先在告警详情核对证据</span>
+                  </div>
+                  {/* 主机网络隔离（R+3）：业务影响最大的响应动作，admin 专属。
+                      解除按钮不受终端开关约束（永远有解救路径），且隔离中
+                      无论谁都能点——被隔离机器必须永远有路回来。 */}
+                  <div className="flex flex-wrap items-center gap-2 border-t border-border-soft pt-2.5">
+                    <Button variant="danger" size="sm" disabled={!!cmdBusy || host?.status !== 'online' || isLinux || !!host?.isolated}
+                      title={host?.isolated ? '该主机已处于隔离态' : isLinux ? 'Linux 隔离暂未支持' : undefined}
+                      onClick={() => send('isolate_host', '', {
+                        title: '对这台主机执行网络隔离？', danger: true, okText: '隔离主机',
+                        message: '将下发防火墙隔离规则，切断该终端的业务网络（入站全断、出站仅保留到 Z-EDR 服务端/DNS），防止横向移动与数据外传。\n\n隔离 24h 自动解除（也可随时手动解除）；终端本地的 zedr-diag -unisolate 是应急恢复通道。请确认业务影响可接受。',
+                      })}>网络隔离</Button>
+                    <Button size="sm" disabled={!!cmdBusy || (!host?.isolated && host?.status !== 'online')}
+                      title={host?.isolated ? '恢复该主机的网络通信' : '该主机当前未隔离'}
+                      onClick={() => send('release_host', '', {
+                        title: '解除该主机的网络隔离？', okText: '解除隔离',
+                        message: '将删除终端上的隔离防火墙规则，恢复业务网络通信。',
+                      })}>解除隔离</Button>
+                    <span className="text-[11px] text-ghost">
+                      隔离 = 断业务网络保管理通道；仅管理员可发起，全程审计
+                    </span>
                   </div>
                 </div>
               </Card>
