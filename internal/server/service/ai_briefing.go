@@ -148,3 +148,27 @@ func (s *AIService) DailyBriefing(ctx context.Context, hours int, wantNarrative 
 	}
 	return b, nil
 }
+
+// Text 把简报渲染成 IM 推送文本（每日 0800 定时推送用）。确定性、无模型、
+// 零装饰——IM 卡片是"看一眼就知道今天要不要进控制台"，细节去管理台看。
+func (b *DailyBriefing) Text() string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("【Z-EDR 值班简报 · 近 %dh】\n", b.WindowHours))
+	sb.WriteString(fmt.Sprintf("新增告警 %d（critical %d）· 新开事件 %d · 攻击链命中 %d\n",
+		b.AlertsNew, b.CriticalNew, b.EventsOpen, b.ChainHits))
+	sb.WriteString(fmt.Sprintf("值班队列待审 %d · 失联主机 %d", b.OpsPending, b.HostsOffline))
+	if len(b.TopRules) > 0 {
+		ids := make([]string, 0, len(b.TopRules))
+		for _, r := range b.TopRules {
+			ids = append(ids, fmt.Sprintf("%s×%d", r.RuleID, r.Count))
+		}
+		sb.WriteString("\n高发规则：" + strings.Join(ids, "、"))
+	}
+	for _, a := range b.RecentCrit {
+		sb.WriteString(fmt.Sprintf("\n• [%d] %s @ %s", a.Score, a.Title, a.Hostname))
+	}
+	if b.AlertsNew == 0 && b.OpsPending == 0 && b.HostsOffline == 0 {
+		sb.WriteString("\n窗口内无新增告警、无待审、无失联——今天可以晚一点再看。")
+	}
+	return sb.String()
+}

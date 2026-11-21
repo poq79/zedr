@@ -62,11 +62,36 @@ type Channel interface {
 	Close()
 }
 
+// TextSender 是可选的纯文本推送能力（每日值班简报等非告警内容）。
+// 故意不并入 Channel：webhook/syslog 天然没有"往聊天群里发一段话"的语义，
+// 并入主接口会迫使它们实现空方法。调用方用类型断言探测，不支持的渠道跳过。
+type TextSender interface {
+	SendText(text string) error
+}
+
+var (
+	errTextClosed      = fmt.Errorf("channel stopped")
+	errTextUnsupported = fmt.Errorf("channel has no text endpoint")
+)
+
+// SendText 走渠道自身的纯文本端点（四 IM 渠道构造时注入 sendText 闭包，
+// 限流摘要卡复用同一条路）。nil 接收者语义与 Ingest 一致：调用方无需判空。
+func (c *imChannel) SendText(text string) error {
+	if c == nil || c.stopped.Load() {
+		return errTextClosed
+	}
+	if c.sendText == nil {
+		return errTextUnsupported
+	}
+	return c.sendText(text)
+}
+
 // 编译期断言：既有渠道零改动即可被统一消费，新渠道遵循同一契约。
 var (
-	_ Channel = (*Notifier)(nil)
-	_ Channel = (*SyslogNotifier)(nil)
-	_ Channel = (*imChannel)(nil)
+	_ Channel    = (*Notifier)(nil)
+	_ Channel    = (*SyslogNotifier)(nil)
+	_ Channel    = (*imChannel)(nil)
+	_ TextSender = (*imChannel)(nil)
 )
 
 // imChannel 是飞书/钉钉/Slack/邮件四个新渠道的公共骨架：

@@ -148,6 +148,11 @@ type Config struct {
 	// （通知门槛默认 high，即默认只留档不外推，调 high 才推手机/SIEM）。
 	SensorOfflineAlerts   bool
 	SensorOfflineSeverity string
+	// 每日值班简报定时推送（S10）：本地时区 BriefingHour 点把确定性统计
+	// 简报经已启用的 IM 渠道（飞书/钉钉/Slack/邮件）推出。默认关——
+	// 主动给手机推消息必须显式打开；webhook/syslog 无文本端点自动跳过。
+	BriefingPush bool
+	BriefingHour int
 	RetentionDays         int
 	// RetentionMaxMB 是库体积水位（0=不启用）：超水位时已处置告警的
 	// 保留窗半衰收缩（见 app.go janitor 循环），防磁盘异常场景无限增长。
@@ -260,6 +265,9 @@ func LoadConfig() (*Config, error) {
 	c.DrillEnabled = l.Bool("HG_SERVER_DRILL_ENABLED", false)
 	c.SensorOfflineAlerts = l.Bool("HG_SERVER_SENSOR_OFFLINE_ALERTS", true)
 	c.SensorOfflineSeverity = l.Env("HG_SERVER_SENSOR_OFFLINE_SEVERITY", "medium")
+	// 简报推送默认关（用户口径：小批量/本机测试零繁琐，主动推送类一律显式打开）
+	c.BriefingPush = l.Bool("HG_SERVER_BRIEFING_PUSH", false)
+	c.BriefingHour = l.Int("HG_SERVER_BRIEFING_HOUR", 8)
 	// 默认 180 天（2026-11-18 用户裁决：网安法 6 个月口径，SCALE.md 的
 	// "30 天 vs 6 个月"矛盾就此收口）。只清已处置（resolved/false_positive），
 	// open 不受保留窗约束——未处置的证据先于人手到达的清理周期
@@ -278,6 +286,8 @@ func LoadConfig() (*Config, error) {
 	l.Check(c.SensorOfflineSeverity == "low" || c.SensorOfflineSeverity == "medium" ||
 		c.SensorOfflineSeverity == "high",
 		"HG_SERVER_SENSOR_OFFLINE_SEVERITY 只能是 low/medium/high")
+	l.Check(c.BriefingHour >= 0 && c.BriefingHour <= 23,
+		"HG_SERVER_BRIEFING_HOUR 必须在 0-23 之间（本地时区小时）")
 	l.Check(c.NotifyFailWindows >= 1,
 		"HG_SERVER_NOTIFY_FAIL_WINDOWS 至少为 1（连续失败窗数）")
 

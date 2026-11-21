@@ -452,10 +452,15 @@ func (a *App) Run(ctx context.Context) error {
 	return nil
 }
 
-// maintenanceLoop 周期性执行：终端离线标记、令牌清理、历史告警清理。
+// maintenanceLoop 周期性执行：终端离线标记、令牌清理、历史告警清理、
+// 每日简报定时推送（仅本 goroutine 读写 lastBriefDay，无需锁）。
 func (a *App) maintenanceLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
+
+	// 简报推送去重：记"最近一次推送的本地日期"（同一小时内 60s tick
+	// 会命中多次，按天挡住）。
+	lastBriefDay := ""
 
 	for {
 		select {
@@ -558,8 +563,46 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 					a.Log.Error("audit_chain_broken", "seq", rep.BrokenAt, "reason", rep.Reason)
 				}
 			}
+
+			// 每日简报定时推送（S10）：本地时区小时命中且今天未推过才发。
+			// cron 语义——错过整点小时（服务器停机跨过 0800）不补发，
+			// 迟到的简报价值有限，补发反而打扰；下一天照常。
+			if a.Cfg.BriefingPush {
+				now := time.Now()
+				today := now.Format("2006-01-02")
+				if now.Hour() == a.Cfg.BriefingHour && lastBriefDay != today {
+					lastBriefDay = today
+					a.pushBriefing(ctx)
+				}
+			}
 		}
 	}
+}
+
+// pushBriefing 组装 24h 确定性简报并经 IM 渠道（TextSender）推送。
+// webhook/syslog 无文本端点自动跳过；简报聚合失败只记日志不重试——
+// 它是主动摘要不是告警，明天还会再来一次。
+func (a *App) pushBriefing(ctx context.Context) {
+	b, err := a.services.AI.DailyBriefing(ctx, 24, false)
+	if err != nil {
+		a.Log.Warn("briefing_push_failed", "stage", "aggregate", "err", err)
+		return
+	}
+	text := b.Text()
+	pushed := 0
+	for _, ch := range a.notifiers {
+		ts, ok := ch.(notify.TextSender)
+		if !ok {
+			continue
+		}
+		if err := ts.SendText(text); err != nil {
+			a.Log.Warn("briefing_push_failed", "stage", "send", "err", err)
+			continue
+		}
+		pushed++
+	}
+	a.Log.Info("briefing_pushed", "alerts_new", b.AlertsNew, "critical_new", b.CriticalNew,
+		"channels", pushed)
 }
 
 // Close 停止后台任务。
