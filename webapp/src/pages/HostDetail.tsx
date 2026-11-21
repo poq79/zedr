@@ -670,6 +670,46 @@ export function HostDetailPage({ user }: { user: User }) {
                 </div>
               </Card>
 
+              {/* 最近演练报告（FE-WANTED 收口）：drill 回执是整份 JSON，
+                  渲染成五步状态行——hit/skipped/失败一眼可分，AlertID 直达告警 */}
+              {(() => {
+                const drill = (cmds || []).find((c) => c.type === 'drill' && c.status === 'done' && c.result?.startsWith('{'));
+                if (!drill) return null;
+                let rep: { steps?: { name: string; expected_rule?: string; hit: boolean; latency_ms?: number; alert_id?: string; note?: string }[]; skipped?: string[] } | null = null;
+                try { rep = JSON.parse(drill.result!); } catch { return null; }
+                if (!rep?.steps?.length) return null;
+                return (
+                  <Card className="px-2 py-3.5">
+                    <div className="mb-1 flex items-center gap-2.5 px-3.5">
+                      <CardTitle>最近演练报告</CardTitle>
+                      <Badge tone={rep.steps.every((s) => s.hit) ? 'resolved' : 'medium'}>
+                        {rep.steps.filter((s) => s.hit).length}/{rep.steps.length} 步命中
+                      </Badge>
+                      <div className="flex-1" />
+                      <span className="text-[11px] text-ghost" title={fmtTime(drill.created_at || '')}>{relTime(drill.created_at || '')}</span>
+                    </div>
+                    <div className="px-3.5 pb-1.5">
+                      {rep.steps.map((s) => (
+                        <div key={s.name} className="flex flex-wrap items-center gap-2.5 border-b border-border-soft py-2 last:border-b-0">
+                          {s.hit ? <Badge tone="resolved">命中</Badge> : (s.note || '').startsWith('skipped') ? <Badge tone="neutral" title={s.note}>跳过</Badge> : <Badge tone="critical">未命中</Badge>}
+                          <span className="text-[12.5px] font-medium">{s.name}</span>
+                          <span className="font-mono text-[11px] text-faint">{s.expected_rule}</span>
+                          {typeof s.latency_ms === 'number' && <span className="font-mono text-[11px] text-faint">{s.latency_ms}ms</span>}
+                          {s.alert_id && (
+                            <button onClick={() => navigate(`/alerts?open=${encodeURIComponent(s.alert_id!)}`)}
+                              className="cursor-pointer text-[11px] text-primary hover:underline" title="打开命中的演练告警">查看告警 →</button>
+                          )}
+                          {(s.note || '') && !(s.note || '').startsWith('skipped') && <span className="text-[11px] text-faint">{s.note}</span>}
+                        </div>
+                      ))}
+                      {!!rep.skipped?.length && (
+                        <div className="pt-1.5 text-[11px] text-faint">前置不满足未执行：{rep.skipped.join('、')}</div>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })()}
+
               {/* 指令历史 */}
               <Card className="px-2 py-3.5">
                 <div className="mb-1 flex items-center gap-2.5 px-3.5">
