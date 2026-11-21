@@ -39,6 +39,10 @@ func newDefense(t *testing.T, dirs []string, mutate func(*Options)) (*Defense, *
 		Log:        testLogger(),
 		OnFinding:  r.on,
 		Now:        ck.Now,
+		// 测试临时目录在 CI 上恰是 %TEMP%（命中内置 \appdata\local\temp\
+		// churn 特征 → 速率事件被全滤，2026-11-21 GitHub Actions 首跑
+		// 实测抓出）。测试语义="目录不在 churn 特征区"，显式注入空清单。
+		ChurnMarkers: []string{},
 	}
 	if mutate != nil {
 		mutate(&opt)
@@ -430,7 +434,7 @@ func TestNilDefenseSafe(t *testing.T) {
 // 这类目录的批量增删是正常软件行为，必须在权重层剔除而不是靠定级兜底。
 func TestChurnDirsExcludedFromRate(t *testing.T) {
 	dir := t.TempDir()
-	d, r, ck := newDefense(t, []string{dir}, nil)
+	d, r, ck := newDefense(t, []string{dir}, withBuiltinChurn)
 	cache := filepath.Join(dir, "Cache", "Cache_Data")
 	for i := 0; i < 30; i++ {
 		d.Consume(Event{Kind: "removed",
@@ -487,7 +491,7 @@ func TestMaintainDetectsContentTamper(t *testing.T) {
 // 都应被剔除——否则用户清一次回收站就是一次 FILE-RANSOM 误报。
 func TestRecycleBinChurnExcluded(t *testing.T) {
 	dir := t.TempDir()
-	d, r, ck := newDefense(t, []string{dir}, nil)
+	d, r, ck := newDefense(t, []string{dir}, withBuiltinChurn)
 	rb := `C:\$Recycle.Bin\S-1-5-21-1234`
 	for i := 0; i < 25; i++ {
 		d.Consume(Event{Kind: "removed",
@@ -601,18 +605,19 @@ func TestChurnMarkersExcludeAVSelfMaintainDirs(t *testing.T) {
 		`C:\Windows\SoftwareDistribution\Download\xyz\windows10-kb.msu`,
 		`C:\ProgramData\Mozilla-1de4eec8-1241-4177-a864-e594e8d1fb38\updates\308046B0\patch.exe`,
 	}
+	dw, _, _ := newDefense(t, nil, withBuiltinChurn)
 	for _, p := range avDirs {
-		if w := rateWeight(Event{Kind: "removed", Path: p, Source: "rdcw"}); w != 0 {
+		if w := dw.rateWeight(Event{Kind: "removed", Path: p, Source: "rdcw"}); w != 0 {
 			t.Fatalf("AV 自维护路径 %s 权重 = %d, want 0", p, w)
 		}
 	}
 	// 用户目录不受影响：Document 删除仍计数
-	if w := rateWeight(Event{Kind: "removed", Path: `C:\Users\bob\Documents\a.docx`, Source: "rdcw"}); w != 1 {
+	if w := dw.rateWeight(Event{Kind: "removed", Path: `C:\Users\bob\Documents\a.docx`, Source: "rdcw"}); w != 1 {
 		t.Fatalf("用户目录删除权重 = %d, want 1", w)
 	}
 	// 端到端：AV 目录删 60 个文件不触发速率告警
 	dir := t.TempDir()
-	d, r, _ := newDefense(t, []string{dir}, nil)
+	d, r, _ := newDefense(t, []string{dir}, withBuiltinChurn)
 	for i := 0; i < 60; i++ {
 		d.Consume(Event{Kind: "removed",
 			Path:   fmt.Sprintf(`C:\ProgramData\Huorong\Sysdiag\tmp\file%d.dat`, i),
@@ -750,3 +755,7 @@ func TestUSNLeafCollisionAbsorbed(t *testing.T) {
 		t.Fatalf("mtime 晚于事件的原地改写必须告警: %+v", r.fs)
 	}
 }
+
+// withBuiltinChurn 给 churn 语义测试挂回内置特征清单（newDefense 默认
+// 注入空清单绕开 CI 的 %TEMP% 恰中 \appdata\local\temp\ 特征的问题）。
+func withBuiltinChurn(o *Options) { o.ChurnMarkers = churnMarkers }

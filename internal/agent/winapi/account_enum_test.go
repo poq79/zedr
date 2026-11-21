@@ -29,6 +29,8 @@ func TestLocalUsers(t *testing.T) {
 		t.Fatal("枚举成功但账户表为空")
 	}
 
+	// 内置管理员可能被重命名（CI runner 就是 runneradmin，2026-11-21
+	// 首跑实测）：按 RID 500 定位而非账户名——RID 是系统恒定的。
 	foundAdmin := false
 	for _, u := range users {
 		if u.Name == "" {
@@ -37,17 +39,12 @@ func TestLocalUsers(t *testing.T) {
 		if u.PasswordAgeDays < 0 {
 			t.Errorf("%s 的 PasswordAgeDays 为负: %d", u.Name, u.PasswordAgeDays)
 		}
-		if strings.EqualFold(u.Name, "Administrator") {
+		if isBuiltinAdminSID(u.SID) {
 			foundAdmin = true
-			if u.SID == "" {
-				t.Errorf("Administrator 的 SID 反查失败")
-			} else if !strings.HasPrefix(u.SID, "S-1-5-21-") {
-				t.Errorf("Administrator 的 SID 形态异常: %s", u.SID)
-			}
 		}
 	}
 	if !foundAdmin {
-		t.Error("本地账户中未找到 Administrator（重命名系统可忽略此条）")
+		t.Error("本地账户中未找到内置管理员（RID 500）")
 	}
 	raw, _ := json.Marshal(users)
 	t.Logf("users=%s", raw)
@@ -104,4 +101,10 @@ func TestPasswordAgeDays(t *testing.T) {
 			t.Errorf("passwordAgeDays(%d)=%d，期望 %d", c.seconds, got, c.want)
 		}
 	}
+}
+
+// isBuiltinAdminSID 判断 SID 尾段是否为 RID 500（内置管理员，改名不掉 RID）。
+func isBuiltinAdminSID(sid string) bool {
+	i := strings.LastIndexByte(sid, '-')
+	return i >= 0 && sid[i+1:] == "500" && strings.HasPrefix(sid, "S-1-5-21-")
 }

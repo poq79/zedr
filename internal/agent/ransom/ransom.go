@@ -126,6 +126,11 @@ type Options struct {
 	OnFinding func(Finding)
 	// Now 供测试注入合成时钟；nil 用 time.Now。
 	Now func() time.Time
+	// ChurnMarkers 覆盖高频增删目录特征清单（nil 用内置 churnMarkers）。
+	// 测试注入空切片：测试的临时目录在 CI 上恰是 %TEMP%（命中内置
+	// \appdata\local\temp\ 特征 → 速率事件被全滤，2026-11-21 首次
+	// GitHub Actions 实测抓出），而测试语义就是"目录不在 churn 特征区"。
+	ChurnMarkers []string
 }
 
 type canarySpec struct {
@@ -150,6 +155,7 @@ type Defense struct {
 	now       func() time.Time
 	cooldown  time.Duration
 	threshold int
+	churn     []string
 
 	// canaries/names 在 New 里一次成型后只读（重建只补文件不登记新键），
 	// 因此 Consume 读它们不需要额外同步。
@@ -209,6 +215,11 @@ func New(opt Options) *Defense {
 	}
 	if d.now == nil {
 		d.now = time.Now
+	}
+	if opt.ChurnMarkers == nil {
+		d.churn = churnMarkers
+	} else {
+		d.churn = opt.ChurnMarkers
 	}
 	if d.cooldown <= 0 {
 		d.cooldown = 15 * time.Minute
@@ -389,7 +400,7 @@ func (d *Defense) Consume(ev Event) {
 	// 封顶的 USN 事件直接不进窗——省掉窗口 churn，也不挤占 RDCW 证据
 	// 的窗口容量（windowCap 触顶会按 FIFO 淘汰，风暴期 USN 会把真正
 	// 带目录信息的 rdcw 事件顶出去）。
-	if w := rateWeight(ev); w > 0 && !when.Before(d.now().Add(-windowDur)) {
+	if w := d.rateWeight(ev); w > 0 && !when.Before(d.now().Add(-windowDur)) {
 		if ev.Source == "usn" && d.usnWeight+w > d.usnCap {
 			d.usnCapped.Add(1)
 		} else {
@@ -716,9 +727,9 @@ var churnMarkers = []string{
 }
 
 // churnPath 判断路径是否落在高频增删目录（rdcw 来源有完整路径才判得了）。
-func churnPath(p string) bool {
+func (d *Defense) churnPath(p string) bool {
 	low := strings.ToLower(strings.ReplaceAll(p, "/", `\`))
-	for _, m := range churnMarkers {
+	for _, m := range d.churn {
 		if strings.Contains(low, m) {
 			return true
 		}
@@ -729,8 +740,8 @@ func churnPath(p string) bool {
 // rateWeight 返回事件在速率窗口里的权重：removed=1；renamed 新旧扩展名
 // 不同=2（批量改后缀是加密器强特征）、相同或旧名未知=1；其余不计。
 // 高频增删目录（缓存/临时目录）恒为 0。
-func rateWeight(ev Event) int {
-	if ev.Path != "" && strings.ContainsRune(ev.Path, '\\') && churnPath(ev.Path) {
+func (d *Defense) rateWeight(ev Event) int {
+	if ev.Path != "" && strings.ContainsRune(ev.Path, '\\') && d.churnPath(ev.Path) {
 		return 0
 	}
 	switch ev.Kind {
