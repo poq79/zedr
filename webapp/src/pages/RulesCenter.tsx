@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Ban, CirclePlay, Copy, Eye, FlaskConical, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Ban, CirclePlay, Copy, Eye, FlaskConical, Pencil, Plus, RefreshCw, Sigma as SigmaIcon, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Rule, RuleCondition, RuleSchema, Severity } from '../lib/types';
 import { SEV_LABEL } from '../lib/format';
@@ -78,6 +78,7 @@ export function RulesCenterPage({ user }: { user: { role: string } }) {
   const [rules, setRules] = useState<Rule[] | null>(null);
   const [schema, setSchema] = useState<RuleSchema | null>(null);
   const [q, setQ] = useState('');
+  const [sigmaOpen, setSigmaOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
 
   const load = useCallback(async () => {
@@ -206,6 +207,9 @@ export function RulesCenterPage({ user }: { user: { role: string } }) {
             <Button variant="ghost" onClick={() => { setEditor(blankEditor()); }}>
               <FlaskConical size={13} /> 从模板新建
             </Button>
+            <Button variant="ghost" onClick={() => setSigmaOpen(true)}>
+              <SigmaIcon size={13} /> 导入 Sigma
+            </Button>
             <Button variant="primary" onClick={() => setEditor(blankEditor())}><Plus size={13} /> 新建规则</Button>
           </>
         )}
@@ -289,6 +293,7 @@ export function RulesCenterPage({ user }: { user: { role: string } }) {
           onSaved={() => { setEditor(null); load(); }}
         />
       )}
+      <SigmaImportDrawer open={sigmaOpen} onClose={() => setSigmaOpen(false)} onImported={() => { setSigmaOpen(false); load(); }} />
     </div>
   );
 }
@@ -562,3 +567,101 @@ const BOOL_FIELDS = new Set([
   'process.in_system', 'process.dir_writable', 'network.has_public_remote',
 ]);
 const INT_FIELDS = new Set(['process.session', 'process.depth', 'network.count', 'module.unsigned_count', 'module.non_system_count']);
+
+/* ---------------- Sigma 批量导入（M1，2026-11-21） ----------------
+   三态报告：created（observe 模式入库）/ skipped（门禁拒绝+原因）。
+   转换门禁见 internal/rules/sigma.go——只收 windows/process_creation、
+   status=stable/test，导入即观察模式，人工转正。 */
+
+interface SigmaImportReport {
+  docs: number;
+  created: { id: string; name: string; severity: string; mode: string }[];
+  skipped: { title: string; reason: string }[];
+  total_generated: number;
+}
+
+function SigmaImportDrawer({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {
+  const toast = useToast();
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState<SigmaImportReport | null>(null);
+
+  const submit = async () => {
+    if (!text.trim()) return;
+    setBusy(true);
+    try {
+      const rep = await api.post<SigmaImportReport>('/api/v1/rules/sigma-import', { yaml: text });
+      setReport(rep);
+      setText('');
+      onImported();
+      toast(`导入完成：新增 ${rep.created.length} 条，跳过 ${rep.skipped.length} 条`);
+    } catch (e) {
+      toast((e as Error).message, 'err');
+    } finally { setBusy(false); }
+  };
+
+  const onFile = (f: File | undefined) => {
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => setText(String(rd.result || ''));
+    rd.readAsText(f);
+  };
+
+  return (
+    <Drawer open={open} onClose={onClose} title="导入 Sigma 规则" width={760}>
+      <p className="mt-0 mb-3 text-[12px] leading-[1.8] text-muted-foreground">
+        粘贴 Sigma YAML（支持多文档 <code>---</code> 分隔）。导入的规则一律进入<b>观察模式</b>且默认停用——
+        先观察命中量与误报面，人工转正后才会参与打分告警。仅支持 <code>category: process_creation</code>、
+        <code>status: stable/test</code>；其余类别/级别逐条给出拒绝原因。
+      </p>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={10}
+        spellCheck={false}
+        placeholder="粘贴 Sigma YAML（支持多文档 --- 分隔）…"
+        className="w-full rounded-md border border-border-soft bg-background px-3 py-2.5 font-mono text-[11.5px] leading-[1.7] text-foreground"
+      />
+      <div className="mt-2 flex items-center gap-2.5">
+        <input type="file" accept=".yml,.yaml,.txt" onChange={(e) => onFile(e.target.files?.[0])}
+          className="text-[11.5px] text-muted-foreground" aria-label="从文件读取 Sigma YAML" />
+        <div className="flex-1" />
+        <Button variant="primary" disabled={busy || !text.trim()} onClick={submit}>
+          {busy ? '导入中…' : '转换并导入'}
+        </Button>
+      </div>
+
+      {report && (
+        <div className="mt-3 rounded-md border border-border-soft bg-secondary/40 px-3.5 py-3">
+          <div className="mb-1.5 text-[12px]">
+            文档 {report.docs} 份 · 展开规则 {report.total_generated} 条 · 入库 <b className="text-ok">{report.created.length}</b> · 跳过 <b className="text-warn">{report.skipped.length}</b>
+          </div>
+          {!!report.created.length && (
+            <div className="mt-1.5">
+              <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-faint">已入库（观察模式 · 停用）</div>
+              {report.created.map((r) => (
+                <div key={r.id} className="flex items-center gap-2 py-0.5 text-[11.5px]">
+                  <span className="font-mono text-faint">{r.id}</span>
+                  <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                  <Badge tone={r.severity}>{SEV_LABEL[r.severity] || r.severity}</Badge>
+                  <Badge tone="info">观察</Badge>
+                </div>
+              ))}
+            </div>
+          )}
+          {!!report.skipped.length && (
+            <div className="mt-2">
+              <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-faint">跳过（附原因）</div>
+              {report.skipped.map((s, i) => (
+                <div key={i} className="py-0.5 text-[11.5px]">
+                  <b className="text-warn">{s.title}</b>
+                  <span className="ml-1.5 text-faint">{s.reason}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Drawer>
+  );
+}
