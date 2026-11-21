@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { TriangleAlert, ShieldCheck } from 'lucide-react';
-import { api } from '../lib/api';
+import QRCode from 'qrcode';
+import { api, pendingEnrollMFA, pendingConfirmMFA, verifyMFA } from '../lib/api';
 import { Button, Input } from '../components/ui/basics';
 import type { User } from '../lib/types';
 
@@ -9,6 +10,12 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
   const [busy, setBusy] = useState(false);
   const [caps, setCaps] = useState(false);
   const [user, setUser] = useState(() => localStorage.getItem('hg_last_user') || '');
+  // MFA 状态机：password → (mfa-code 第二因子) / (mfa-enroll 策略强制绑定)
+  const [stage, setStage] = useState<'password' | 'mfa-code' | 'mfa-enroll'>('password');
+  const [ticket, setTicket] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [qrData, setQrData] = useState('');
+  const [enrollSecret, setEnrollSecret] = useState('');
 
   useEffect(() => {
     const up = (e: KeyboardEvent) => setCaps(e.getModifierState?.('CapsLock') ?? false);
@@ -17,16 +24,50 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
     return () => { window.removeEventListener('keydown', up); window.removeEventListener('keyup', up); };
   }, []);
 
+  const finishLogin = (res: { user?: User }) => {
+    localStorage.setItem('hg_last_user', user.trim());
+    if (res.user) onLogin(res.user);
+  };
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const pass = (document.getElementById('loginPass') as HTMLInputElement)?.value ?? '';
     setBusy(true); setErr('');
     try {
-      const u = await api.login(user.trim(), pass);
+      const res = await api.login(user.trim(), pass);
+      if (res.mfa_required) {
+        // 已启用双因素：进入第二因子验证
+        setTicket(res.mfa_ticket || '');
+        setStage('mfa-code');
+        return;
+      }
+      if (res.mfa_enroll_required) {
+        // MFA 策略强制（管理员必须启用）：登录环节完成绑定
+        setTicket(res.mfa_ticket || '');
+        setStage('mfa-enroll');
+        const en = await pendingEnrollMFA(res.mfa_ticket || '');
+        setEnrollSecret(en.secret);
+        setQrData(await QRCode.toDataURL(en.otpauth_url, { width: 180, margin: 1 }));
+        return;
+      }
       localStorage.setItem('hg_last_user', user.trim());
-      onLogin(u);
+      finishLogin(res);
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : '登录失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitMFA = async () => {
+    setBusy(true); setErr('');
+    try {
+      const fn = stage === 'mfa-code' ? verifyMFA : pendingConfirmMFA;
+      const res = await fn(ticket, mfaCode.trim());
+      localStorage.setItem('hg_last_user', user.trim());
+      finishLogin(res);
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : '验证失败');
     } finally {
       setBusy(false);
     }
@@ -92,7 +133,7 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
       {/* 右屏：表单面板 */}
       <div className="relative flex min-w-0 flex-1 flex-col items-center justify-center px-6">
         <form
-          onSubmit={submit} autoComplete="on"
+          onSubmit={stage === 'password' ? submit : (e) => { e.preventDefault(); submitMFA(); }} autoComplete="on"
           className="w-[380px] max-w-full rounded-lg border border-border bg-card p-7"
           style={{ animation: 'page-in 400ms cubic-bezier(.22,1,.36,1)' }}
         >
@@ -112,6 +153,8 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
           </div>
         )}
 
+        {stage === 'password' && (
+          <>
         <label className="mb-3 block">
           <span className="mb-1.5 block text-[11.5px] text-faint">账号</span>
           <Input id="loginUser" name="username" autoComplete="username" placeholder="admin" required className="w-full" value={user} onChange={(e) => setUser(e.target.value)} />
@@ -129,6 +172,45 @@ export function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
         <Button variant="primary" type="submit" disabled={busy} className="h-9 w-full">
           {busy ? '登录中…' : '登录'}
         </Button>
+          </>
+        )}
+
+        {stage === 'mfa-code' && (
+          <>
+            <p className="mb-3 text-[12.5px] text-muted-foreground">
+              账号已启用双因素验证。请输入 TOTP App（Google Authenticator 等）显示的 6 位验证码。
+            </p>
+            <Input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              inputMode="numeric" placeholder="000000" maxLength={6} required
+              className="mb-3 h-11 text-center font-mono text-[18px] tracking-[6px]" autoFocus />
+            <Button variant="primary" type="submit" disabled={busy || mfaCode.length !== 6} className="h-9 w-full">
+              {busy ? '验证中…' : '验证并登录'}
+            </Button>
+          </>
+        )}
+
+        {stage === 'mfa-enroll' && (
+          <>
+            <p className="mb-3 text-[12.5px] leading-[1.8] text-muted-foreground">
+              管理员已要求账号启用双因素验证。请用 TOTP App（Google Authenticator 等）扫描二维码或手动录入密钥，输入显示的 6 位验证码完成绑定。
+            </p>
+            {qrData && (
+              <div className="mb-3 flex justify-center">
+                <img src={qrData} alt="TOTP 绑定二维码" className="rounded-md border border-border-soft bg-white p-1.5" />
+              </div>
+            )}
+            <div className="mb-3 rounded-md border border-border-soft bg-secondary/50 px-2.5 py-1.5">
+              <div className="text-[10.5px] text-faint">无法扫码时手动录入密钥：</div>
+              <div className="mt-0.5 break-all font-mono text-[11px] text-foreground">{enrollSecret}</div>
+            </div>
+            <Input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              inputMode="numeric" placeholder="000000" maxLength={6} required
+              className="mb-3 h-11 text-center font-mono text-[18px] tracking-[6px]" autoFocus />
+            <Button variant="primary" type="submit" disabled={busy || mfaCode.length !== 6} className="h-9 w-full">
+              {busy ? '绑定中…' : '绑定并登录'}
+            </Button>
+          </>
+        )}
 
         <p className="m-0 mt-4 text-[11.5px] leading-[1.7] text-faint">
           首次部署时，服务端日志会打印一次初始管理员密码。登录后请尽快在「账号管理」页修改。

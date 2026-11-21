@@ -95,13 +95,28 @@ async function request<T>(path: string, opts: { method?: string; body?: unknown;
   }
 }
 
-async function login(username: string, password: string) {
-  const res = await request<{ access_token: string; expires_at: string; user: import('./types').User }>(
+// LoginSession 是登录响应的完整形态：MFA 启用账号/策略强制账号会
+// 先拿到 mfa_required/mfa_enroll_required + mfa_ticket（无令牌）——
+// 前端走 MFA 分支完成第二因子/绑定后凭 verify/pending-confirm 换令牌。
+export interface LoginSession {
+  access_token?: string;
+  expires_at?: string;
+  user?: import('./types').User;
+  mfa_required?: boolean;
+  mfa_enroll_required?: boolean;
+  mfa_ticket?: string;
+}
+
+async function login(username: string, password: string): Promise<LoginSession> {
+  const res = await request<LoginSession>(
     '/api/v1/auth/login', { method: 'POST', body: { username, password } },
   );
-  auth.token = res.access_token;
-  auth.exp = Date.parse(res.expires_at) || 0;
-  return res.user;
+  if (res.mfa_required || res.mfa_enroll_required) {
+    return res; // 无令牌：调用方进 MFA 分支
+  }
+  auth.token = res.access_token ?? null;
+  auth.exp = Date.parse(res.expires_at ?? '') || 0;
+  return res;
 }
 
 async function logout() {
@@ -114,6 +129,54 @@ export function authHeaders(accept: string): Record<string, string> {
   const headers: Record<string, string> = { Accept: accept };
   if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
   return headers;
+}
+
+// ---- MFA（TOTP 双因素）函数族 ----
+// verify/pending-confirm 成功后服务端同时下发令牌与 refresh cookie，
+// 与 login 成功形态一致——前端同一套 token 处理。
+
+export async function verifyMFA(ticket: string, code: string): Promise<LoginSession> {
+  const res = await request<LoginSession>('/api/v1/auth/mfa/verify', {
+    method: 'POST', body: { ticket, code },
+  });
+  auth.token = res.access_token ?? null;
+  auth.exp = Date.parse(res.expires_at ?? '') || 0;
+  return res;
+}
+
+export async function pendingEnrollMFA(ticket: string): Promise<{ secret: string; otpauth_url: string }> {
+  return request('/api/v1/auth/mfa/pending/enroll', { method: 'POST', body: { ticket } });
+}
+
+export async function pendingConfirmMFA(ticket: string, code: string): Promise<LoginSession> {
+  const res = await request<LoginSession>('/api/v1/auth/mfa/pending/confirm', {
+    method: 'POST', body: { ticket, code },
+  });
+  auth.token = res.access_token ?? null;
+  auth.exp = Date.parse(res.expires_at ?? '') || 0;
+  return res;
+}
+
+export function enrollMFA() {
+  return request<{ secret: string; otpauth_url: string }>('/api/v1/auth/mfa/enroll', { method: 'POST', body: {} });
+}
+
+export function confirmMFA(code: string) {
+  return request<{ ok: boolean }>('/api/v1/auth/mfa/enroll/confirm', { method: 'POST', body: { code } });
+}
+
+export function disableMFA(password: string, code: string) {
+  return request<{ ok: boolean }>('/api/v1/auth/mfa/disable', { method: 'POST', body: { password, code } });
+}
+
+export function getMFAPolicy() {
+  return request<{ require_admins: boolean; require_all: boolean }>('/api/v1/auth/mfa/policy');
+}
+
+export function setMFAPolicy(require_admins: boolean, require_all: boolean) {
+  return request<{ require_admins: boolean; require_all: boolean }>('/api/v1/auth/mfa/policy', {
+    method: 'PUT', body: { require_admins, require_all },
+  });
 }
 
 export const api = {
