@@ -224,6 +224,7 @@ export function AiAssistant() {
   const [activeId, setActiveId] = useState<string>(boot.active);
   const [scope, setScope] = useState(''); // 待发送的上下文 chip（可摘除）
   const [lastEngine, setLastEngine] = useState<string>('');
+  const askRef = useRef<(q: string) => void>(() => {});
   const [slashOpen, setSlashOpen] = useState(false);
   // 智能滚动状态：贴底=跟随新内容；用户上翻回看时不再被流式输出拖走
   // （2026 AI 对话标配），超过 120px 出现"回到底部"pill
@@ -269,6 +270,18 @@ export function AiAssistant() {
   useEffect(() => {
     if (stickRef.current) listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
   }, [msgs, busy, thinking]);
+
+  // zedr:ai-ask：命令面板/外部入口注入问题——打开助手并自动发送
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const d = (e as CustomEvent<{ text: string }>).detail;
+      if (!d?.text) return;
+      setOpen(true);
+      askRef.current(d.text);
+    };
+    window.addEventListener('zedr:ai-ask', onAsk);
+    return () => window.removeEventListener('zedr:ai-ask', onAsk);
+  }, []);
 
   const onListScroll = () => {
     const el = listRef.current;
@@ -412,6 +425,7 @@ export function AiAssistant() {
       busyRef.current = false;
     }
   }, [busy, msgs, scope, toast]);
+  useEffect(() => { askRef.current = ask; }, [ask]);
 
   const createSession = () => {
     const s = newSession();

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, Rows3, Search, Sun, Keyboard, X, type LucideIcon } from 'lucide-react';
+import { Download, Rows3, Search, Sparkles, Sun, Keyboard, X, type LucideIcon } from 'lucide-react';
 import { Kbd } from './ui/basics';
 import { ROUTES } from './AppShell';
 import { toggleDense, toggleTheme } from '../lib/theme';
@@ -22,8 +22,17 @@ export function CommandPalette({ open, setOpen, onExport, onShortcuts }: {
     { id: 'dense', label: '切换紧凑视图', icon: Rows3, hint: '显示', run: () => toggleDense() },
     { id: 'theme', label: '切换亮 / 暗主题', icon: Sun, hint: '主题', run: () => toggleTheme() },
     { id: 'keys', label: '键盘快捷键帮助', icon: Keyboard, hint: '帮助', run: () => onShortcuts() },
+    // 问 AI：经 zedr:ai-ask 事件打开助手并注入问题（助手自行走工具/流式管线）
+    { id: 'ask-critical', label: '问 AI：现在最需要处理的告警是什么', icon: Sparkles, hint: 'AI', run: () => askAI('现在最需要处理的告警是什么？') },
+    { id: 'ask-summary', label: '问 AI：总结今天的攻击面变化', icon: Sparkles, hint: 'AI', run: () => askAI('总结一下今天的攻击面变化') },
+    { id: 'close', label: '关闭命令面板', icon: X, hint: 'Esc', run: () => setOpen(false) },
     { id: 'close', label: '关闭命令面板', icon: X, hint: 'Esc', run: () => setOpen(false) },
   ], [navigate, onExport, onShortcuts, setOpen]);
+
+  const askAI = (text: string) => {
+    setOpen(false);
+    window.dispatchEvent(new CustomEvent('zedr:ai-ask', { detail: { text } }));
+  };
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
