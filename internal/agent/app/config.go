@@ -87,6 +87,12 @@ type Config struct {
 	// 默认 false：替换自身二进制是探针所有能力里信任要求最高的一类，
 	// 必须现场显式开启，且与 terminate/quarantine 同一套双层开关纪律。
 	UpgradeEnabled bool
+	// IsolationEnabled 控制是否执行服务端下发的主机网络隔离指令
+	//（isolate_host：防火墙 block 规则断业务网络，保留 agent↔server
+	// 通道与 loopback；release_host 解除不受本开关约束——隔离中关掉
+	// 开关必须还能解救）。与 terminate/quarantine 同一套双层开关纪律：
+	// 服务端 HG_SERVER_ISOLATION_ENABLED + 终端本开关，默认双侧关闭。
+	IsolationEnabled bool
 	// TunnelEnabled 控制是否维持到服务端的实时隧道（docs/LIVE-TUNNEL.md）：
 	// 只读调查通道（文件浏览/进程/连接实时查询）。零监听、纯出站长连接，
 	// 服务端经隧道发起请求、探针只读应答；关闭后实时查询退化为
@@ -169,6 +175,7 @@ func LoadConfig(version string) (*Config, error) {
 	c.KillEnabled = l.Bool("HG_AGENT_KILL_ENABLED", false)
 	c.QuarantineEnabled = l.Bool("HG_AGENT_QUARANTINE_ENABLED", false)
 	c.DrillEnabled = l.Bool("HG_AGENT_DRILL_ENABLED", false)
+	c.IsolationEnabled = l.Bool("HG_AGENT_ISOLATION_ENABLED", false)
 	c.BaselineLearn = l.Bool("HG_AGENT_BASELINE_LEARN", true)
 	c.Warmup = l.DurationZeroOK("HG_AGENT_WARMUP", 5*time.Minute) // 允许 0 = 关闭静默期
 	c.HeartbeatSec = l.Int("HG_AGENT_HEARTBEAT_SEC", 30)
@@ -273,6 +280,9 @@ func LoadConfig(version string) (*Config, error) {
 	}
 	if strings.EqualFold(c.Env, "production") && c.DrillEnabled {
 		l.SecurityWarning(false, "已启用检测演练（HG_AGENT_DRILL_ENABLED），探针将执行服务端下发的受控自测（自造样本），请确认这是预期行为")
+	}
+	if strings.EqualFold(c.Env, "production") && c.IsolationEnabled {
+		l.SecurityWarning(false, "已启用主机网络隔离（HG_AGENT_ISOLATION_ENABLED），探针将执行服务端下发的防火墙隔离指令（会切断终端业务网络），请确认这是预期行为")
 	}
 
 	if err := l.Err(); err != nil {

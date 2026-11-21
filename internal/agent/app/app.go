@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,6 +26,7 @@ import (
 	"zedr/internal/agent/detect"
 	"zedr/internal/agent/drill"
 	"zedr/internal/agent/enrich"
+	"zedr/internal/agent/isolate"
 	"zedr/internal/agent/hygiene"
 	"zedr/internal/agent/inventory"
 	"zedr/internal/agent/liveapi"
@@ -68,6 +70,10 @@ type Agent struct {
 	// 文件防御（canary 诱饵 + 勒索速率）：消费 RDCW 回调与 USN 轮询两路
 	// 事件流；nil = 开关关闭
 	fileDefense *ransom.Defense
+
+	// 主机网络隔离管理器：nil = 终端侧开关关闭（isolate_host 指令得到
+	// 明确失败回执；release_host 始终可执行——孤儿规则清理不设闸）。
+	iso *isolate.Manager
 
 	// 行为检测健康度快照（scan 回调读，各写入方自管同步）
 	usnLagging  atomic.Bool
@@ -225,12 +231,27 @@ func New(version string) (*Agent, error) {
 		log.Warn("quarantine_init_failed", "err", err, "hint", "文件隔离指令将不可用")
 	}
 
+	// 主机网络隔离管理器（nil = HG_AGENT_ISOLATION_ENABLED 关）。启动
+	// 引导读数据目录 isolation.json：未过期隔离态重施加（fail-closed，
+	// 对齐 CrowdStrike 隔离跨重启语义），过期/孤儿规则清理（fail-open，
+	// 防"某台机器莫名其妙断网"）。数据目录路径即恢复路径的一部分，
+	// OPS 文档记录 zedr-diag -unisolate 本地解救工具。
+	var isoMgr *isolate.Manager
+	if cfg.IsolationEnabled {
+		isoMgr = isolate.NewManager(isolate.NewPlatformFW(), cfg.Path("isolation.json"),
+			isolate.PlatformDNS, log)
+		if lerr := isoMgr.LoadStartup(); lerr != nil {
+			log.Warn("isolate_startup_load_failed", "err", lerr.Error())
+		}
+	}
+
 	a := &Agent{
 		cfg: cfg, log: log, store: store,
 		coll: coll, enr: enr, base: base, alw: alw, eng: eng, up: up,
 		pm:         pm,
 		auditor:    auditor,
 		qtn:        qtn,
+		iso:        isoMgr,
 		cpu:        &winapi.CPUSampler{},
 		startedAt:  time.Now(),
 		scanReq:    make(chan bool, 1),
@@ -1129,6 +1150,19 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			if !a.up.Enrolled() {
 				continue
 			}
+			// 隔离周期维护：TTL 到期自动解除 + 篡改检测修复（规则被外力
+			// 删改时全量重施加）。修复计数进 RuntimeInfo——"规则被对手
+			// 动过"是高危信号，必须可在面板看到而不只是翻日志。
+			if a.iso != nil {
+				if _, err := a.iso.CheckExpiry(time.Now()); err != nil {
+					a.log.Warn("isolate_expiry_check_failed", "err", err.Error())
+				}
+				if tampered, err := a.iso.Repair(); err != nil {
+					a.log.Error("isolate_repair_failed", "err", err.Error())
+				} else if tampered {
+					a.store.SetRuntime(func(x *state.RuntimeInfo) { x.IsolateRepairs++ })
+				}
+			}
 			ri := a.store.Runtime()
 			req := model.HeartbeatRequest{
 				AgentTime:  time.Now(),
@@ -1151,6 +1185,9 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 				},
 				Samples:      ri.Stats.Scanned,
 				QueueDropped: a.up.Dropped(),
+				// 隔离态随心跳回传（以心跳为准，指令回执可能丢）；
+				// 服务端据此维护 hosts 面板的隔离徽章。
+				Isolated: a.iso != nil && a.iso.Isolated(),
 			}
 			// 观察模式计数随心跳上报（整包替换语义，见 ObserveSnapshot）。
 			if obs, ok := a.eng.ObserveSnapshot(); ok {
@@ -1212,6 +1249,10 @@ func (a *Agent) handleCommands(ctx context.Context, cmds []model.Command) {
 			res.Result = fmt.Sprintf("进程 %d 个", a.store.Runtime().ProcCount)
 		case "drill":
 			res = a.handleDrill(ctx, c)
+		case "isolate_host":
+			res = a.handleIsolateHost(c)
+		case "release_host":
+			res = a.handleReleaseHost(c)
 		default:
 			res.Status = "failed"
 			res.Result = "不支持的指令类型: " + c.Type
@@ -1234,6 +1275,85 @@ func (a *Agent) handleCommands(ctx context.Context, cmds []model.Command) {
 // 总预算 150s：handleCommands 是同步回执模型，演练期间心跳顺延，
 // 150s 远小于服务端侧任何超时判定（执行语义见 internal/agent/drill
 // 包注释）。回执是整份演练报告 JSON，服务端回执上限已放宽到 4096。
+// handleIsolateHost 执行主机网络隔离（R+3）：防火墙 block 规则断业务
+// 网络、保留 agent↔server 通道与 loopback。双层开关的第二道闸在这里
+// ——服务端未放行的指令根本到不了；本侧关闸给明确失败回执。
+// release_host 不设本闸：隔离中关掉开关必须还能解救（孤儿清理同理）。
+func (a *Agent) handleIsolateHost(c model.Command) model.CommandResult {
+	res := model.CommandResult{CommandID: c.ID}
+	if a.iso == nil {
+		res.Status = "failed"
+		res.Result = "终端未启用主机网络隔离（HG_AGENT_ISOLATION_ENABLED=false）"
+		return res
+	}
+	ttlSec, err := parseIsolateTTL(c.Payload)
+	if err != nil {
+		res.Status = "failed"
+		res.Result = err.Error()
+		return res
+	}
+	// keep 集合的锚点 = agent 自己配置的 server 地址（心跳/隧道走同一
+	// 通道，掏空补集围绕它生成）
+	u, perr := url.Parse(a.cfg.ServerURL)
+	host := a.cfg.ServerURL
+	if perr == nil && u.Hostname() != "" {
+		host = u.Hostname()
+	}
+	if err := a.iso.Apply(host, time.Duration(ttlSec)*time.Second, "console"); err != nil {
+		res.Status = "failed"
+		res.Result = err.Error()
+		return res
+	}
+	st := a.iso.Active()
+	res.Result = fmt.Sprintf("已隔离（保留 server/loopback/DNS 通道），自动解除 %s",
+		st.Until.Format("2006-01-02 15:04:05"))
+	return res
+}
+
+// handleReleaseHost 解除隔离：不设终端开关闸——被隔离机器必须永远
+// 有解救路径（含终端侧开关被关闭、状态文件损坏等场景）。
+func (a *Agent) handleReleaseHost(c model.Command) model.CommandResult {
+	res := model.CommandResult{CommandID: c.ID}
+	if a.iso == nil {
+		// 开关关着但可能存在历史残规则——清理即解救
+		fw := isolate.NewPlatformFW()
+		n, derr := fw.DeleteByPrefix(isolate.RulePrefix)
+		if derr != nil {
+			res.Status = "failed"
+			res.Result = derr.Error()
+			return res
+		}
+		res.Result = fmt.Sprintf("终端隔离开关未启用，清理历史隔离规则 %d 条", n)
+		return res
+	}
+	if !a.iso.Isolated() {
+		res.Result = "终端当前未处于隔离态"
+		return res
+	}
+	if err := a.iso.Release(); err != nil {
+		res.Status = "failed"
+		res.Result = err.Error()
+		return res
+	}
+	res.Result = "已解除网络隔离"
+	return res
+}
+
+// parseIsolateTTL 解析 isolate_host 载荷 {"ttl_sec":N}（空载荷=默认
+// 24h）；钳制在 Manager 内做（5min-72h）。
+func parseIsolateTTL(payload string) (int64, error) {
+	if strings.TrimSpace(payload) == "" {
+		return 0, nil
+	}
+	var p struct {
+		TTLSec int64 `json:"ttl_sec"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return 0, fmt.Errorf("隔离指令载荷解析失败: %w", err)
+	}
+	return p.TTLSec, nil
+}
+
 func (a *Agent) handleDrill(ctx context.Context, c model.Command) model.CommandResult {
 	res := model.CommandResult{CommandID: c.ID}
 	if !a.cfg.DrillEnabled {

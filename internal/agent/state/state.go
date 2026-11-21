@@ -120,6 +120,10 @@ type RuntimeInfo struct {
 	ChainActive  int   `json:"chain_active"`
 	ChainFired   int64 `json:"chain_fired"`
 
+	// IsolateRepairs 是网络隔离规则被外力删改后重施加的次数（R+3）。
+	// >0 = 有对手或管理员动过防火墙规则，面板必须可见而非只能翻日志。
+	IsolateRepairs int64 `json:"isolate_repairs"`
+
 	// 下发数据的落地情况：IOC 表与资产清单是否真的在本探针生效。
 	// 没有这两项，"服务端下发了"和"终端在用"之间隔着一次静默失败
 	// （验签拒绝/版本回退都发生在终端侧），排障时只能翻日志。
