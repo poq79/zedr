@@ -23,6 +23,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -68,9 +69,8 @@ const fleetPauseFailRatio = 2 // 失败数*2 >= 波内主机数 即暂停
 type UpgradeService struct {
 	repos repository.Repos
 	log   *slog.Logger
-	// enqueuer 是单机指令面（AgentService.EnqueuCommand）：波内逐台入队
-	// 复用同一套开关/白名单闸门，UpgradeService 自己不复制门禁逻辑。
-	// 接口注入避免 New() 构造环（AgentService 不反向依赖本服务）。
+	// persistOn 控制批次状态是否落 settings KV（S6）：重启后恢复为
+	// 暂停态等人工 resume——批次不丢，推进不自动重启（安全口径）
 	enqueuer commandEnqueuer
 
 	waveSize    int           // 每波下发的在线主机数上限
@@ -79,6 +79,12 @@ type UpgradeService struct {
 
 	mu    sync.Mutex
 	batch *fleetBatch // nil = 没有批次
+
+	// 批次持久化（S6，2026-11-21）：批次状态落 settings KV——server
+	// 重启后恢复批次（主机重新排队继续推进），而不是静默丢进度。
+	// 内存态仍是运行事实源（aborted 通道等不可序列化），KV 只存
+	// 可恢复子集；生命周期分钟级，真实运维需求出现再做全持久化。
+	persistOn bool
 }
 
 // commandEnqueuer 是单机指令面的最小接口（实现：AgentService）。
@@ -119,21 +125,75 @@ type FleetEntry = FleetEntryID
 
 // fleetBatch 是批次内部态（mu 保护）。
 type fleetBatch struct {
-	id      string
-	target  string
-	by      string
+	id        string
+	target    string
+	by        string
 	createdAt time.Time
-	state   string
-	queue   []string
-	waves   []*fleetWave
-	hosts   map[string]*FleetEntry
-	aborted chan struct{} // Abort 时关闭；波内等待据此提前退出
+	state     string
+	queue     []string
+	waves     []*fleetWave
+	hosts     map[string]*FleetEntry
+	aborted   chan struct{} // Abort 时关闭；波内等待据此提前退出
 }
 
 // fleetWave 单波内部态。
 type fleetWave struct {
 	index int
 	order []string
+}
+
+// persistedBatch 是批次可恢复子集的 KV 形态（内存态的投影）。
+type persistedBatch struct {
+	ID     string                 `json:"id"`
+	Target string                 `json:"target"`
+	By     string                 `json:"by"`
+	State  string                 `json:"state"`
+	Queue  []string               `json:"queue"`
+	Hosts  map[string]*FleetEntry `json:"hosts"`
+}
+
+const upgradeBatchKey = "upgrade_fleet_batch"
+
+func (s *UpgradeService) saveBatch(b *fleetBatch) {
+	if !s.persistOn {
+		return
+	}
+	pb := persistedBatch{
+		ID: b.id, Target: b.target, By: b.by, State: b.state,
+		Queue: append([]string{}, b.queue...),
+		Hosts: b.hosts,
+	}
+	raw, err := json.Marshal(pb)
+	if err != nil {
+		return
+	}
+	_ = s.repos.AIConfig.SetSetting(context.Background(), upgradeBatchKey, string(raw))
+}
+
+func (s *UpgradeService) clearBatch() {
+	if !s.persistOn {
+		return
+	}
+	_ = s.repos.AIConfig.SetSetting(context.Background(), upgradeBatchKey, "")
+}
+
+// loadBatch 重启后从 KV 恢复批次（波次推进从当前队列继续）；
+// 无持久化批次/解析失败返回 nil——恢复失败不该阻断新批次发起。
+func (s *UpgradeService) loadBatch() *fleetBatch {
+	raw, ok, err := s.repos.AIConfig.GetSetting(context.Background(), upgradeBatchKey)
+	if err != nil || !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var pb persistedBatch
+	if json.Unmarshal([]byte(raw), &pb) != nil || pb.ID == "" {
+		return nil
+	}
+	aborted := make(chan struct{})
+	close(aborted) // 恢复的批次视为已中止推进：队列保留，人工 Resume 重启推进
+	return &fleetBatch{
+		id: pb.ID, target: pb.Target, by: pb.By, state: pb.State,
+		queue: pb.Queue, hosts: pb.Hosts, aborted: aborted,
+	}
 }
 
 // NewUpgradeService 组装。waveSize/waveTimeout 非法值回退默认——配置错误
@@ -143,6 +203,7 @@ func NewUpgradeService(repos repository.Repos, cfg Config, enqueuer commandEnque
 	if waveSize <= 0 {
 		waveSize = 10
 	}
+	persistOn := cfg.UpgradeBatchPersist
 	waveTimeout := cfg.UpgradeWaveTimeout
 	if waveTimeout <= 0 {
 		waveTimeout = 10 * time.Minute
@@ -151,6 +212,7 @@ func NewUpgradeService(repos repository.Repos, cfg Config, enqueuer commandEnque
 		repos:       repos,
 		enqueuer:    enqueuer,
 		log:         log,
+		persistOn:   persistOn,
 		waveSize:    waveSize,
 		waveTimeout: waveTimeout,
 		pollEvery:   2 * time.Second,
@@ -208,6 +270,7 @@ func (s *UpgradeService) StartFleet(ctx context.Context, agentIDs []string, targ
 		}
 	}
 	s.batch = b
+	s.saveBatch(b)
 	s.log.Info("upgrade_fleet_started", "batch", b.id, "target", targetVersion,
 		"queued", len(b.queue), "total", len(agents), "by", by)
 
@@ -509,10 +572,33 @@ func (s *UpgradeService) Abort() (*FleetSnapshot, error) {
 	case fleetRunning, fleetPaused:
 		s.batch.state = fleetAborted
 		close(s.batch.aborted)
+		s.clearBatch()
 		s.log.Warn("upgrade_fleet_aborted", "batch", s.batch.id, "by", s.batch.by)
 		return s.snapshotLocked(s.batch), nil
 	default:
 		return nil, fmt.Errorf("批次已结束（%s），无需中止", s.batch.state)
+	}
+}
+
+// Restore 重启后从 settings KV 恢复批次：队列/主机结局保留，状态置为
+// paused——推进不自动重启（重启后 runBatch 上下文已断），人工 Resume
+// 继续（安全口径：升级影响面必须有人放行）。
+func (s *UpgradeService) Restore() {
+	b := s.loadBatch()
+	if b == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.batch != nil {
+		s.mu.Unlock()
+		return
+	}
+	b.state = fleetPaused
+	s.batch = b
+	s.mu.Unlock()
+	if s.log != nil {
+		s.log.Info("upgrade_fleet_restored", "batch", b.id, "target", b.target,
+			"queue_remain", len(b.queue))
 	}
 }
 
@@ -564,6 +650,7 @@ func (s *UpgradeService) finish(b *fleetBatch, state string) {
 	s.mu.Lock()
 	s.batch.state = state
 	s.mu.Unlock()
+	s.clearBatch()
 	summary := s.summarize(b)
 	s.log.Info("upgrade_fleet_finished", "batch", b.id, "state", state,
 		"success", summary[hostSuccess], "already_latest", summary[hostAlreadyLatest],

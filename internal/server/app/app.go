@@ -123,6 +123,7 @@ func New() (*App, error) {
 		UpgradeEnabled:        cfg.UpgradeEnabled,
 		UpgradeWaveSize:       cfg.UpgradeWaveSize,
 		UpgradeWaveTimeout:    cfg.UpgradeWaveTimeout,
+		UpgradeBatchPersist:   cfg.UpgradeBatchPersist,
 		SensorOfflineAlerts:   cfg.SensorOfflineAlerts,
 		SensorOfflineSeverity: cfg.SensorOfflineSeverity,
 		HeartbeatInterval:     time.Duration(cfg.HeartbeatSec) * time.Second,

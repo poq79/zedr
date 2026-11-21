@@ -33,6 +33,9 @@ type Config struct {
 	// 与维护窗口权衡。
 	UpgradeWaveSize    int
 	UpgradeWaveTimeout time.Duration
+	// UpgradeBatchPersist 批次状态落 settings KV（S6）：server 重启后
+	// 批次恢复为暂停态等人工 resume，而不是静默丢进度
+	UpgradeBatchPersist bool
 	// SensorOfflineAlerts/Severity 是传感器失联告警（SEN-OFFLINE）的开关
 	// 与严重度，语义见 app.Config 同名字段注释。
 	SensorOfflineAlerts   bool
@@ -77,6 +80,9 @@ func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Log
 	bus := NewAlertBus()
 	sensor := &SensorWatchService{repos: repos, bus: bus, cfg: cfg, log: log}
 	agent := &AgentService{repos: repos, cfg: cfg, log: log, sensor: sensor}
+	upgrade := NewUpgradeService(repos, cfg, agent, log)
+	// S6：server 重启后从 KV 恢复批次为暂停态，人工 resume 继续——批次不静默丢进度
+	upgrade.Restore()
 
 	return &Services{
 		Auth:     &AuthService{repos: repos, tokens: tokens, log: log},
@@ -87,7 +93,7 @@ func New(repos repository.Repos, tokens *auth.Manager, cfg Config, log *slog.Log
 		Stats:    &StatsService{repos: repos},
 		Incident: &IncidentService{repos: repos, cfg: cfg, log: log},
 		Sensor:   sensor,
-		Upgrade:  NewUpgradeService(repos, cfg, agent, log),
+		Upgrade:  upgrade,
 		Bus:      bus,
 		AI:       &AIService{repos: repos, eng: aiEngine, log: log, cfg: cfg, bootstrap: cfg.AIBootstrap, encKey: cfg.SettingEncKey},
 	}
