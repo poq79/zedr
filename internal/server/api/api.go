@@ -152,6 +152,12 @@ func Router(d Deps) http.Handler {
 	// 需要 viewer 闭包，定义在下方鉴权中间件之后挂载。）
 	mux.Handle("POST /api/v1/auth/mfa/verify",
 		httpx.RateLimitMiddleware(loginLimiter, loginKey)(http.HandlerFunc(authH.mfaVerify)))
+	// MFA 策略强制的登录环节绑定：凭"密码已验"票据（同 verify 票据语义），
+	// 与 verify 同一独立限流桶——票据可暴破验证码的威胁面相同
+	mux.Handle("POST /api/v1/auth/mfa/pending/enroll",
+		httpx.RateLimitMiddleware(loginLimiter, loginKey)(http.HandlerFunc(authH.mfaPendingEnroll)))
+	mux.Handle("POST /api/v1/auth/mfa/pending/confirm",
+		httpx.RateLimitMiddleware(loginLimiter, loginKey)(http.HandlerFunc(authH.mfaPendingConfirm)))
 	mux.HandleFunc("POST /api/v1/auth/refresh", authH.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", authH.logout)
 
@@ -259,6 +265,8 @@ func Router(d Deps) http.Handler {
 
 	mux.Handle("GET /api/v1/rules", viewer(adminH.listRules))
 	mux.Handle("GET /api/v1/rules/schema", viewer(adminH.ruleSchema))
+	mux.Handle("GET /api/v1/auth/mfa/policy", viewer(authH.mfaPolicyGet))
+	mux.Handle("PUT /api/v1/auth/mfa/policy", adminOnly(authH.mfaPolicySet))
 	mux.Handle("POST /api/v1/rules", writer(adminH.upsertRule))
 	mux.Handle("POST /api/v1/rules/sigma-import", adminOnly(adminH.importSigmaRules))
 	mux.Handle("POST /api/v1/rules/{id}/toggle", writer(adminH.toggleRule))

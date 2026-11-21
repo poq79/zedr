@@ -169,3 +169,42 @@ func TestMFADisableRequiresPasswordAndCode(t *testing.T) {
 		t.Fatalf("解绑后应回到单因素登录: %v mfa=%v", err, res.MfaRequired)
 	}
 }
+
+// 复现 E2E 发现的登录 500：策略命中分支的 nil 解引用。
+func TestMFAPolicyEnrollRepro(t *testing.T) {
+	svc, ctx, u := newMFATestSvc(t)
+
+	// ① 设策略：管理员强制
+	if err := svc.Auth.SetMFAPolicy(ctx, MFAPolicy{RequireAdmins: true}); err != nil {
+		t.Fatalf("SetMFAPolicy: %v", err)
+	}
+	// ② 登录应改发待绑定票据（此步曾 panic）
+	res, err := svc.Auth.Login(ctx, "opsadmin", "Str0ngPass!2026", "127.0.0.1", "test")
+	if err != nil {
+		t.Fatalf("策略命中登录: %v", err)
+	}
+	if !res.MfaEnrollRequired || res.MfaTicket == "" || res.AccessToken != "" {
+		t.Fatalf("应返回待绑定票据: %+v", res)
+	}
+	// ③ pending-enroll 出密钥
+	secret, uri, err := svc.Auth.PendingEnrollMFA(ctx, res.MfaTicket)
+	if err != nil {
+		t.Fatalf("pending-enroll: %v", err)
+	}
+	if secret == "" || uri == "" {
+		t.Fatal("pending-enroll 应返回密钥与 URI")
+	}
+	_ = u
+	// ④ pending-confirm 绑定即登录
+	code, err := totp.Code(secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc.Auth.PendingConfirmMFA(ctx, res.MfaTicket, code, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatalf("pending-confirm: %v", err)
+	}
+	if res2.AccessToken == "" {
+		t.Fatal("绑定后应直接签发令牌")
+	}
+}

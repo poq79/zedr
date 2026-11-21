@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -51,6 +52,16 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 			"mfa_required": true,
 			"mfa_ticket":   res.MfaTicket,
 			"expires_in":   180, // 与 service.mfaTicketTTL 对齐（3 分钟）
+		})
+		return
+	}
+	// MFA 策略强制命中（账号未绑定）：同票据语义早退——此分支 res.User
+	// 为 nil，落到 writeSession 就是 nil 解引用（独立实例 E2E 抓到的真 panic）。
+	if res.MfaEnrollRequired {
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+			"mfa_enroll_required": true,
+			"mfa_ticket":          res.MfaTicket,
+			"expires_in":          180,
 		})
 		return
 	}
@@ -111,6 +122,76 @@ func (h *authHandler) mfaVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setRefreshCookie(w, res.RefreshToken, res.RefreshExp)
 	writeSession(w, r, res)
+}
+
+// mfaPendingEnroll 凭"密码已验"票据发起 TOTP 绑定（MFA 策略强制命中
+// 时的登录环节绑定）：票据不消费（confirm 时消费），返回密钥与 otpauth
+// URI 供登录页渲染二维码/手录。挂登录独立限流桶同参——防票据暴破。
+func (h *authHandler) mfaPendingEnroll(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	secret, uri, err := h.deps.Services.Auth.PendingEnrollMFA(r.Context(), req.Ticket)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"secret": secret, "otpauth_url": uri})
+}
+
+// mfaPendingConfirm 凭票据+验证码完成绑定并签发令牌对——强制绑定在
+// 登录环节闭环，无需已认证会话。
+func (h *authHandler) mfaPendingConfirm(w http.ResponseWriter, r *http.Request) {
+	var req mfaVerifyReq
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	res, err := h.deps.Services.Auth.PendingConfirmMFA(r.Context(), req.Ticket, req.Code,
+		httpx.ClientIP(r), r.UserAgent())
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.setRefreshCookie(w, res.RefreshToken, res.RefreshExp)
+	writeSession(w, r, res)
+}
+
+// mfaPolicyGet 读 MFA 强制策略（登录页/账号页展示与账号页 admin 开关共用）。
+func (h *authHandler) mfaPolicyGet(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{
+		"require_admins": h.deps.Services.Auth.GetMFAPolicy(r.Context()).RequireAdmins,
+		"require_all":    h.deps.Services.Auth.GetMFAPolicy(r.Context()).RequireAll,
+	})
+}
+
+// mfaPolicySet 写 MFA 强制策略（adminOnly）：热生效（登录时实时读取）。
+// 语义=GitLab 形态：RequireAdmins 对齐 CISA admin-first，RequireAll 全员。
+func (h *authHandler) mfaPolicySet(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req struct {
+		RequireAdmins bool `json:"require_admins"`
+		RequireAll    bool `json:"require_all"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	if err := h.deps.Services.Auth.SetMFAPolicy(r.Context(), service.MFAPolicy{
+		RequireAdmins: req.RequireAdmins,
+		RequireAll:    req.RequireAll,
+	}); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "auth.mfa_policy", "",
+		fmt.Sprintf("require_admins=%v,require_all=%v", req.RequireAdmins, req.RequireAll),
+		httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"require_admins": req.RequireAdmins, "require_all": req.RequireAll})
 }
 
 type mfaEnrollResp struct {

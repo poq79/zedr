@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -143,7 +144,10 @@ type LoginResult struct {
 	RefreshExp   time.Time
 	User         *domain.User
 	MfaRequired  bool
-	MfaTicket    string
+	// MfaEnrollRequired=true 表示 MFA 策略强制命中且账号未绑定：凭
+	// MfaTicket 走 pending-enroll/confirm 完成绑定，绑定即登录
+	MfaEnrollRequired bool
+	MfaTicket         string
 }
 
 // ---------------------------------------------------------------- MFA（TOTP 双因素）
@@ -178,6 +182,97 @@ func (s *AuthService) issueMFATicket(u *domain.User) string {
 	s.mfa[id] = mfaTicket{userID: u.ID, username: u.Username, expiresAt: now.Add(mfaTicketTTL)}
 	s.mfaMu.Unlock()
 	return id
+}
+
+// mfaSettingRequireAdmins / mfaSettingRequireAll 是 MFA 强制策略的
+// settings KV 键（GitLab 形态：策略类进设置中心热更新，不进 env——
+// 2026-11-21 调研口径，来源见 overview.md）。默认双关：本机测试零负担。
+const (
+	mfaSettingRequireAdmins = "mfa_require_admins"
+	mfaSettingRequireAll    = "mfa_require_all"
+)
+
+// MFAPolicy 是 MFA 强制策略（settings KV 存储，每次登录热读取）。
+type MFAPolicy struct {
+	RequireAdmins bool `json:"require_admins"` // 管理员账号强制（CISA admin-first 口径）
+	RequireAll    bool `json:"require_all"`    // 全员强制
+}
+
+func settingTrue(v string, ok bool) bool {
+	return ok && strings.EqualFold(strings.TrimSpace(v), "true")
+}
+
+// GetMFAPolicy 读当前策略。
+func (s *AuthService) GetMFAPolicy(ctx context.Context) MFAPolicy {
+	va, oka, _ := s.repos.AIConfig.GetSetting(ctx, mfaSettingRequireAdmins)
+	vl, okl, _ := s.repos.AIConfig.GetSetting(ctx, mfaSettingRequireAll)
+	return MFAPolicy{
+		RequireAdmins: settingTrue(va, oka),
+		RequireAll:    settingTrue(vl, okl),
+	}
+}
+
+// SetMFAPolicy 写策略（幂等，热生效——登录时实时读取，无需重启）。
+func (s *AuthService) SetMFAPolicy(ctx context.Context, p MFAPolicy) error {
+	for key, val := range map[string]string{
+		mfaSettingRequireAdmins: strconv.FormatBool(p.RequireAdmins),
+		mfaSettingRequireAll:    strconv.FormatBool(p.RequireAll),
+	} {
+		if err := s.repos.AIConfig.SetSetting(ctx, key, val); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mfaPolicyHit 判定该账号是否命中强制策略（未启用双因素时）。
+func (s *AuthService) mfaPolicyHit(ctx context.Context, role domain.Role) bool {
+	p := s.GetMFAPolicy(ctx)
+	if p.RequireAll {
+		return true
+	}
+	return p.RequireAdmins && role == domain.RoleAdmin
+}
+
+// peekMFATicket 校验票据有效但不消费——pending-enroll（生成密钥）与
+// pending-confirm（消费+签发令牌）是两步，票据必须在两步间保持有效。
+func (s *AuthService) peekMFATicket(id string) (*mfaTicket, bool) {
+	s.mfaMu.Lock()
+	defer s.mfaMu.Unlock()
+	t, ok := s.mfa[id]
+	if !ok || time.Now().After(t.expiresAt) {
+		return nil, false
+	}
+	return &t, true
+}
+
+// PendingEnrollMFA 凭"密码已验"票据发起 TOTP 绑定：返回密钥与 otpauth
+// URI 供登录页渲染二维码/手录。票据不消费（confirm 时才消费）。
+func (s *AuthService) PendingEnrollMFA(ctx context.Context, ticketID string) (secret, otpauthURL string, err error) {
+	t, ok := s.peekMFATicket(ticketID)
+	if !ok {
+		return "", "", apperr.Unauthenticated("登录票据无效或已过期，请重新登录")
+	}
+	return s.EnrollMFA(ctx, t.userID)
+}
+
+// PendingConfirmMFA 凭票据完成绑定并签发令牌对——强制绑定流程在登录
+// 环节闭环，无需已认证会话。
+func (s *AuthService) PendingConfirmMFA(ctx context.Context, ticketID, code, ip, ua string) (*LoginResult, error) {
+	t, ok := s.consumeMFATicket(strings.TrimSpace(ticketID))
+	if !ok {
+		return nil, apperr.Unauthenticated("登录票据无效或已过期，请重新登录")
+	}
+	if err := s.ConfirmMFA(ctx, t.userID, code); err != nil {
+		return nil, err
+	}
+	u, err := s.repos.Users.ByID(ctx, t.userID)
+	if err != nil || u == nil {
+		return nil, apperr.NotFound("用户")
+	}
+	s.audit(ctx, u.ID, u.Username, "auth.mfa_pending_confirm", u.Username,
+		"MFA 策略强制：登录环节完成绑定", ip)
+	return s.newSession(ctx, u, ip, ua, true)
 }
 
 // consumeMFATicket 取走票据（单次使用：取走即删，防重放）。
@@ -353,6 +448,14 @@ func (s *AuthService) Login(ctx context.Context, username, password, ip, ua stri
 	if u.TotpEnabled {
 		s.audit(ctx, u.ID, u.Username, "auth.mfa_required", u.Username, "", ip)
 		return &LoginResult{MfaRequired: true, MfaTicket: s.issueMFATicket(u)}, nil
+	}
+	// MFA 策略强制（GitLab 形态，2026-11-21 调研）：设置中心开关命中且
+	// 账号未启用双因素 → 拒发令牌，改发"待绑定票据"（密码已验）——
+	// 前端凭票据在登录页完成绑定（pending-enroll/confirm），绑定即登录。
+	// 未命中策略的账号（含全部本机测试场景）登录流程零变化。
+	if !u.TotpEnabled && s.mfaPolicyHit(ctx, u.Role) {
+		s.audit(ctx, u.ID, u.Username, "auth.mfa_enroll_required", u.Username, "", ip)
+		return &LoginResult{MfaEnrollRequired: true, MfaTicket: s.issueMFATicket(u)}, nil
 	}
 	s.guard.reset(username)
 
