@@ -25,7 +25,7 @@ type Row = Record<string, unknown>;
 const CMD_LABEL: Record<string, string> = {
   rescan: '重新扫描', sync_rules: '同步规则', collect: '采集清单',
   terminate: '终止进程', quarantine_file: '隔离文件', quarantine_restore: '恢复隔离',
-  self_upgrade: '自升级',
+  self_upgrade: '自升级', drill: '检测演练',
 };
 const CMD_STATUS_TONE: Record<string, string> = {
   pending: 'medium', delivered: 'info', done: 'resolved', failed: 'critical',
@@ -323,6 +323,7 @@ export function HostDetailPage({ user }: { user: User }) {
   const [sections, setSections] = useState<HostInventorySection[] | null>(null);
   const [cmds, setCmds] = useState<AgentCommand[] | null>(null);
   const [cmdBusy, setCmdBusy] = useState('');
+  const canWrite = user.role !== 'viewer';
   const [qPath, setQPath] = useState('');
   const [qPid, setQPid] = useState('');
   const [changes, setChanges] = useState<Alert[] | null>(null);
@@ -652,6 +653,15 @@ export function HostDetailPage({ user }: { user: User }) {
                 <div className="mb-1 flex items-center gap-2.5 px-3.5">
                   <CardTitle>指令历史</CardTitle>
                   <div className="flex-1" />
+                  {canWrite && (
+                    <Button size="sm" variant="ghost" onClick={() => send('drill', '', {
+                      title: '在这台主机上运行检测演练？',
+                      message: '将在终端本地执行五步自造样本演练（进程链/端口扫描/服务事件/注册表/诱饵触碰），产生的告警带「演练」标记，可在告警页过滤。全程零真实恶意内容、零真实外联。',
+                      okText: '运行演练',
+                    })} disabled={cmdBusy === 'drill'}>
+                      {cmdBusy === 'drill' ? '演练中…' : '运行演练'}
+                    </Button>
+                  )}
                   <span className="text-[11px] text-ghost">{(cmds || []).length} 条</span>
                 </div>
                 {!cmds ? <SkeletonRows rows={2} /> : !cmds.length ? (
