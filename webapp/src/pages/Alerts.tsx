@@ -80,8 +80,19 @@ export function Alerts({ user }: { user: User }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
 
+  // 演练标记（后端 drill=true 证据注释）：徽章显示 + 前端过滤
+  const [drillOnly, setDrillOnly] = useState(false);
+
+  // 保存视图（S3）：筛选组合持久化到 localStorage，命名保存/一键应用/删除
+  const [views, setViews] = useState<{ name: string; filters: Record<string, string> }[]>(() => {
+    try { return JSON.parse(localStorage.getItem('zedr_alert_views_v1') || '[]'); } catch { return []; }
+  });
+  const [viewName, setViewName] = useState('');
+  const isDrill = (a: Alert) => (a.evidence?.notes || []).some((n: string) => n.includes('drill=true'));
+
   const items = useMemo(() => {
-    const arr = [...(rows || [])];
+    let arr = [...(rows || [])];
+    if (drillOnly) arr = arr.filter((a) => (a.evidence?.notes || []).some((n: string) => n.includes('drill=true')));
     arr.sort((a, b) => {
       let d = 0;
       if (sortKey === 'score') d = a.score - b.score;
@@ -90,7 +101,22 @@ export function Alerts({ user }: { user: User }) {
       return sortDesc ? -d : d;
     });
     return arr;
-  }, [rows, sortKey, sortDesc]);
+  }, [rows, sortKey, sortDesc, drillOnly]);
+
+  const saveViews = (next: typeof views) => {
+    setViews(next);
+    try { localStorage.setItem('zedr_alert_views_v1', JSON.stringify(next)); } catch { /* 配额满静默 */ }
+  };
+  const saveView = () => {
+    const name = viewName.trim() || `视图 ${views.length + 1}`;
+    saveViews([...views.filter((v) => v.name !== name), { name, filters }]);
+    setViewName('');
+  };
+  const applyView = (v: { name: string; filters: Record<string, string> }) => {
+    setFilters((f) => ({ ...f, ...v.filters }));
+    setPage(1);
+  };
+  const removeView = (name: string) => saveViews(views.filter((v) => v.name !== name));
 
   const setFilter = (k: keyof typeof filters, v: string) => { setFilters((f) => ({ ...f, [k]: v })); setPage(1); };
 
@@ -189,6 +215,30 @@ export function Alerts({ user }: { user: User }) {
             <button aria-label="清除 ATT&CK 过滤" onClick={() => setFilter('mitre', '')} className="ml-0.5 cursor-pointer font-bold leading-none opacity-70 hover:opacity-100">×</button>
           </Badge>
         )}
+        <button
+          onClick={() => setDrillOnly((v) => !v)}
+          aria-pressed={drillOnly}
+          className={cn(
+            'cursor-pointer rounded-full border px-2.5 py-1 text-[11.5px] transition-colors',
+            drillOnly ? 'border-primary/40 bg-brand-soft text-foreground' : 'border-border-soft bg-secondary text-muted-foreground hover:text-foreground',
+          )}
+          title="只显示检测演练期间产生的告警（drill 标记）"
+        >
+          仅演练
+        </button>
+        <div className="flex flex-1 flex-wrap items-center gap-1.5">
+          {views.map((v) => (
+            <span key={v.name} className="group inline-flex items-center gap-1 rounded-full border border-border-soft bg-secondary px-2 py-1 text-[11.5px]">
+              <button onClick={() => applyView(v)}
+                className="cursor-pointer text-muted-foreground hover:text-foreground" title="应用该视图筛选">{v.name}</button>
+              <button onClick={() => removeView(v.name)} aria-label={`删除视图 ${v.name}`}
+                className="cursor-pointer text-faint hover:text-destructive">×</button>
+            </span>
+          ))}
+          <Input value={viewName} onChange={(e) => setViewName(e.target.value)} placeholder="存为视图…" maxLength={20}
+            className="h-7 w-[110px] text-[11px]" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveView(); } }} />
+          <Button size="sm" variant="ghost" disabled={!viewName.trim()} onClick={saveView} title="把当前筛选组合保存为命名视图">保存</Button>
+        </div>
         <div className="flex-1" />
         <Button size="sm" onClick={exportCsv}><Download size={13} /> 导出 CSV</Button>
       </div>
@@ -234,7 +284,10 @@ export function Alerts({ user }: { user: User }) {
                     </td>
                     <td className="px-3.5 py-2.5"><Badge tone={a.severity}>{SEV_LABEL[a.severity]}</Badge></td>
                     <td className="px-3.5 py-2.5">
-                      <div className="font-medium">{a.title}</div>
+                      <div className="font-medium">
+                        {a.title}
+                        {isDrill(a) && <Badge tone="info" className="ml-1.5" title="检测演练期间产生的告警（drill 标记）">演练</Badge>}
+                      </div>
                       <div className="mt-0.5 text-xs text-faint">{(a.rule_ids || []).join(' · ') || '-'}</div>
                     </td>
                     <td className="px-3.5 py-2.5">{a.hostname}{a.duplicate ? <span className="text-xs text-faint"> ×{a.duplicate + 1}</span> : null}</td>
