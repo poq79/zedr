@@ -260,6 +260,7 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/rules", viewer(adminH.listRules))
 	mux.Handle("GET /api/v1/rules/schema", viewer(adminH.ruleSchema))
 	mux.Handle("POST /api/v1/rules", writer(adminH.upsertRule))
+	mux.Handle("POST /api/v1/rules/sigma-import", adminOnly(adminH.importSigmaRules))
 	mux.Handle("POST /api/v1/rules/{id}/toggle", writer(adminH.toggleRule))
 	mux.Handle("POST /api/v1/rules/{id}/mode", writer(adminH.setRuleMode))
 	mux.Handle("DELETE /api/v1/rules/{id}", adminOnly(adminH.deleteRule))

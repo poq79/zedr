@@ -372,6 +372,33 @@ func (h *adminHandler) upsertRule(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, rule)
 }
 
+// importSigmaRules 批量导入 Sigma YAML 规则（adminOnly）。
+// 转换门禁/DNF 展开在 internal/rules/sigma.go；入库统一 observe 模式
+// 且 Enabled=false——先观察后转正，绝不直接进告警面。
+func (h *adminHandler) importSigmaRules(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	var req struct {
+		YAML string `json:"yaml"`
+	}
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		httpx.WriteError(w, r, apperr.Invalid("YAML 内容不能为空"))
+		return
+	}
+	rep, err := h.deps.Services.Rule.SigmaImport(r.Context(), req.YAML, p.Username)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	h.deps.Services.Audit.Record(r.Context(), p.UserID, p.Username, "rule.sigma_import", "",
+		fmt.Sprintf("docs=%d,created=%d,skipped=%d", rep.Docs, len(rep.Created), len(rep.Skipped)),
+		httpx.ClientIP(r))
+	httpx.WriteJSON(w, r, http.StatusOK, rep)
+}
+
 // setRuleMode 观察模式/正常模式切换。独立端点而非复用 upsert：
 // 转正是运营高频动作且语义单一，独立路由让审计记录一眼可读
 // （rule.mode 而不是一条内容不明的 rule.upsert）。
