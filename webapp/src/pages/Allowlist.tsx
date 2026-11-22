@@ -1,0 +1,163 @@
+// 白名单页（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
+import { useCallback, useEffect, useState } from 'react';
+import { Plus, ShieldCheck } from 'lucide-react';
+import { api } from '../lib/api';
+import { AllowEntry, Role } from '../lib/types';
+import { relTime } from '../lib/format';
+import { useError } from '../lib/hooks';
+import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
+import { useConfirm, useToast } from '../components/ui/overlays';
+
+export function AllowlistPage({ user }: { user: { role: Role } }) {
+  const err = useError();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const canWrite = user.role !== 'viewer';
+  const isAdmin = user.role === 'admin';
+  const [items, setItems] = useState<AllowEntry[] | null>(null);
+  const [form, setForm] = useState({ type: 'hash', value: '', note: '' });
+  const typeMeta = ALLOW_TYPES.find((t) => t.value === form.type) || ALLOW_TYPES[0];
+
+  const load = useCallback(async () => {
+    try { setItems((await api.get<{ items: AllowEntry[] }>('/api/v1/allowlist')).items || []); }
+    catch (e) { err.capture(e); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  if (err.rendered) return err.rendered;
+
+  const add = async () => {
+    if (!form.value.trim()) return toast('请填写加白内容', 'warn');
+    try {
+      await api.post('/api/v1/allowlist', { type: form.type, value: form.value.trim(), note: form.note.trim() });
+      toast('已加入白名单（匹配的历史未处置告警已一并回收）');
+      setForm({ type: form.type, value: '', note: '' });
+      load();
+    } catch (e) { toast((e as Error).message, 'err'); }
+  };
+
+  const remove = async (e: AllowEntry) => {
+    const ok = await confirm({
+      title: '删除该白名单项？',
+      message: '删除后相关检测会重新生效，该对象若仍有可疑行为会再次告警。',
+      danger: true, okText: '删除',
+    });
+    if (!ok) return;
+    try {
+      await api.del(`/api/v1/allowlist/${encodeURIComponent(e.id)}`);
+      toast('已删除');
+      load();
+    } catch (ex) { toast((ex as Error).message, 'err'); }
+  };
+
+  /* 导出/导入（adminOnly）：白名单是误报治理资产，重建环境时
+     "导出→导入"直通，格式与导出文件对称 */
+  const exportList = async () => {
+    try {
+      const blob = await api.download('/api/v1/allowlist/export');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'zedr-allowlist.json'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast((e as Error).message, 'err'); }
+  };
+
+  const importList = async (file: File) => {
+    let entries: { type: string; value: string; note?: string }[] = [];
+    try {
+      const data = JSON.parse(await file.text());
+      if (Array.isArray(data?.entries)) entries = data.entries;
+      else if (Array.isArray(data?.items)) entries = data.items;
+      else if (Array.isArray(data)) entries = data;
+    } catch {
+      return toast('文件不是合法 JSON（应使用本页导出的格式）', 'err');
+    }
+    if (!entries.length) return toast('文件里没有可导入的条目', 'warn');
+    try {
+      const res = await api.post<{ added: number; skipped: number; failed: number }>('/api/v1/allowlist/import', { entries });
+      toast(`导入完成：新增 ${res.added} · 已存在跳过 ${res.skipped} · 失败 ${res.failed}`);
+      load();
+    } catch (e) { toast((e as Error).message, 'err'); }
+  };
+
+  return (
+    <div className="space-y-3.5">
+      {canWrite && (
+        <Card className="p-4">
+          <CardTitle className="mb-3">新增白名单</CardTitle>
+          <div className="grid items-end gap-2.5 sm:grid-cols-[170px_1fr_1fr_auto]">
+            <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">类型</span>
+              <Select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} className="w-full">
+                {ALLOW_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </Select>
+            </label>
+            <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">内容</span>
+              <Input value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} className="w-full font-mono text-xs" placeholder={typeMeta.placeholder} />
+            </label>
+            <label className="block"><span className="mb-1.5 block text-[11.5px] text-faint">备注</span>
+              <Input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} className="w-full" placeholder="为什么加白（会进入审计）" />
+            </label>
+            <Button variant="primary" onClick={add}><Plus size={13} /> 添加</Button>
+          </div>
+          <div className="mt-2.5 text-[11.5px] text-faint">{typeMeta.hint}</div>
+        </Card>
+      )}
+
+      {!items ? <Card className="px-2 pb-2"><SkeletonRows rows={4} /></Card> : !items.length ? (
+        <Card><EmptyState icon={<ShieldCheck size={20} />} title="白名单为空"
+          sub="加白名单能让确认安全的对象不再告警。可在告警详情里一键添加，或在这里手动新增。" /></Card>
+      ) : (
+        <Card className="overflow-x-auto px-2 py-3.5">
+          <div className="mb-2 flex items-center px-3.5">
+            <span className="text-[11px] tracking-[.06em] uppercase text-faint">共 {items.length} 条 · 加白即回收历史未处置告警</span>
+            <div className="flex-1" />
+            {isAdmin && (
+              <label className="cursor-pointer">
+                <input type="file" accept="application/json" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) importList(f); e.target.value = ''; }} />
+                <Button size="sm" variant="ghost">导入</Button>
+              </label>
+            )}
+            {isAdmin && <Button size="sm" variant="ghost" onClick={exportList}>导出</Button>}
+          </div>
+          <table className="w-full text-[13px]">
+            <thead><tr className="border-b border-border-soft text-left text-[11px] tracking-[.06em] text-faint uppercase">
+              {['类型', '内容', '备注', '添加人', '时间', '操作'].map((h) => <th key={h} className="px-3.5 py-2.5 font-semibold">{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {items.map((e) => (
+                <tr key={e.id} className="border-b border-border-soft last:border-b-0 hover:bg-secondary">
+                  <td className="px-3.5 py-2.5">
+                    <Badge tone="info">{ALLOW_TYPES.find((t) => t.value === e.type)?.label || e.type}</Badge>
+                  </td>
+                  <td className="max-w-[420px] px-3.5 py-2.5 font-mono text-xs break-all">{e.value}</td>
+                  <td className="px-3.5 py-2.5 text-xs">{e.note || <span className="text-faint">-</span>}</td>
+                  <td className="px-3.5 py-2.5 text-xs text-faint">{e.created_by || '-'}</td>
+                  <td className="px-3.5 py-2.5 text-xs text-faint">{e.created_at ? relTime(e.created_at) : '-'}</td>
+                  <td className="px-3.5 py-2.5">{canWrite && <Button size="sm" variant="ghost" onClick={() => remove(e)}>删除</Button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ================= 审计日志 ================= */
+
+/* 审计动作语义化：原始 action 串保留在 title 里可查，界面给中文与色彩 */
+const AUDIT_LABEL: Record<string, string> = {
+  'alert.status': '告警处置', 'alert.bulk_status': '批量处置', 'alert.triage': 'AI 研判',
+  'ai.hunt': 'AI 狩猎', 'host.delete': '删除主机', 'host.command': '下发指令',
+  'ioc.add': '添加 IOC', 'ioc.delete': '删除 IOC',
+  'rule.upsert': '规则变更', 'rule.toggle': '规则启停', 'rule.mode': '规则模式切换', 'rule.delete': '删除规则',
+  'allowlist.add': '添加白名单', 'allowlist.delete': '删除白名单',
+  'auth.login': '登录', 'auth.logout': '退出登录', 'auth.change_password': '修改密码',
+  'user.create': '创建账号',
+};
+const auditTone = (a: string): string =>
+  /delete|terminate/.test(a) ? 'critical' : /command|status|bulk/.test(a) ? 'info' : /add|upsert/.test(a) ? 'ok' : 'neutral';
+
