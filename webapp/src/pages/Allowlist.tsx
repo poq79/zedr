@@ -1,11 +1,11 @@
 // AllowlistPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-import { useState, useCallback, useEffect } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import { Plus, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
 import { AllowEntry, Role } from '../lib/types';
 import { relTime } from '../lib/format';
 import { useError } from '../lib/hooks';
-import { EmptyState, Input, Card, Badge, CardTitle, SkeletonRows, Button, Select } from '../components/ui/basics';
+import { Badge, Button, SkeletonRows, Input, Select, EmptyState, CardTitle, Card } from '../components/ui/basics';
 import { useConfirm, useToast } from '../components/ui/overlays';
 
 /* ================= 白名单（例外与降噪） =================
