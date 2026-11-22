@@ -233,7 +233,9 @@ The script is idempotent (rerun = reinstall), exits with stable codes (0 enrolle
 / 2 privileges / 4 arguments), and fleets verify via `-status -json` (`online`).
 
 All configuration is environment variables (`HG_*`), validated at startup — see
-[`.env.example`](.env.example) for every option with comments.
+[`.env.example`](.env.example) for every option with comments, and
+[CONFIGURATION.md](CONFIGURATION.md) for the domain-grouped map (which keys
+toggle what, env vs hot-reload policies, key derivation chain).
 
 ## Safety defaults
 
