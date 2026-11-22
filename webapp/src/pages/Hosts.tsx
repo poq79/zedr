@@ -1,14 +1,14 @@
 // HostsPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-import { useEffect, useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, Copy, Monitor, ArrowUpCircle, Eye, EyeOff, Plus } from 'lucide-react';
+import { EyeOff, Copy, Eye, Download, Monitor, Plus, ArrowUpCircle } from 'lucide-react';
 import { api } from '../lib/api';
-import { Host, UserRow, UpgradeAvail, FleetStatus, FleetEntry } from '../lib/types';
-import { fmtTime, relTime } from '../lib/format';
+import { Host, FleetEntry, UpgradeAvail, FleetStatus, UserRow } from '../lib/types';
+import { relTime, fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
-import { cmpVersion, cn } from '../lib/utils';
-import { Badge, Button, SkeletonRows, Input, EmptyState, CardTitle, Card } from '../components/ui/basics';
-import { useConfirm, Drawer, useToast } from '../components/ui/overlays';
+import { cn, cmpVersion } from '../lib/utils';
+import { Button, Input, SkeletonRows, Card, Badge, CardTitle, EmptyState } from '../components/ui/basics';
+import { Drawer, useToast, useConfirm } from '../components/ui/overlays';
 
 interface EnrollConfig { enroll_token: string; deploy_enabled: boolean; deploy_version: string }
 
@@ -27,6 +27,9 @@ async function copyText(text: string): Promise<boolean> {
     const ok = document.execCommand('copy');
     document.body.removeChild(ta);
     return ok;
+  } catch { return false; }
+}
+
 function DeployDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const toast = useToast();
   const [cfg, setCfg] = useState<EnrollConfig | null>(null);
