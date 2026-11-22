@@ -2,11 +2,11 @@
 import { useEffect, useCallback, useState } from 'react';
 import { KeyRound } from 'lucide-react';
 import QRCode from 'qrcode';
-import { disableMFA, setMFAPolicy, enrollMFA, getMFAPolicy, api, confirmMFA } from '../lib/api';
+import { api, enrollMFA, setMFAPolicy, confirmMFA, getMFAPolicy, disableMFA } from '../lib/api';
 import type { User as UserRow } from '../lib/types';
 import { fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
-import { Select, Button, Input, SkeletonRows, Card, Badge, CardTitle } from '../components/ui/basics';
+import { Card, SkeletonRows, Button, Input, Select, Badge, CardTitle } from '../components/ui/basics';
 import { useToast } from '../components/ui/overlays';
 
 type UserAcc = UserRow & { display_name?: string; disabled?: boolean; last_login_at?: string; created_at?: string };

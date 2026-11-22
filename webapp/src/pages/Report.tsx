@@ -1,10 +1,17 @@
 // ReportPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { IntegrityReport } from '../lib/types';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
-import { SkeletonRows, Card, Badge, CardTitle } from '../components/ui/basics';
+import { Card, SkeletonRows, Badge, CardTitle } from '../components/ui/basics';
+
+interface WeeklyReport {
+  alerts_week?: number; resolved_week?: number; fp_rate?: number;
+  mttr_min?: number; hosts_active?: number;
+  fp_ranking?: { rule_id: string; fp_rate: number; false_pos: number; handled: number; tune_candidate?: boolean }[];
+  [k: string]: unknown;
+}
 
 export function ReportPage() {
   const err = useError();

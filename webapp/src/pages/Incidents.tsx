@@ -1,14 +1,14 @@
 // IncidentsPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, ShieldCheck, RefreshCw } from 'lucide-react';
+import { RefreshCw, Sparkles, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
-import { Role, Incident, Burst } from '../lib/types';
-import { fmtTime, SEV_LABEL, relTime } from '../lib/format';
+import { Incident, Role, Burst } from '../lib/types';
+import { relTime, SEV_LABEL, fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
-import { Button, SkeletonRows, Card, Badge, CardTitle, EmptyState, Select } from '../components/ui/basics';
-import { Drawer, useToast, useConfirm } from '../components/ui/overlays';
+import { Card, EmptyState, SkeletonRows, Button, Select, Badge, CardTitle } from '../components/ui/basics';
+import { useToast, Drawer, useConfirm } from '../components/ui/overlays';
 
 const INCIDENT_STATUS_LABEL: Record<string, string> = {
   open: '待调查', investigating: '调查中', contained: '已遏制', resolved: '已解决',
@@ -274,11 +274,4 @@ export function IncidentsPage({ user }: { user?: { role: Role } }) {
 }
 
 /* ================= 运营周报 ================= */
-
-interface WeeklyReport {
-  alerts_week?: number; resolved_week?: number; fp_rate?: number;
-  mttr_min?: number; hosts_active?: number;
-  fp_ranking?: { rule_id: string; fp_rate: number; false_pos: number; handled: number; tune_candidate?: boolean }[];
-  [k: string]: unknown;
-}
 
