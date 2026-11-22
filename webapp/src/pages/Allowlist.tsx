@@ -8,6 +8,21 @@ import { useError } from '../lib/hooks';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { useConfirm, useToast } from '../components/ui/overlays';
 
+          <p className="mt-2 px-3.5 text-xs text-faint">点击任意一行进入主机详情整页：系统概要 · 网络适配器 · 监听端口 · 服务 · 计划任务 · 自启动 · 处置指令 · 指令历史。终端默认每 30 秒心跳一次。</p>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+/* ================= 白名单（例外与降噪） =================
+   检测规则页已升级为「规则中心」整页（pages/RulesCenter.tsx）；
+   白名单是它的姊妹能力：规则管"什么该响"，这里管"什么确认安全"。 */
+
+/** 五种加白类型：类型语义直接写进选项与提示——加白最大的风险是
+    条目太宽把真攻击也洗白了，提示里把"怎么写才窄"讲清楚。 */
 const ALLOW_TYPES: { value: string; label: string; hint: string; placeholder: string }[] = [
   { value: 'hash', label: '文件哈希 SHA256', hint: '单个文件的精确匹配，最窄最安全。适用于"这个文件确认安全"。', placeholder: '64 位十六进制 SHA256，如 7f3a91c0…' },
   { value: 'path', label: '路径', hint: '镜像路径匹配：指向文件为精确匹配，以 \\ 结尾则匹配整个目录。目录越深越窄越安全。', placeholder: 'C:\\Tools\\procmon.exe 或 C:\\Tools\\Sysinternals\\' },
