@@ -1,11 +1,12 @@
-// 审计日志页（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
+// AuditPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
 import { useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
-import { AuditRow, UserRow } from '../lib/types';
+import { AuditRow } from '../lib/types';
+import type { User as UserRow } from '../lib/types';
 import { fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
-import { Badge, Card, EmptyState, SkeletonRows } from '../components/ui/basics';
+import { Card, SkeletonRows, Badge, EmptyState } from '../components/ui/basics';
 
 const AUDIT_LABEL: Record<string, string> = {
   'alert.status': '告警处置', 'alert.bulk_status': '批量处置', 'alert.triage': 'AI 研判',

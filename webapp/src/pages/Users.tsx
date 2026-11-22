@@ -1,12 +1,12 @@
-// 账号管理页 + MFA 自助卡/策略卡（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-import { useCallback, useEffect, useState } from 'react';
+// UsersPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
+import { useEffect, useState, useCallback } from 'react';
 import { KeyRound } from 'lucide-react';
 import QRCode from 'qrcode';
-import { api, confirmMFA, disableMFA, enrollMFA, getMFAPolicy, setMFAPolicy } from '../lib/api';
+import { setMFAPolicy, api, disableMFA, getMFAPolicy, enrollMFA, confirmMFA } from '../lib/api';
 import type { User as UserRow } from '../lib/types';
 import { fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
-import { Badge, Button, Card, CardTitle, Input, Select, SkeletonRows } from '../components/ui/basics';
+import { Select, Card, SkeletonRows, Input, CardTitle, Badge, Button } from '../components/ui/basics';
 import { useToast } from '../components/ui/overlays';
 
 export function UsersPage({ self, onPasswordChanged }: { self: { username: string; role: string }; onPasswordChanged?: () => void }) {
@@ -235,30 +235,4 @@ function MfaPolicyCard() {
 }
 
 /* ================= 事件（攻击链聚类） ================= */
-
-const INCIDENT_STATUS_LABEL: Record<string, string> = {
-  open: '待调查', investigating: '调查中', contained: '已遏制', resolved: '已解决',
-};
-const INCIDENT_STATUS_TONE: Record<string, string> = {
-  open: 'critical', investigating: 'medium', contained: 'info', resolved: 'resolved',
-};
-
-/* ---- 事件级 AI 检测：攻击链叙事的数据契约（对应 /api/v1/incidents/{id}/narrative） ---- */
-interface NarrativePhase {
-  name: string; tactic: string; tactic_id: string;
-  alerts: string[]; description: string;
-}
-interface NarrativeAction { type: string; target: string; detail: string; requires_approval: boolean }
-interface IncidentNarrative {
-  summary: string; risk_score: number;
-  phases: NarrativePhase[]; missing_phases?: string[]; coverage?: string[];
-  actions?: NarrativeAction[];
-  grounded: boolean; uncited: number; untrusted_ignored: number;
-  model: string; engine: string; latency_ms: number;
-  degraded: boolean; degraded_reason?: string;
-}
-interface IncidentNarrativeView {
-  incident_id: string; hostname: string; alert_total: number;
-  narrative: IncidentNarrative; generated_at: string;
-}
 
