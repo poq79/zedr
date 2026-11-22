@@ -90,13 +90,28 @@ type TokenRepo interface {
 	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
 }
 
+// HeartbeatStats 是心跳携带的运行指标（UpdateHeartbeat 的参数对象）。
+// 心跳每加一个字段这里加一个成员——曾经 10 个散参数滚了三轮
+//（rule_version/ip/version/isolated 各加一次），下层三个实现跟着改三次，
+// 收成结构体后加字段只动一处。
+type HeartbeatStats struct {
+	At          time.Time
+	ProcCount   int
+	CPUPercent  float64
+	MemMB       float64
+	RuleVersion int
+	IP          string
+	Version     string
+	Isolated    bool
+}
+
 // AgentRepo 终端数据访问。
 type AgentRepo interface {
 	Upsert(ctx context.Context, a *domain.Agent) error
 	ByID(ctx context.Context, id string) (*domain.Agent, error)
 	ByMachineID(ctx context.Context, machineID string) (*domain.Agent, error)
 	List(ctx context.Context) ([]domain.Agent, error)
-	UpdateHeartbeat(ctx context.Context, id string, at time.Time, procCount int, cpu, mem float64, ruleVersion int, ip, version string, isolated bool) error
+	UpdateHeartbeat(ctx context.Context, id string, s HeartbeatStats) error
 	MarkOfflineBefore(ctx context.Context, threshold time.Time) (int64, error)
 	// StaleOnline 列出仍标记 online 但 last_seen 已越过阈值的终端——
 	// MarkOffline 先取转变清单再翻转：失联告警需要"逐台转变"事实，

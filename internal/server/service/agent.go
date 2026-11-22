@@ -197,8 +197,16 @@ func (s *AgentService) Heartbeat(ctx context.Context, agentID string, req model.
 			wasOffline = prev.Status == domain.AgentOffline
 		}
 	}
-	if err := s.repos.Agents.UpdateHeartbeat(ctx, agentID, now,
-		req.ProcCount, req.CPUPercent, req.MemMB, req.RuleVersion, ip, req.Version, req.Isolated); err != nil {
+	if err := s.repos.Agents.UpdateHeartbeat(ctx, agentID, repository.HeartbeatStats{
+		At:          now,
+		ProcCount:   req.ProcCount,
+		CPUPercent:  req.CPUPercent,
+		MemMB:       req.MemMB,
+		RuleVersion: req.RuleVersion,
+		IP:          ip,
+		Version:     req.Version,
+		Isolated:    req.Isolated,
+	}); err != nil {
 		return nil, err
 	}
 	if wasOffline && s.sensor != nil {

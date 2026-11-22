@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"zedr/internal/server/domain"
+	"zedr/internal/server/repository"
 )
 
 type userRepo struct{ s *Store }
@@ -269,7 +270,7 @@ func (r *agentRepo) List(ctx context.Context) ([]domain.Agent, error) {
 	return out, rows.Err()
 }
 
-func (r *agentRepo) UpdateHeartbeat(ctx context.Context, id string, at time.Time, procCount int, cpu, mem float64, ruleVersion int, ip, version string, isolated bool) error {
+func (r *agentRepo) UpdateHeartbeat(ctx context.Context, id string, s repository.HeartbeatStats) error {
 	_, err := r.s.db.ExecContext(ctx,
 		`UPDATE agents SET last_seen_at = ?, status = 'online', proc_count = ?, cpu_percent = ?,
 		 mem_mb = ?, rule_version = CASE WHEN ? > 0 THEN ? ELSE rule_version END,
@@ -277,7 +278,9 @@ func (r *agentRepo) UpdateHeartbeat(ctx context.Context, id string, at time.Time
 		 version = CASE WHEN ? <> '' THEN ? ELSE version END,
 		 isolated = ?
 		 WHERE id = ?`,
-		millis(at), procCount, cpu, mem, ruleVersion, ruleVersion, ip, ip, version, version, isolated, id)
+		millis(s.At), s.ProcCount, s.CPUPercent, s.MemMB,
+		s.RuleVersion, s.RuleVersion, s.IP, s.IP, s.Version, s.Version,
+		s.Isolated, id)
 	if err != nil {
 		return fmt.Errorf("更新心跳失败: %w", err)
 	}

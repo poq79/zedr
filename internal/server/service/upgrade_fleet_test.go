@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"zedr/internal/server/repository"
+
 	"zedr/internal/server/domain"
 	"zedr/internal/server/repository/sqlite"
 )
@@ -40,7 +42,7 @@ func newFleetHarness(t *testing.T, waveSize int, timeout time.Duration) (*fleetH
 	return &fleetHarness{
 		svc: svc,
 		ups: func(_ context.Context, id, version string) error {
-			return repos.Agents.UpdateHeartbeat(ctx, id, time.Now(), 10, 1.0, 2.0, 0, "10.0.0.1", version, false)
+			return repos.Agents.UpdateHeartbeat(ctx, id, repository.HeartbeatStats{At: time.Now(), ProcCount: 10, CPUPercent: 1.0, MemMB: 2.0, IP: "10.0.0.1", Version: version})
 		},
 		fail: func(_ context.Context, cmdID, detail string) error {
 			return repos.Commands.Complete(ctx, cmdID, "failed", detail, time.Now())
