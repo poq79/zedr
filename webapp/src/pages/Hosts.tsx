@@ -1,14 +1,14 @@
 // HostsPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, Eye, EyeOff, Download, Copy, Monitor, Plus } from 'lucide-react';
+import { Copy, Eye, Download, ArrowUpCircle, Plus, EyeOff, Monitor } from 'lucide-react';
 import { api } from '../lib/api';
-import { FleetStatus, UserRow, Host, UpgradeAvail, FleetEntry } from '../lib/types';
+import { Host, UserRow, UpgradeAvail, FleetStatus, FleetEntry } from '../lib/types';
 import { relTime, fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
 import { cn, cmpVersion } from '../lib/utils';
-import { EmptyState, Button, Card, SkeletonRows, Input, CardTitle, Badge } from '../components/ui/basics';
-import { useToast, Drawer, useConfirm } from '../components/ui/overlays';
+import { Card, Badge, Button, SkeletonRows, Input, CardTitle, EmptyState } from '../components/ui/basics';
+import { useToast, useConfirm, Drawer } from '../components/ui/overlays';
 
 interface EnrollConfig { enroll_token: string; deploy_enabled: boolean; deploy_version: string }
 

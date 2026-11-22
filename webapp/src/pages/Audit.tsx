@@ -3,10 +3,9 @@ import { useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
 import { AuditRow } from '../lib/types';
-import type { User as UserRow } from '../lib/types';
 import { fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
-import { Card, SkeletonRows, Badge, EmptyState } from '../components/ui/basics';
+import { Card, Badge, SkeletonRows, EmptyState } from '../components/ui/basics';
 
 const AUDIT_LABEL: Record<string, string> = {
   'alert.status': '告警处置', 'alert.bulk_status': '批量处置', 'alert.triage': 'AI 研判',
@@ -62,6 +61,4 @@ export function AuditPage() {
 }
 
 /* ================= 账号管理 ================= */
-
-type UserAcc = UserRow & { display_name?: string; disabled?: boolean; last_login_at?: string; created_at?: string };
 

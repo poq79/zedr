@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { IntegrityReport } from '../lib/types';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
-import { Card, SkeletonRows, CardTitle, Badge } from '../components/ui/basics';
+import { Card, Badge, SkeletonRows, CardTitle } from '../components/ui/basics';
 
 export function ReportPage() {
   const err = useError();

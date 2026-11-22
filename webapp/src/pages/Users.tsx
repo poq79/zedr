@@ -1,13 +1,15 @@
 // UsersPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { KeyRound } from 'lucide-react';
 import QRCode from 'qrcode';
-import { setMFAPolicy, api, disableMFA, getMFAPolicy, enrollMFA, confirmMFA } from '../lib/api';
+import { setMFAPolicy, getMFAPolicy, confirmMFA, api, enrollMFA, disableMFA } from '../lib/api';
 import type { User as UserRow } from '../lib/types';
 import { fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
-import { Select, Card, SkeletonRows, Input, CardTitle, Badge, Button } from '../components/ui/basics';
+import { Card, Badge, Button, SkeletonRows, Input, Select, CardTitle } from '../components/ui/basics';
 import { useToast } from '../components/ui/overlays';
+
+type UserAcc = UserRow & { display_name?: string; disabled?: boolean; last_login_at?: string; created_at?: string };
 
 export function UsersPage({ self, onPasswordChanged }: { self: { username: string; role: string }; onPasswordChanged?: () => void }) {
   const err = useError();

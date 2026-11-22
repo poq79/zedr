@@ -1,14 +1,14 @@
 // IncidentsPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, RefreshCw, ShieldCheck } from 'lucide-react';
+import { RefreshCw, Sparkles, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
-import { Role, Incident, Burst } from '../lib/types';
+import { Burst, Role, Incident } from '../lib/types';
 import { relTime, SEV_LABEL, fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
-import { EmptyState, Button, Select, Card, SkeletonRows, CardTitle, Badge } from '../components/ui/basics';
-import { useToast, Drawer, useConfirm } from '../components/ui/overlays';
+import { Card, Badge, Button, SkeletonRows, Select, CardTitle, EmptyState } from '../components/ui/basics';
+import { useToast, useConfirm, Drawer } from '../components/ui/overlays';
 
 const INCIDENT_STATUS_LABEL: Record<string, string> = {
   open: '待调查', investigating: '调查中', contained: '已遏制', resolved: '已解决',
