@@ -2,11 +2,22 @@
 import { useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
-import { AuditRow } from '../lib/types';
-import type { User as UserRow } from '../lib/types';
+import { AuditRow, UserRow } from '../lib/types';
 import { fmtTime } from '../lib/format';
 import { useError } from '../lib/hooks';
 import { Badge, Card, EmptyState, SkeletonRows } from '../components/ui/basics';
+
+const AUDIT_LABEL: Record<string, string> = {
+  'alert.status': '告警处置', 'alert.bulk_status': '批量处置', 'alert.triage': 'AI 研判',
+  'ai.hunt': 'AI 狩猎', 'host.delete': '删除主机', 'host.command': '下发指令',
+  'ioc.add': '添加 IOC', 'ioc.delete': '删除 IOC',
+  'rule.upsert': '规则变更', 'rule.toggle': '规则启停', 'rule.mode': '规则模式切换', 'rule.delete': '删除规则',
+  'allowlist.add': '添加白名单', 'allowlist.delete': '删除白名单',
+  'auth.login': '登录', 'auth.logout': '退出登录', 'auth.change_password': '修改密码',
+  'user.create': '创建账号',
+};
+const auditTone = (a: string): string =>
+  /delete|terminate/.test(a) ? 'critical' : /command|status|bulk/.test(a) ? 'info' : /add|upsert/.test(a) ? 'ok' : 'neutral';
 
 export function AuditPage() {
   const err = useError();

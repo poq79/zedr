@@ -1,7 +1,4 @@
 // 主机终端页 + 接入/升级抽屉（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-
-/** 接入引导配置（GET /api/v1/deploy/enroll-config，adminOnly）。 */
-interface EnrollConfig { enroll_token: string; deploy_enabled: boolean; deploy_version: string }
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpCircle, Copy, Download, Eye, EyeOff, Monitor, Plus } from 'lucide-react';
@@ -13,6 +10,9 @@ import { useError } from '../lib/hooks';
 import { cmpVersion, cn } from '../lib/utils';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, SkeletonRows } from '../components/ui/basics';
 import { Drawer, useConfirm, useToast } from '../components/ui/overlays';
+
+interface EnrollConfig { enroll_token: string; deploy_enabled: boolean; deploy_version: string }
+
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -417,11 +417,3 @@ export function HostsPage({ user }: { user: UserRow }) {
 
 /** 五种加白类型：类型语义直接写进选项与提示——加白最大的风险是
     条目太宽把真攻击也洗白了，提示里把"怎么写才窄"讲清楚。 */
-const ALLOW_TYPES: { value: string; label: string; hint: string; placeholder: string }[] = [
-  { value: 'hash', label: '文件哈希 SHA256', hint: '单个文件的精确匹配，最窄最安全。适用于"这个文件确认安全"。', placeholder: '64 位十六进制 SHA256，如 7f3a91c0…' },
-  { value: 'path', label: '路径', hint: '镜像路径匹配：指向文件为精确匹配，以 \\ 结尾则匹配整个目录。目录越深越窄越安全。', placeholder: 'C:\\Tools\\procmon.exe 或 C:\\Tools\\Sysinternals\\' },
-  { value: 'signer', label: '签名主体', hint: '按可信签名者匹配——一条加白覆盖该厂商全部签名文件，适合标准化软件资产。', placeholder: '签名主体名，如 Contoso Ltd' },
-  { value: 'pair', label: '父子进程对', hint: '格式 parent.exe>child.exe：只放行特定启动组合，比整条命令行加白窄得多。', placeholder: 'deployment-agent.exe>cmd.exe' },
-  { value: 'cmdline', label: '命令行片段', hint: '包含匹配（不区分大小写）。务必写得尽量窄——命令行是最容易被攻击者复用的维度。', placeholder: '如 --backup-mode' },
-];
-

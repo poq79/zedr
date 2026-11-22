@@ -8,6 +8,14 @@ import { useError } from '../lib/hooks';
 import { Badge, Button, Card, CardTitle, EmptyState, Input, Select, SkeletonRows } from '../components/ui/basics';
 import { useConfirm, useToast } from '../components/ui/overlays';
 
+const ALLOW_TYPES: { value: string; label: string; hint: string; placeholder: string }[] = [
+  { value: 'hash', label: '文件哈希 SHA256', hint: '单个文件的精确匹配，最窄最安全。适用于"这个文件确认安全"。', placeholder: '64 位十六进制 SHA256，如 7f3a91c0…' },
+  { value: 'path', label: '路径', hint: '镜像路径匹配：指向文件为精确匹配，以 \\ 结尾则匹配整个目录。目录越深越窄越安全。', placeholder: 'C:\\Tools\\procmon.exe 或 C:\\Tools\\Sysinternals\\' },
+  { value: 'signer', label: '签名主体', hint: '按可信签名者匹配——一条加白覆盖该厂商全部签名文件，适合标准化软件资产。', placeholder: '签名主体名，如 Contoso Ltd' },
+  { value: 'pair', label: '父子进程对', hint: '格式 parent.exe>child.exe：只放行特定启动组合，比整条命令行加白窄得多。', placeholder: 'deployment-agent.exe>cmd.exe' },
+  { value: 'cmdline', label: '命令行片段', hint: '包含匹配（不区分大小写）。务必写得尽量窄——命令行是最容易被攻击者复用的维度。', placeholder: '如 --backup-mode' },
+];
+
 export function AllowlistPage({ user }: { user: { role: Role } }) {
   const err = useError();
   const toast = useToast();
