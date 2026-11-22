@@ -1,10 +1,10 @@
 // ReportPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { IntegrityReport } from '../lib/types';
 import { useError } from '../lib/hooks';
 import { cn } from '../lib/utils';
-import { Card, Badge, SkeletonRows, CardTitle } from '../components/ui/basics';
+import { Card, Badge, CardTitle, SkeletonRows } from '../components/ui/basics';
 
 export function ReportPage() {
   const err = useError();

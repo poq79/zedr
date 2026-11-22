@@ -1,21 +1,12 @@
 // AllowlistPage（Misc.tsx 拆分生成，2026-11-22 god file 治理）。
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Plus, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
-import { Role, AllowEntry } from '../lib/types';
+import { AllowEntry, Role } from '../lib/types';
 import { relTime } from '../lib/format';
 import { useError } from '../lib/hooks';
-import { Card, Badge, Button, SkeletonRows, Input, Select, CardTitle, EmptyState } from '../components/ui/basics';
-import { useToast, useConfirm } from '../components/ui/overlays';
-
-          <p className="mt-2 px-3.5 text-xs text-faint">点击任意一行进入主机详情整页：系统概要 · 网络适配器 · 监听端口 · 服务 · 计划任务 · 自启动 · 处置指令 · 指令历史。终端默认每 30 秒心跳一次。</p>
-          </Card>
-        </>
-      )}
-    </div>
-  );
-}
-
+import { EmptyState, Input, Card, Badge, CardTitle, SkeletonRows, Button, Select } from '../components/ui/basics';
+import { useConfirm, useToast } from '../components/ui/overlays';
 
 /* ================= 白名单（例外与降噪） =================
    检测规则页已升级为「规则中心」整页（pages/RulesCenter.tsx）；
